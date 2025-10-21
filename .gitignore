@@ -6,6 +6,7 @@ dist/
 build/
 *.egg-info/
 .arox*
+!.arox.config.toml
 .coverage
 .tox
 .venv

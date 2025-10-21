@@ -1,0 +1,2 @@
+[composer.coder]
+pre_commit_cmd = "tools/lint"
