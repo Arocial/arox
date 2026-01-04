@@ -1,9 +1,10 @@
 import argparse
+import contextlib
 import logging
 import sys
 from pathlib import Path
 
-from kissllm.tools import LocalToolManager
+from pydantic_ai import FunctionToolset
 
 from arox import agent_patterns, commands, config
 from arox.agent_patterns.chat import ChatAgent
@@ -11,7 +12,7 @@ from arox.agent_patterns.llm_base import LLMBaseAgent
 from arox.compose.coder.state import CoderState
 from arox.compose.git_commit import GitCommitAgent
 from arox.config import TomlConfigParser
-from arox.tools import file_edit, search_reading
+from arox.tools import search_reading
 from arox.utils import run_command
 
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 
 class CoderComposer:
-    def __init__(self, io_channel=None):
+    def __init__(self, io_adapter_factory):
         parser = argparse.ArgumentParser()
 
         parser.add_argument(
@@ -45,37 +46,33 @@ class CoderComposer:
         self.pre_commit_cmd = composer_config.pre_commit_cmd
 
         agent_patterns.init(toml_parser)
-        local_tool_manager = LocalToolManager()
-
-        self.io_channel = io_channel
 
         git_commit_agent = GitCommitAgent(
             "git_commit_agent",
             toml_parser,
-            io_channel=io_channel.create_sub_channel("git_commit"),
+            io_adapter=io_adapter_factory(),
         )
         self.commit_agent = git_commit_agent
 
+        local_toolset = FunctionToolset()
         coder_agent = ChatAgent(
             "coder",
             toml_parser,
-            local_tool_manager,
+            toolsets=[local_toolset],
             state_cls=CoderState,
             context={"commit_agent": self.commit_agent},
-            io_channel=io_channel.create_sub_channel("coder"),
+            io_adapter=io_adapter_factory(),
         )
 
         diff_agent = LLMBaseAgent(
             "smart-diff",
             toml_parser,
-            io_channel=io_channel.create_sub_channel("smart-diff"),
+            io_adapter=io_adapter_factory(),
         )
-        file_edit_tool = file_edit.FileEdit(diff_agent, coder_agent.state)
-        file_edit_tool.register_tools(local_tool_manager)
         self.diff_agent = diff_agent
 
         sr_tool = search_reading.SearchReading(coder_agent.state)
-        sr_tool.register_tools(local_tool_manager)
+        local_toolset.add_function(sr_tool.add_files)
 
         coder_commands = [
             commands.FileCommand(coder_agent),
@@ -117,11 +114,15 @@ class CoderComposer:
             sys.exit(0)
 
     async def run(self):
-        await self.commit_agent.show_agent_info()
-        await self.diff_agent.show_agent_info()
-        await self.coder_agent.show_agent_info()
+        async with contextlib.AsyncExitStack() as stack:
+            await stack.enter_async_context(self.coder_agent.io_channel)
+            await stack.enter_async_context(self.commit_agent.io_channel)
+            await stack.enter_async_context(self.diff_agent.io_channel)
 
-        await self.coder_agent.start()
+            await self.commit_agent.show_agent_info()
+            await self.diff_agent.show_agent_info()
+            await self.coder_agent.show_agent_info()
+            await self.coder_agent.start()
 
 
 def main():
@@ -141,7 +142,7 @@ def main():
     else:
         from arox.compose.coder.ui import CoderTextUI
 
-        app = CoderTextUI("Coder")
+        app = CoderTextUI()
 
     app.run()
 

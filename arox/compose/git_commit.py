@@ -3,17 +3,13 @@ from typing import Optional
 import git
 
 from arox.agent_patterns.llm_base import LLMBaseAgent
+from arox.ui.io import TextIOAdapter
 
 
 class GitCommitAgent(LLMBaseAgent):
     """
     An agent that generates commit messages based on git diff output.
     """
-
-    def __init__(
-        self, name: str, config_parser=None, local_tool_manager=None, io_channel=None
-    ):
-        super().__init__(name, config_parser, local_tool_manager, io_channel=io_channel)
 
     async def generate_commit_message(self, diff: Optional[str] = None) -> str:
         """
@@ -46,9 +42,8 @@ class GitCommitAgent(LLMBaseAgent):
         )
 
         # Call the LLM to generate the commit message
-        await self.step(prompt)
-        last_message = self.last_message()
-        return last_message.strip()
+        result = await self.step(prompt)
+        return result.output.strip()
 
     async def commit_changes(
         self, message: Optional[str] = None, co_author: Optional[str] = None
@@ -120,9 +115,11 @@ if __name__ == "__main__":
     toml_parser = TomlConfigParser()
     agent_patterns.init(toml_parser)
 
-    async def main():
-        agent = GitCommitAgent("git_commit_agent", toml_parser)
-        result = await agent.auto_commit_changes()
-        agent.io_channel.write(result)
+    io_channel = TextIOAdapter()
+    agent = GitCommitAgent("git_commit_agent", toml_parser, io_adapter=io_channel)
 
-    asyncio.run(main())
+    async def wrapper():
+        async with agent.io_channel:
+            await agent.auto_commit_changes()
+
+    asyncio.run(wrapper())

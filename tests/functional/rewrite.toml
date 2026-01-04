@@ -6,20 +6,6 @@
 # workspace = workspace
 
 
-[observability]
-# Observability provider to use (default: None)
-# provider = 
-
-# Langfuse public key
-# langfuse_public_key = 
-
-# Langfuse secret key
-# langfuse_secret_key = 
-
-# Langfuse host URL
-# langfuse_host = 
-
-
 [api_keys]
 
 [env_vars]
@@ -28,8 +14,6 @@
 # fetch = { url = "https://remote.mcpservers.org/fetch" }
 
 [agent.rewrite]
-# 
-# system_prompt = 
-
+system_prompt = "Hi there."
 
 [agent.rewrite.model_params]

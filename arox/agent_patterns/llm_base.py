@@ -1,16 +1,28 @@
+import json
 import logging
+import re
+import tempfile
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
 
-from kissllm.client import LLMClient
-from kissllm.mcp import parse_mcp_config
-from kissllm.mcp.manager import MCPManager
-from kissllm.tools import ToolManager
+from pydantic_ai import (
+    Agent,
+    AgentRunResult,
+    ModelSettings,
+    mcp,
+)
 
 from arox import utils
 from arox.agent_patterns.state import SimpleState
+from arox.ui.io import AbstractIOAdapter, IOChannel
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AgentDeps:
+    io_channel: AbstractIOAdapter
 
 
 class LLMBaseAgent:
@@ -18,40 +30,36 @@ class LLMBaseAgent:
         self,
         name,
         config_parser,
-        local_tool_manager=None,
-        use_flexible_toolcall=True,
+        io_adapter: AbstractIOAdapter,
+        toolsets=[],
         state_cls=SimpleState,
         context={},
-        io_channel=None,
     ):
         self.uuid = str(uuid.uuid4())
         self.name = name
         self.context = context
-        self.io_channel = io_channel
+        self.io_channel = IOChannel(adapter=io_adapter)
+        self.model_ref = None
+        self.additional_prompt = ""
 
         self.config_parser = config_parser
         self.config = self.parse_configs()
         # Manage tool specs.
-        tool_managers = {}
-        self.mcp_servers = (
-            self.config.agent.mcp_servers
-            if hasattr(self.config.agent, "mcp_servers")
-            else None
-        )
-        if self.mcp_servers:
-            mcp_configs = []
-            for server_name, server_conf_dict in self.mcp_servers.items():
-                mcp_configs.append(parse_mcp_config(server_name, server_conf_dict))
-            tool_managers["mcp_manager"] = MCPManager(mcp_configs)
-        if local_tool_manager:
-            tool_managers["local_manager"] = local_tool_manager
+        mcp_server_configs = self.config.mcp_servers or {}
+        self.mcp_servers = []
+        with tempfile.NamedTemporaryFile(mode="w") as tmpf:
+            json.dump({"mcpServers": mcp_server_configs}, tmpf)
+            tmpf.flush()
+            self.mcp_servers = mcp.load_mcp_servers(tmpf.name)
 
-        self.tool_registry = ToolManager(**tool_managers)
+        self.state = state_cls(self)
 
-        self.state = state_cls(
-            self,
-            use_flexible_toolcall=use_flexible_toolcall,
-            tool_registry=self.tool_registry,
+        self.result = None
+        self.pydantic_agent = Agent(
+            self.provider_model,
+            history_processors=[self.state.process_history],
+            toolsets=toolsets + self.mcp_servers,
+            deps_type=AgentDeps,
         )
 
     def set_model(self, model_ref: str):
@@ -68,12 +76,14 @@ class LLMBaseAgent:
         model_params = model_config.params
         self.model_params = utils.deep_merge(self.agent_model_params, model_params)
         self.provider_model = model_config.provider_model
+        for model_prompt in self.model_aware_prompts:
+            if re.search(model_prompt["pattern"], self.model_ref):
+                self.additional_prompt = model_prompt["prompt"]
+
         return config
 
     async def show_agent_info(self):
-        await self.io_channel.write(
-            f"Using model {self.provider_model} for {self.name}"
-        )
+        await self.io_channel.send(f"Using model {self.provider_model} for {self.name}")
 
     def parse_configs(self):
         config_parser = self.config_parser
@@ -101,12 +111,12 @@ class LLMBaseAgent:
         self.system_prompt = group_config.system_prompt
         self.model_ref = group_config.model_ref or config.model_ref
         self.agent_model_params = group_config.model_params
-        self.model_prompt = []
+        self.model_aware_prompts = []
         mp = group_config.model_prompt
         for k, v in mp.items():
             if not k.endswith("_pattern"):
                 pattern = mp.get(f"{k}_pattern", "")
-                self.model_prompt.append(
+                self.model_aware_prompts.append(
                     {
                         "prompt": v,
                         "pattern": pattern,
@@ -126,23 +136,20 @@ class LLMBaseAgent:
             for hook in self.after_step_hooks:
                 await hook(self, input_content)
 
-    async def step(self, input_content: str):
+    async def step(self, input_content: str) -> AgentRunResult:
         await self._run_before_hooks(input_content)
-        await self.state.add_user_input(input_content)
-        self.model_params["stream"] = True
-        await LLMClient(
-            provider_model=self.provider_model, io_channel=self.io_channel
-        ).async_completion_multi_round(
-            state=self.state,
-            **self.model_params,
+        self.result = await self.pydantic_agent.run(
+            input_content,
+            event_stream_handler=self.state.handle_event,
+            model_settings=ModelSettings(**self.model_params),
+            instructions=f"{self.system_prompt}\n{self.additional_prompt}",
+            deps=AgentDeps(io_channel=self.io_channel),
         )
         await self._run_after_hooks(input_content)
+        return self.result
 
     def reset(self):
         return self.state.reset()
-
-    def last_message(self):
-        return self.state.last_message()
 
     def add_before_step_hook(self, hook):
         if not hasattr(self, "before_step_hooks"):

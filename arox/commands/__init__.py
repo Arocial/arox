@@ -81,12 +81,12 @@ class FileCommand(Command):
         chat_files = self.agent.state.chat_files
         files = arg.split(" ")
         if not files:
-            await self.agent.io_channel.write("Please specify files.")
+            await self.agent.io_channel.send("Please specify files.")
             return
         if name == "add":
             result = chat_files.add_by_names(files)
             for f in result.get("not_exist"):
-                await self.agent.io_channel.write(f"{f} doesn't exist, ignoring.")
+                await self.agent.io_channel.send(f"{f} doesn't exist, ignoring.")
         else:
             for f in files:
                 p = chat_files.normalize(f)
@@ -124,7 +124,7 @@ class ModelCommand(Command):
 
     async def execute(self, name: str, new_model: str):
         if not new_model:
-            await self.agent.io_channel.write("Please specify a model name")
+            await self.agent.io_channel.send("Please specify a model name")
             return
         self.agent.set_model(new_model)
 
@@ -140,9 +140,13 @@ class SaveCommand(Command):
 
     async def execute(self, name: str, arg: str):
         output_file = arg if arg else self.default_file
-        last_message = self.agent.last_message()
-        await self._save_content(last_message, self.tag_name, output_file)
-        await self.agent.io_channel.write(f"Saved to {output_file}!")
+        if self.agent.result:
+            await self._save_content(
+                self.agent.result.output, self.tag_name, output_file
+            )
+            await self.agent.io_channel.send(f"Saved to {output_file}!")
+        else:
+            await self.agent.io_channel.send("Nothing to save!")
 
     async def _save_content(
         self, content_msg: str, tag_name: str | None, file_name: str
@@ -159,7 +163,7 @@ class SaveCommand(Command):
         else:
             result = content_msg
         output_path = self.agent.workspace / file_name
-        await self.agent.io_channel.write(f"Saving content to {output_path}")
+        await self.agent.io_channel.send(f"Saving content to {output_path}")
         with output_path.open("w") as f:
             f.write(result)
 
@@ -173,7 +177,7 @@ class InvokeToolCommand(Command):
 
         parts = arg.split(maxsplit=1)
         if len(parts) < 1:
-            await self.agent.io_channel.write(
+            await self.agent.io_channel.send(
                 "Usage: /invoke-tool <function_name> [json_args]"
             )
             return
@@ -186,10 +190,10 @@ class InvokeToolCommand(Command):
             if not isinstance(args, dict):
                 raise ValueError("Arguments must be a JSON object (dictionary).")
         except json.JSONDecodeError as e:
-            await self.agent.io_channel.write(f"Error: Invalid JSON arguments: {e}")
+            await self.agent.io_channel.send(f"Error: Invalid JSON arguments: {e}")
             return
         except ValueError as e:
-            await self.agent.io_channel.write(f"Error: {e}")
+            await self.agent.io_channel.send(f"Error: {e}")
             return
 
         # Prepare the tool_call structure expected by execute_tool_call
@@ -201,28 +205,28 @@ class InvokeToolCommand(Command):
         }
 
         try:
-            await self.agent.io_channel.write(
+            await self.agent.io_channel.send(
                 f"Invoking tool '{function_name}' with args: {args}"
             )
             result = await tool_registry.execute_tool_call(tool_call_data)
-            await self.agent.io_channel.write(
+            await self.agent.io_channel.send(
                 f"Tool '{function_name}' executed successfully."
             )
-            await self.agent.io_channel.write("Result:")
-            await self.agent.io_channel.write(result)
+            await self.agent.io_channel.send("Result:")
+            await self.agent.io_channel.send(result)
         except ValueError as e:
-            await self.agent.io_channel.write(
+            await self.agent.io_channel.send(
                 f"Error invoking tool '{function_name}': {e}"
             )
         except ConnectionError as e:
-            await self.agent.io_channel.write(
+            await self.agent.io_channel.send(
                 f"Error connecting to MCP server for tool '{function_name}': {e}"
             )
         except Exception as e:
             logger.error(
                 f"Unexpected error invoking tool '{function_name}': {e}", exc_info=True
             )
-            await self.agent.io_channel.write(f"An unexpected error occurred: {e}")
+            await self.agent.io_channel.send(f"An unexpected error occurred: {e}")
 
 
 class ListToolCommand(Command):
@@ -233,11 +237,11 @@ class ListToolCommand(Command):
         tool_registry = self.agent.tool_registry
         tool_specs = await tool_registry.get_tools_specs()
         if not tool_specs:
-            await self.agent.io_channel.write("No tools registered.")
+            await self.agent.io_channel.send("No tools registered.")
             return
 
-        await self.agent.io_channel.write("Registered Tools:")
-        await self.agent.io_channel.write(yaml.safe_dump(tool_specs))
+        await self.agent.io_channel.send("Registered Tools:")
+        await self.agent.io_channel.send(yaml.safe_dump(tool_specs))
 
 
 class InfoCommand(Command):
@@ -247,16 +251,16 @@ class InfoCommand(Command):
     async def execute(self, name: str, arg: str):
         # Show current model
         current_model = getattr(self.agent, "provider_model", "Unknown")
-        await self.agent.io_channel.write(f"Current model: {current_model}")
+        await self.agent.io_channel.send(f"Current model: {current_model}")
 
         # Show chat files
         chat_files = self.agent.state.chat_files.list()
         if chat_files:
-            await self.agent.io_channel.write(f"\nChat files ({len(chat_files)}):")
+            await self.agent.io_channel.send(f"\nChat files ({len(chat_files)}):")
             for file_path in chat_files:
-                await self.agent.io_channel.write(f"  - {file_path}")
+                await self.agent.io_channel.send(f"  - {file_path}")
         else:
-            await self.agent.io_channel.write("\nNo chat files currently loaded.")
+            await self.agent.io_channel.send("\nNo chat files currently loaded.")
 
 
 class ResetCommand(Command):
@@ -265,7 +269,7 @@ class ResetCommand(Command):
 
     async def execute(self, name: str, arg: str):
         self.agent.state.reset()
-        await self.agent.io_channel.write("Reset complete.")
+        await self.agent.io_channel.send("Reset complete.")
 
 
 class CommitCommand(Command):
@@ -275,6 +279,6 @@ class CommitCommand(Command):
     async def execute(self, name: str, arg: str):
         commit_agent = self.agent.context.get("commit_agent")
         if not commit_agent:
-            await self.agent.io_channel.write("No commit agent, ignoring.")
+            await self.agent.io_channel.send("No commit agent, ignoring.")
         result = await commit_agent.auto_commit_changes()
-        await self.agent.io_channel.write(result)
+        await self.agent.io_channel.send(result)

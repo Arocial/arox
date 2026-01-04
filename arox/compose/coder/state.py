@@ -10,21 +10,7 @@ class CoderState(SimpleState):
     def __init__(
         self,
         agent,
-        use_flexible_toolcall=True,
-        tool_registry=None,
     ):
-        super().__init__(agent, use_flexible_toolcall, tool_registry)
+        super().__init__(agent)
         self.project_manager = project.ProjectManager(self.workspace, agent)
         self.chat_files.set_candidate_generator(self.project_manager.get_tracked_files)
-
-    async def _get_message_items(self, user_input):
-        items = await super()._get_message_items(user_input)
-        if items and items[0][0] == "system":
-            insert_index = 1
-        else:
-            insert_index = 0
-        if not self.message_meta.get("file_list"):
-            file_list = "\n".join(self.project_manager.get_tracked_files())
-            items.insert(insert_index, ("file_list", file_list))
-            self.message_meta["file_list"] = True
-        return items

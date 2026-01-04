@@ -47,12 +47,8 @@ async def user_input_generator(completer=None, input=None, output=None):
         input=input,
         output=output,
     )
-    try:
-        while True:
-            user_input = await session.prompt_async("\nUser (Ctrl+D to quit): ")
-            yield user_input
-    except EOFError:
-        pass
+    user_input = await session.prompt_async("\nUser (Ctrl+D to quit): ")
+    return user_input
 
 
 def xml_wrap(contents: list[tuple[str, str]]) -> str:

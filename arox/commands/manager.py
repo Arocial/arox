@@ -26,7 +26,7 @@ class CommandManager:
             else:
                 command.execute(c_name, c_arg)
         else:
-            await self.agent.io_channel.write(f"Command not found: {user_input}")
+            await self.agent.io_channel.send(f"Command not found: {user_input}")
         return True
 
     def get_completions(self, name: str, args: str):

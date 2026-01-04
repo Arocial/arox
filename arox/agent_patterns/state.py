@@ -1,12 +1,17 @@
 import logging
 import re
+from collections.abc import AsyncIterable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
-from kissllm.client import State
-from kissllm.io import IOTypeEnum
-from kissllm.stream import CompletionStream
-
-from arox.utils import xml_wrap
+from pydantic_ai import (
+    AgentStreamEvent,
+    ModelMessage,
+    ModelRequest,
+    RunContext,
+    UserPromptPart,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,11 +55,6 @@ class ChatFiles:
     async def remove(self, f: Path):
         if f in self._chat_files:
             self._chat_files.remove(f)
-        else:
-            await self.agent.io_channel.write(
-                f"{f} is not in chat file list, ignoring."
-            )
-
         if f in self._pending_files:
             self._pending_files.remove(f)
 
@@ -97,21 +97,29 @@ class ChatFiles:
                         f"\n====FILE: {fname}====\n{content}\n\n{file_content}"
                     )
             except FileNotFoundError:
-                await self.agent.io_channel.write(f"File not found: {p}")
+                await self.agent.io_channel.send(f"File not found: {p}")
                 continue
 
         self.clear_pending()
         return file_content, fpaths
 
 
-class SimpleState(State):
+@dataclass(repr=False)
+class UserFilesPart(UserPromptPart):
+    user_part_kind: Literal["files"] = "files"
+
+    def __str__(self) -> str:
+        pattern = r"====FILE:\s*([^=]+)===="
+        return "User provided files:\n" + "\n".join(
+            [match.strip() for match in re.findall(pattern, str(self.content))]
+        )
+
+
+class SimpleState:
     def __init__(
         self,
         agent,
-        use_flexible_toolcall=True,
-        tool_registry=None,
     ):
-        super().__init__(use_flexible_toolcall, tool_registry)
         self.agent = agent
         self.system_prompt = self.agent.system_prompt
         self.workspace = self.agent.workspace
@@ -121,81 +129,33 @@ class SimpleState(State):
     async def assemble_chat_files(self) -> tuple[str, list[Path]]:
         return await self.chat_files.read_files()
 
-    async def _get_message_items(self, user_input):
-        items = []
-        # TODO: replace message_meta with local_metadata in message
-        messages_meta = self.message_meta
-        if not messages_meta.get("system") and self.system_prompt:
-            items.append(("system", self.system_prompt))
-            self.message_meta["system"] = True
-        if self.chat_files.have_pending() or user_input:
-            file_contents, _ = await self.assemble_chat_files()
-            items.append(("files", file_contents))
-        if user_input:
-            items.append(("user_instruction", user_input))
-        return items
+    async def process_history(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+        if self.chat_files.have_pending():
+            for msg in messages:
+                if isinstance(msg, ModelRequest):
+                    parts = msg.parts
+                    msg.parts = [p for p in parts if not isinstance(p, UserFilesPart)]
 
-    def _append_with_typ_meta(self, messages: list, typ, content):
-        """Remove message with type `typ` and append new content."""
-        replaced = list(
-            filter(
-                lambda msg: msg.get("local_metadata", {}).get("type") == typ, messages
-            )
-        )
-        for r in replaced:
-            messages.remove(r)
+            if messages and isinstance(messages[-1], ModelRequest):
+                last_request = messages[-1]
+                file_contents, _ = await self.assemble_chat_files()
+                prompt_files = UserFilesPart(content=file_contents)
+                parts = list(last_request.parts)
+                parts.insert(0, prompt_files)
+                last_request.parts = parts
 
-        if content:
-            messages.append(
-                {"role": "user", "content": content, "local_metadata": {"type": typ}}
-            )
-
-    async def add_user_input(self, user_input: str):
-        return await self._assemble_prompt(user_input)
-
-    async def _assemble_prompt(self, user_input: str):
-        messages = self._messages
-        items = await self._get_message_items(user_input)
-        has_new = bool(items)
-        for item in items:
-            if item[0] == "system":
-                messages.append({"role": "system", "content": item[1]})
-                continue
-            content = xml_wrap([item])
-            # remove all outdated file contents and append updated.
-            if item[0] == "files":
-                self._append_with_typ_meta(messages, "files", content)
-            elif content:
-                messages.append({"role": "user", "content": content})
-
-        # Append model specific prompt to messages
-        for model_prompt in self.agent.model_prompt:
-            if re.search(model_prompt["pattern"], self.agent.model_ref):
-                self._append_with_typ_meta(
-                    messages, "model_prompt", model_prompt["prompt"]
-                )
-                break
-
-        if self.use_flexible_toolcall:
-            await self.inject_tools_into_messages()
-
-        return has_new
+        for msg in messages:
+            for p in msg.parts:
+                print(f"{p}\n")  # TODO send output event
+        return messages
 
     def reset(self):
         self._messages = []
         self.message_meta = {}
         self.chat_files.clear()
 
-    async def accumulate_response(self, response):
-        if isinstance(response, CompletionStream):
-            io_channel = self.agent.io_channel
-            channel = io_channel.create_sub_channel(IOTypeEnum.streaming_assistant)
-            await channel.write(response.iter_content())
-
-        return await super().accumulate_response(response)
-
-    async def handle_response(self, response, stream):
-        continu = await super().handle_response(response, stream)
-        new_content = await self._assemble_prompt("")
-
-        return new_content and continu
+    async def handle_event(
+        self, ctx: RunContext, events: AsyncIterable[AgentStreamEvent]
+    ):
+        async for event in events:
+            await ctx.deps.io_channel.send(event)

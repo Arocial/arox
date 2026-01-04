@@ -39,9 +39,9 @@ class IOGenerator:
                 interval = io_action.get("stream_interval", 0)
                 interval = float(interval)
                 if interval == 0.0:
-                    await io_channel.write(content)
+                    await io_channel.send(content)
                 else:
-                    await io_channel.write(self.stream_content(content, interval))
+                    await io_channel.send(self.stream_content(content, interval))
             elif io_action["action"] == "create_sub_channel":
                 sub_channel = io_channel.create_sub_channel(
                     io_action["type"], io_action.get("title")

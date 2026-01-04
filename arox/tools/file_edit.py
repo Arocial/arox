@@ -32,8 +32,8 @@ class FileEdit:
             return ""
         prompt = xml_wrap([("original_content", original_content), ("diff", diff)])
         self.diff_agent.state.reset()
-        await self.diff_agent.step(prompt)
-        return self.diff_agent.last_message()
+        result = await self.diff_agent.step(prompt)
+        return result.output
 
     def _match_placeholder(self, content):
         return re.search(

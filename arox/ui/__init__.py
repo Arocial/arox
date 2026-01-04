@@ -4,12 +4,26 @@ import logging
 from enum import Enum
 from typing import Callable, Iterable, Optional
 
-from kissllm.io import IOChannel, IOTypeEnum
 from prompt_toolkit.completion import Completion
 from prompt_toolkit.history import FileHistory, History
+from pydantic_ai import (
+    FinalResultEvent,
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    PartDeltaEvent,
+    PartEndEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
+    ToolCallPartDelta,
+)
 from textual import events
 from textual.app import App, ComposeResult
 from textual.widgets import Collapsible, Footer, Label, ListItem, ListView, TextArea
+
+from arox.ui.io import AbstractIOAdapter, EventNeedReply
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +89,7 @@ class TUIByIO(App):
     def __init__(self, app_name):
         self.input_suggester = None
         self.app_name = app_name
-        self.io_channel = TextualIOChannel(self, app_name, title=app_name)
+        self.io_adapter = TextualIOAdapter(self, title=app_name)
         self.follow = True
         super().__init__()
 
@@ -357,63 +371,78 @@ class CollapsibleLabel(Collapsible):
         self.label_widget.update(content)
 
 
-class TextualIOChannel(IOChannel):
-    def __init__(self, app, channel_type, title=""):
+class TextualIOAdapter(AbstractIOAdapter):
+    def __init__(self, app, title=""):
         self.app = app
         self.output_widget = None
-        self.channel_type = channel_type
         self.title = title
+        self.current_stream_widget = None
+
+    async def _handle_output(self, event):
+        if isinstance(event, PartStartEvent):
+            part = event.part
+            self.current_stream_widget = StreamingOutputWidget(self.app, part.part_kind)
+            await self.current_stream_widget.start()
+            if isinstance(part, (TextPart, ThinkingPart)):
+                await self.current_stream_widget.write(f"{part.content}")
+        elif isinstance(event, PartDeltaEvent):
+            if isinstance(event.delta, (TextPartDelta, ThinkingPartDelta)):
+                await self.current_stream_widget.write(event.delta.content_delta)
+            elif isinstance(event.delta, ToolCallPartDelta):
+                await self.current_stream_widget.write(event.delta.args_delta)
+        elif isinstance(event, PartEndEvent):
+            await self.current_stream_widget.end()
+        elif isinstance(event, FunctionToolResultEvent):
+            await self.write(
+                f"<tool_result> {event.tool_call_id!r} returned => {event.result.content}</tool_result>\n"
+            )
+        elif isinstance(event, (FunctionToolCallEvent, FinalResultEvent)):
+            pass
+        elif isinstance(event, EventNeedReply):
+            reply = await self.read()
+            event.set_reply(reply)
+        else:
+            await self.write(f"\nUnexpected event type: {event.__class__.__name__}\n")
+
+    async def handle_output_stream(self, output_stream_out):
+        async with output_stream_out:
+            async for event in output_stream_out:
+                await self._handle_output(event)
 
     async def read(self):
-        while True:
-            input_future = asyncio.get_running_loop().create_future()
-            from textual.containers import Container
-            from textual.widgets import Static
+        input_future = asyncio.get_running_loop().create_future()
+        from textual.containers import Container
+        from textual.widgets import Static
 
-            prompt_label = Static(f"{self.title} > ", classes="prompt-label")
+        prompt_label = Static(f"{self.title} > ", classes="prompt-label")
 
-            input_widget = UserInput(
-                input_future,
-                history=FileHistory(f".arox.{self.title}.history"),
-                suggester=self.app.input_suggester,
-            )
+        input_widget = UserInput(
+            input_future,
+            history=FileHistory(f".arox.{self.title}.history"),
+            suggester=self.app.input_suggester,
+        )
 
-            input_container = Container(
-                prompt_label, input_widget, classes="input-container"
-            )
+        input_container = Container(
+            prompt_label, input_widget, classes="input-container"
+        )
 
-            await self.app.mount(input_container)
-            input_widget.focus()
-            user_input = await input_future
-            await input_container.remove()
+        await self.app.mount(input_container)
+        input_widget.focus()
+        user_input = await input_future
+        await input_container.remove()
 
-            collapsible = Collapsible(
-                Label(user_input, markup=False, classes="wrapped"),
-                collapsed=False,
-                title=f"{self.title}.User",
-            )
-            await self.app.update_and_scroll(self.app.mount, collapsible)
-            yield user_input
+        collapsible = Collapsible(
+            Label(user_input, markup=False, classes="wrapped"),
+            collapsed=False,
+            title=f"{self.title}.User",
+        )
+        await self.app.update_and_scroll(self.app.mount, collapsible)
+        return user_input
 
     async def write(self, content, metadata=None):
         output_content = f"{self.title}: {str(content)}"
         output_widget = Label(output_content)
         await self.app.update_and_scroll(self.app.mount, output_widget)
-
-    def create_sub_channel(self, channel_type, title=""):
-        if not title:
-            title = (
-                str(channel_type.value)
-                if isinstance(channel_type, Enum)
-                else str(channel_type)
-            )
-            title = f"{self.title}.{title}"
-        if channel_type == IOTypeEnum.prompt_message:
-            return PromptMessageWidget(self.app, channel_type, title)
-        elif channel_type == IOTypeEnum.streaming_assistant:
-            return StreamingOutputWidget(self.app, channel_type, title)
-
-        return self.__class__(self.app, channel_type, title)
 
 
 def _process_xml_tags(content_str, title, app):
@@ -488,8 +517,8 @@ def _process_xml_tags(content_str, title, app):
         )
 
 
-class PromptMessageWidget(IOChannel):
-    def __init__(self, app, channel_type, title=""):
+class PromptMessageWidget:
+    def __init__(self, app, title=""):
         self.app = app
         self.title = title
 
@@ -509,27 +538,27 @@ class PromptMessageWidget(IOChannel):
         widget.focus()
 
 
-class StreamingOutputWidget(IOChannel):
-    def __init__(self, app, channel_type, title=""):
+class StreamingOutputWidget:
+    def __init__(self, app, title=""):
         self.app = app
         self.output_widget = None
         self.title = title
         self.accumulated_content = ""
 
-    async def write(self, content_generator, metadata=None):
+    async def start(self):
         if self.output_widget is None:
             self.output_widget = CollapsibleLabel(title=self.title, collapsed=False)
             await self.app.update_and_scroll(self.app.mount, self.output_widget)
             self.output_widget.focus()
 
-        async for content in content_generator:
-            if content:
-                self.accumulated_content += str(content)
-
+    async def write(self, content, metadata=None):
+        if content:
+            self.accumulated_content += str(content)
             await self.app.update_and_scroll(
                 self.output_widget.update, self.accumulated_content
             )
 
+    async def end(self):
         # Process content with XML tags and get appropriate widget
         widget = _process_xml_tags(self.accumulated_content, self.title, self.app)
 

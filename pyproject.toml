@@ -13,9 +13,9 @@ classifiers = [
 ]
 dependencies = [
     "tomli",
+    "pydantic_ai",
     "prompt-toolkit>=3.0",
     "pyyaml>=6.0",
-    "kissllm>-0.1.0",
     "asyncio",
     "GitPython>=3.1.30",
     "networkx[default]>=3.5",
@@ -25,6 +25,7 @@ dependencies = [
     "tqdm>=4.67.1",
     "tree-sitter-language-pack>=0.7.3",
     "textual>=5.0",
+    "anyio>=4.9.0",
 ]
 [project.urls]
 Homepage = "https://github.com/Arocial/arox"
