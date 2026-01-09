@@ -2,6 +2,8 @@ import logging
 import os
 from pathlib import Path
 
+import logfire
+
 logger = logging.getLogger(__name__)
 
 
@@ -13,8 +15,10 @@ def init(config_parser):
 
 # Observability & Logging
 def setup_llm_observability(conf):
-    # TODO setup observation
-    pass
+    if conf.observability.enable:
+        logfire.configure(send_to_logfire=conf.observability.logfire)
+        logfire.instrument_pydantic_ai(version=1)
+        logfire.instrument_httpx(capture_all=True)
 
 
 def add_agent_options(parser):
@@ -34,19 +38,15 @@ def add_agent_options(parser):
         name="observability", help="Observability Configuration"
     )
     obs_group.add_argument(
-        "provider",
-        default=None,
-        help="Observability provider to use (default: None)",
+        "enable",
+        default=False,
+        help="Enable observation",
     )
     obs_group.add_argument(
-        "langfuse_public_key",
-        help="Langfuse public key",
+        "logfire",
+        default=False,
+        help="Use logfire backend",
     )
-    obs_group.add_argument(
-        "langfuse_secret_key",
-        help="Langfuse secret key",
-    )
-    obs_group.add_argument("langfuse_host", help="Langfuse host URL")
 
     # API Keys group
     parser.add_argument_group("api_keys", "API Keys", expose_raw=True)
@@ -57,14 +57,6 @@ def add_agent_options(parser):
     )
 
     args = parser.parse_args()
-
-    # Set environment variables from config
-    if args.observability.langfuse_public_key:
-        os.environ["LANGFUSE_PUBLIC_KEY"] = args.observability.langfuse_public_key
-    if args.observability.langfuse_secret_key:
-        os.environ["LANGFUSE_SECRET_KEY"] = args.observability.langfuse_secret_key
-    if args.observability.langfuse_host:
-        os.environ["LANGFUSE_HOST"] = args.observability.langfuse_host
 
     for provider, api_key in args.api_keys.items():
         provider = provider.upper()

@@ -26,6 +26,7 @@ dependencies = [
     "tree-sitter-language-pack>=0.7.3",
     "textual>=5.0",
     "anyio>=4.9.0",
+    "logfire>=4.16.0",
 ]
 [project.urls]
 Homepage = "https://github.com/Arocial/arox"
