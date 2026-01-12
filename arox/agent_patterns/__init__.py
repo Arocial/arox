@@ -16,8 +16,11 @@ def init(config_parser):
 # Observability & Logging
 def setup_llm_observability(conf):
     if conf.observability.enable:
-        logfire.configure(send_to_logfire=conf.observability.logfire)
-        logfire.instrument_pydantic_ai(version=1)
+        logfire.configure(
+            send_to_logfire=conf.observability.logfire,
+            scrubbing=conf.observability.scrubbing,
+        )
+        logfire.instrument_pydantic_ai()
         logfire.instrument_httpx(capture_all=True)
 
 
@@ -41,6 +44,11 @@ def add_agent_options(parser):
         "enable",
         default=False,
         help="Enable observation",
+    )
+    obs_group.add_argument(
+        "scrubbing",
+        default=None,
+        help="Enable ",
     )
     obs_group.add_argument(
         "logfire",

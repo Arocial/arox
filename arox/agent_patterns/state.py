@@ -13,16 +13,20 @@ from pydantic_ai import (
     UserPromptPart,
 )
 
+from arox.tools.file_edit import FileEdit
+
 logger = logging.getLogger(__name__)
 
 
 class ChatFiles:
-    def __init__(self, agent, workspace) -> None:
+    def __init__(self, agent, workspace, diff_agent) -> None:
         self.agent = agent
         self._chat_files = []
         self._pending_files = []
         self.candidate_generator = None
         self.workspace = workspace
+        self.diff_agent = diff_agent
+        self.file_tool = FileEdit(diff_agent)
 
     def normalize(self, path: str) -> Path:
         workspace = self.workspace
@@ -103,6 +107,22 @@ class ChatFiles:
         self.clear_pending()
         return file_content, fpaths
 
+    async def update_contents(self, agent, input_content):
+        """Parse LLM output for file edit operations and execute them.
+
+        Args:
+            output: LLM output containing xml tags like <replace_in_file> and <write_to_file>
+        """
+        output = agent.result.output
+        tags = ["replace_in_file", "write_to_file"]
+        tags_re = f"{'|'.join(tags)}"
+        pattern = rf'^<({tags_re})\s+path="([^"]+)">\n?(.*?)\n?^</\1>$'
+        matches = re.findall(pattern, output, re.DOTALL | re.MULTILINE)
+        for m in matches:
+            method_str, path, content = m[0], m[1], m[2]
+            method = getattr(self.file_tool, method_str)
+            await method(path, content)
+
 
 @dataclass(repr=False)
 class UserFilesPart(UserPromptPart):
@@ -123,30 +143,49 @@ class SimpleState:
         self.agent = agent
         self.system_prompt = self.agent.system_prompt
         self.workspace = self.agent.workspace
-        self.chat_files = ChatFiles(agent, self.workspace)
+        diff_agent = self.agent.context.get("diff_agent")
+        self.chat_files = ChatFiles(agent, self.workspace, diff_agent)
+        self.agent.add_after_step_hook(self.chat_files.update_contents)
         self.reset()
 
     async def assemble_chat_files(self) -> tuple[str, list[Path]]:
         return await self.chat_files.read_files()
 
-    async def process_history(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+    async def _update_parts(
+        self,
+        messages: list[ModelMessage],
+        new_parts: list[UserPromptPart],
+    ) -> list[ModelMessage]:
+        remove_types = tuple([type(p) for p in new_parts])
+        for msg in messages:
+            if isinstance(msg, ModelRequest):
+                parts = msg.parts
+                msg.parts = [p for p in parts if not isinstance(p, remove_types)]
+
+        if messages and isinstance(messages[-1], ModelRequest):
+            last_request = messages[-1]
+            parts = list(last_request.parts)
+            parts.extend(new_parts)
+            last_request.parts = parts
+
+        return messages
+
+    async def _parts_to_update(self) -> list[UserPromptPart]:
         if self.chat_files.have_pending():
-            for msg in messages:
-                if isinstance(msg, ModelRequest):
-                    parts = msg.parts
-                    msg.parts = [p for p in parts if not isinstance(p, UserFilesPart)]
+            file_contents, _ = await self.assemble_chat_files()
+            prompt_files = UserFilesPart(
+                content=f"<files>\n{file_contents}\n</files>\n"
+            )
+            return [prompt_files]
+        else:
+            return []
 
-            if messages and isinstance(messages[-1], ModelRequest):
-                last_request = messages[-1]
-                file_contents, _ = await self.assemble_chat_files()
-                prompt_files = UserFilesPart(content=file_contents)
-                parts = list(last_request.parts)
-                parts.insert(0, prompt_files)
-                last_request.parts = parts
-
+    async def process_history(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+        new_parts = await self._parts_to_update()
+        messages = await self._update_parts(messages, new_parts)
         for msg in messages:
             for p in msg.parts:
-                print(f"{p}\n")  # TODO send output event
+                await self.agent.io_channel.send(f"{p}\n")
         return messages
 
     def reset(self):

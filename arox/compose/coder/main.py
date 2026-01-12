@@ -54,22 +54,22 @@ class CoderComposer:
         )
         self.commit_agent = git_commit_agent
 
-        local_toolset = FunctionToolset()
-        coder_agent = ChatAgent(
-            "coder",
-            toml_parser,
-            toolsets=[local_toolset],
-            state_cls=CoderState,
-            context={"commit_agent": self.commit_agent},
-            io_adapter=io_adapter_factory(),
-        )
-
         diff_agent = LLMBaseAgent(
             "smart-diff",
             toml_parser,
             io_adapter=io_adapter_factory(),
         )
         self.diff_agent = diff_agent
+
+        local_toolset = FunctionToolset()
+        coder_agent = ChatAgent(
+            "coder",
+            toml_parser,
+            toolsets=[local_toolset],
+            state_cls=CoderState,
+            context={"commit_agent": self.commit_agent, "diff_agent": self.diff_agent},
+            io_adapter=io_adapter_factory(),
+        )
 
         sr_tool = search_reading.SearchReading(coder_agent.state)
         local_toolset.add_function(sr_tool.add_files)

@@ -5,9 +5,6 @@ class SearchReading:
     def __init__(self, state: SimpleState):
         self.agent_state = state
 
-    def register_tools(self, manager):
-        manager.register(self.add_files)
-
     def add_files(self, paths: list[str]):
         """
         Add files to the chat context.
@@ -31,7 +28,9 @@ class SearchReading:
             results = chat_files.add_by_names(paths)
             msg = []
             if results["succeed"]:
-                msg.append(f"Successfully added files: {' '.join(results['succeed'])}")
+                msg.append(
+                    f"Successfully added files: {' '.join(results['succeed'])}. See <files> section below."
+                )
             if results["not_exist"]:
                 msg.append(f"File not exist: {' '.join(results['not_exist'])}")
 

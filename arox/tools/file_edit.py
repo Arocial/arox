@@ -2,29 +2,14 @@ import logging
 import re
 from pathlib import Path
 
-from arox.agent_patterns.llm_base import LLMBaseAgent
-from arox.agent_patterns.state import SimpleState
 from arox.utils import xml_wrap
 
 logger = logging.getLogger(__name__)
 
 
 class FileEdit:
-    def __init__(
-        self, diff_agent: LLMBaseAgent, state: SimpleState, refresh_edited=False
-    ):
+    def __init__(self, diff_agent):
         self.diff_agent = diff_agent
-        self.agent_state = state
-        self.refresh_edited = refresh_edited
-
-    def register_tools(self, manager):
-        manager.register(self.write_to_file)
-        manager.register(self.replace_in_file)
-
-    def _refresh_edited_files(self, path):
-        if self.refresh_edited:
-            chat_files = self.agent_state.chat_files
-            chat_files.add_by_names([path])
 
     async def _apply_smart_diff(self, original_content: str, diff: str) -> str:
         logger.info("Trying to use smart diff to apply changes.")
@@ -70,7 +55,6 @@ class FileEdit:
                 original_content = file_path.read_text()
                 content = await self._apply_smart_diff(original_content, content)
             file_path.write_text(content)
-            self._refresh_edited_files(path)
             return f"Successfully wrote to {file_path}"
         except Exception as e:
             return f"Error writing to file: {str(e)}"
@@ -149,7 +133,6 @@ class FileEdit:
                             break
 
             file_path.write_text(content)
-            self._refresh_edited_files(path)
             msg = f"Successfully updated {file_path}"
             logger.info(msg)
             return msg

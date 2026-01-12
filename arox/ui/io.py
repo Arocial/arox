@@ -76,7 +76,7 @@ class TextIOAdapter(AbstractIOAdapter):
     async def _handle_output(self, event):
         if isinstance(event, PartStartEvent):
             part = event.part
-            print(f"<{part.part_kind}>\n")
+            print(f"{part.part_kind}: ", end="")
             if isinstance(part, (TextPart, ThinkingPart)):
                 print(f"{part.content}", end="")
         elif isinstance(event, PartDeltaEvent):
@@ -85,11 +85,10 @@ class TextIOAdapter(AbstractIOAdapter):
             elif isinstance(event.delta, ToolCallPartDelta):
                 print(event.delta.args_delta, end="")
         elif isinstance(event, PartEndEvent):
-            part = event.part
-            print(f"\n</{part.part_kind}>\n")
+            print("")
         elif isinstance(event, FunctionToolResultEvent):
             print(
-                f"<tool_result> {event.tool_call_id!r} returned => {event.result.content}</tool_result>\n"
+                f"tool result: {event.tool_call_id!r} returned => {event.result.content}\n"
             )
         elif isinstance(event, (FunctionToolCallEvent, FinalResultEvent)):
             pass
