@@ -20,7 +20,8 @@ def setup_llm_observability(conf):
             send_to_logfire=conf.observability.logfire,
             scrubbing=conf.observability.scrubbing,
         )
-        logfire.instrument_pydantic_ai()
+        # https://github.com/orgs/langfuse/discussions/5036#discussioncomment-15019422
+        logfire.instrument_pydantic_ai(version=1)
         logfire.instrument_httpx(capture_all=True)
 
 
