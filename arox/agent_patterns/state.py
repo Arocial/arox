@@ -113,7 +113,10 @@ class ChatFiles:
         Args:
             output: LLM output containing xml tags like <replace_in_file> and <write_to_file>
         """
-        output = agent.result.output
+        # Access result through the state property
+        if agent.state.result is None:
+            return
+        output = agent.state.result.output
         tags = ["replace_in_file", "write_to_file"]
         tags_re = f"{'|'.join(tags)}"
         pattern = rf'^<({tags_re})\s+path="([^"]+)">\n?(.*?)\n?^</\1>$'
@@ -146,7 +149,23 @@ class SimpleState:
         diff_agent = self.agent.context.get("diff_agent")
         self.chat_files = ChatFiles(agent, self.workspace, diff_agent)
         self.agent.add_after_step_hook(self.chat_files.update_contents)
+        self._result = None
         self.reset()
+
+    @property
+    def result(self):
+        return self._result
+
+    @result.setter
+    def result(self, value):
+        self._result = value
+
+    @property
+    def message_history(self):
+        if self.result:
+            return self.result.all_messages()
+        else:
+            return None
 
     async def assemble_chat_files(self) -> tuple[str, list[Path]]:
         return await self.chat_files.read_files()
@@ -189,9 +208,8 @@ class SimpleState:
         return messages
 
     def reset(self):
-        self._messages = []
-        self.message_meta = {}
         self.chat_files.clear()
+        self.result = None
 
     async def handle_event(
         self, ctx: RunContext, events: AsyncIterable[AgentStreamEvent]

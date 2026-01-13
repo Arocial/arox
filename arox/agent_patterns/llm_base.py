@@ -54,7 +54,6 @@ class LLMBaseAgent:
 
         self.state = state_cls(self)
 
-        self.result = None
         self.pydantic_agent = Agent(
             self.provider_model,
             history_processors=[self.state.process_history],
@@ -138,15 +137,16 @@ class LLMBaseAgent:
 
     async def step(self, input_content: str) -> AgentRunResult:
         await self._run_before_hooks(input_content)
-        self.result = await self.pydantic_agent.run(
+        self.state.result = await self.pydantic_agent.run(
             input_content,
             event_stream_handler=self.state.handle_event,
             model_settings=ModelSettings(**self.model_params),
             instructions=f"{self.system_prompt}\n{self.additional_prompt}",
+            message_history=self.state.message_history,
             deps=AgentDeps(io_channel=self.io_channel),
         )
         await self._run_after_hooks(input_content)
-        return self.result
+        return self.state.result
 
     def reset(self):
         return self.state.reset()
