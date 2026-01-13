@@ -7,7 +7,7 @@ class SearchReading:
 
     def add_files(self, paths: list[str]):
         """
-        Add files to the chat context.
+        Add files to the chat context. For multiple files, add them in one toolcall.
 
         Note:
           The content of added files will be provided in next user message,
