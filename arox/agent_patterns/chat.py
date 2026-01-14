@@ -10,7 +10,7 @@ class ChatAgent(LLMBaseAgent):
         name,
         config_parser,
         io_adapter,
-        toolsets=[],
+        local_toolset=None,
         state_cls=SimpleState,
         context={},
     ):
@@ -18,7 +18,7 @@ class ChatAgent(LLMBaseAgent):
             name,
             config_parser,
             io_adapter,
-            toolsets,
+            local_toolset,
             state_cls,
             context=context,
         )

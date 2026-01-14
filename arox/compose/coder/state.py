@@ -1,8 +1,17 @@
 import logging
+from collections.abc import AsyncIterable
 from dataclasses import dataclass
 from typing import Literal
 
-from pydantic_ai import UserPromptPart
+from pydantic_ai import (
+    AgentStreamEvent,
+    ModelMessage,
+    ModelRequest,
+    PartEndEvent,
+    RunContext,
+    TextPart,
+    UserPromptPart,
+)
 
 from arox.agent_patterns.state import SimpleState
 from arox.codebase import project
@@ -21,13 +30,28 @@ class CoderState(SimpleState):
         agent,
     ):
         super().__init__(agent)
-        self.project_manager = project.ProjectManager(self.workspace, agent)
-        self.chat_files.set_candidate_generator(self.project_manager.get_tracked_files)
+        self.diff_agent = self.agent.context.get("diff_agent")
+        self.project_manager = project.ProjectManager(agent)
 
-    async def _parts_to_update(self) -> list[UserPromptPart]:
-        new_parts = await super()._parts_to_update()
-        file_list = "\n".join(self.project_manager.get_tracked_files())
-        new_parts.append(
-            UserFileListPart(content=f"<file_list>\n{file_list}\n</file_list>\n")
-        )
-        return new_parts
+    async def process_history(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+        if messages and isinstance(messages[-1], ModelRequest):
+            pending_files = self.project_manager.consume_pending()
+            if pending_files:
+                new_part = UserPromptPart(
+                    content=pending_files
+                )
+                last_request = messages[-1]
+                parts = list(last_request.parts)
+                parts.append(new_part)
+                last_request.parts = parts
+        return messages
+
+    async def handle_event(
+        self, ctx: RunContext, events: AsyncIterable[AgentStreamEvent]
+    ):
+        async for event in events:
+            if isinstance(event, PartEndEvent) and isinstance(event.part, TextPart):
+                await self.project_manager.update_contents(
+                    event.part.content, self.diff_agent
+                )
+            await ctx.deps.io_channel.send(event)

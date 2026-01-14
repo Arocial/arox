@@ -1,5 +1,3 @@
-from typing import Optional
-
 import git
 
 from arox.agent_patterns.llm_base import LLMBaseAgent
@@ -11,7 +9,7 @@ class GitCommitAgent(LLMBaseAgent):
     An agent that generates commit messages based on git diff output.
     """
 
-    async def generate_commit_message(self, diff: Optional[str] = None) -> str:
+    async def generate_commit_message(self, diff: str | None = None) -> str:
         """
         Generate a commit message based on the provided git diff or the current changes.
 
@@ -46,7 +44,7 @@ class GitCommitAgent(LLMBaseAgent):
         return result.output.strip()
 
     async def commit_changes(
-        self, message: Optional[str] = None, co_author: Optional[str] = None
+        self, message: str | None = None, co_author: str | None = None
     ) -> str:
         """
         Commit the staged changes with the provided or generated commit message.
@@ -78,7 +76,7 @@ class GitCommitAgent(LLMBaseAgent):
         except git.GitCommandError as e:
             return f"Error committing changes: {e}"
 
-    async def auto_commit_changes(self, co_author: Optional[str] = None) -> str:
+    async def auto_commit_changes(self, co_author: str | None = None) -> str:
         """
         Automatically commit any uncommitted changes with a generated commit message.
         This includes both staged and unstaged changes.

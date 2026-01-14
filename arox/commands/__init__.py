@@ -69,28 +69,22 @@ class Command:
         yield from []
 
 
-class FileCommand(Command):
-    description = (
-        "Add/Drop files to context - /add <file1> [file2...];  /drop <file1> [file2...]"
-    )
+class ProjectCommand(Command):
+    description = "Add files to context - /add <file1> [file2...] /add_file_list"
 
     def slashes(self) -> list[str]:
-        return ["add", "drop"]
+        return ["add", "add_file_list"]
 
     async def execute(self, name: str, arg: str):
-        chat_files = self.agent.state.chat_files
-        files = arg.split(" ")
-        if not files:
-            await self.agent.io_channel.send("Please specify files.")
-            return
+        project_manager = self.agent.state.project_manager
         if name == "add":
-            result = chat_files.add_by_names(files)
-            for f in result.get("not_exist"):
-                await self.agent.io_channel.send(f"{f} doesn't exist, ignoring.")
-        else:
-            for f in files:
-                p = chat_files.normalize(f)
-                await chat_files.remove(p)
+            files = arg.split(" ")
+            if not files:
+                await self.agent.io_channel.send("Please specify files.")
+                return
+            await project_manager.read_by_user(files)
+        elif name == "add_file_list":
+            project_manager.add_project_files()
 
     def get_completions(self, name, args):
         # Parse the arguments to get the current word being completed
@@ -104,9 +98,7 @@ class FileCommand(Command):
                 current_word = parts[-1] if parts else ""
 
         if name == "add":
-            candidates = self.agent.state.chat_files.candidates()
-        elif name == "drop":
-            candidates = [str(f) for f in self.agent.state.chat_files.list()]
+            candidates = self.agent.state.project_manager.candidates()
         else:
             candidates = []
 
@@ -254,10 +246,10 @@ class InfoCommand(Command):
         await self.agent.io_channel.send(f"Current model: {current_model}")
 
         # Show chat files
-        chat_files = self.agent.state.chat_files.list()
-        if chat_files:
-            await self.agent.io_channel.send(f"\nChat files ({len(chat_files)}):")
-            for file_path in chat_files:
+        project_manager = self.agent.state.project_manager.all_files
+        if project_manager:
+            await self.agent.io_channel.send(f"\nChat files ({len(project_manager)}):")
+            for file_path in project_manager:
                 await self.agent.io_channel.send(f"  - {file_path}")
         else:
             await self.agent.io_channel.send("\nNo chat files currently loaded.")

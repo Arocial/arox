@@ -44,7 +44,7 @@ async def test_rewrite_agent():
             "rewrite", toml_parser, io_adapter=io_adapter, toolsets=[local_toolset]
         )
 
-        cmds = [commands.FileCommand(agent), commands.SaveCommand(agent)]
+        cmds = [commands.ProjectCommand(agent), commands.SaveCommand(agent)]
         agent.register_commands(cmds)
 
         for msg in test_user_msg:

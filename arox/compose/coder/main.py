@@ -12,7 +12,6 @@ from arox.agent_patterns.llm_base import LLMBaseAgent
 from arox.compose.coder.state import CoderState
 from arox.compose.git_commit import GitCommitAgent
 from arox.config import TomlConfigParser
-from arox.tools import search_reading
 from arox.utils import run_command
 
 logging.basicConfig(level=logging.INFO)
@@ -65,17 +64,14 @@ class CoderComposer:
         coder_agent = ChatAgent(
             "coder",
             toml_parser,
-            toolsets=[local_toolset],
+            local_toolset=local_toolset,
             state_cls=CoderState,
             context={"commit_agent": self.commit_agent, "diff_agent": self.diff_agent},
             io_adapter=io_adapter_factory(),
         )
 
-        sr_tool = search_reading.SearchReading(coder_agent.state)
-        local_toolset.add_function(sr_tool.add_files)
-
         coder_commands = [
-            commands.FileCommand(coder_agent),
+            commands.ProjectCommand(coder_agent),
             commands.ModelCommand(coder_agent),
             commands.InvokeToolCommand(coder_agent),
             commands.ListToolCommand(coder_agent),

@@ -1,4 +1,3 @@
-import copy
 import json
 import logging
 import re
@@ -8,9 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from pydantic_ai import (
-    AbstractToolset,
     Agent,
     AgentRunResult,
+    FunctionToolset,
     ModelSettings,
     mcp,
 )
@@ -33,7 +32,7 @@ class LLMBaseAgent:
         name,
         config_parser,
         io_adapter: AbstractIOAdapter,
-        toolsets: list[AbstractToolset] = [],
+        local_toolset: FunctionToolset | None = None,
         state_cls=SimpleState,
         context={},
     ):
@@ -54,7 +53,8 @@ class LLMBaseAgent:
             tmpf.flush()
             self.mcp_servers = mcp.load_mcp_servers(tmpf.name)
 
-        toolsets = copy.copy(toolsets)
+        self.local_toolset = local_toolset
+        toolsets = [local_toolset] if local_toolset else []
         for mcp_server in self.mcp_servers:
             c = mcp_server_configs.get(mcp_server.id, {})
             if c.get("tool_allowlist"):
@@ -73,6 +73,11 @@ class LLMBaseAgent:
             toolsets=toolsets,
             deps_type=AgentDeps,
         )
+
+    def add_local_tool(self, func):
+        if not self.local_toolset:
+            self.local_toolset = FunctionToolset()
+        self.local_toolset.add_function(func)
 
     def set_model(self, model_ref: str):
         self.model_ref = model_ref
