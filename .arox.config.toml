@@ -1,2 +1,15 @@
 [composer.coder]
 pre_commit_cmd = "tools/lint"
+
+[mcp_servers.python_language_server]
+# https://github.com/isaacphi/mcp-language-server
+command = "mcp-language-server"
+args = [
+     "--workspace",
+     ".",
+     "--lsp",
+     "basedpyright-langserver",
+     "--",
+     "--stdio",
+]
+env = {LOG_LEVEL = "ERROR"}
