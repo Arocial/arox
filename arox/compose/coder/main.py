@@ -11,6 +11,7 @@ from arox.agent_patterns.chat import ChatAgent
 from arox.compose.coder.state import CoderState
 from arox.compose.git_commit import GitCommitAgent
 from arox.config import TomlConfigParser
+from arox.tools.shell import Shell
 from arox.utils import run_command
 
 logging.basicConfig(level=logging.INFO)
@@ -61,6 +62,8 @@ class CoderComposer:
             context={"commit_agent": self.commit_agent},
             io_adapter=io_adapter_factory(),
         )
+        shell_tool = Shell(coder_agent.workspace.absolute())
+        shell_tool.register_tool(coder_agent)
 
         coder_commands = [
             commands.ProjectCommand(coder_agent),

@@ -1,4 +1,5 @@
 from typing import Any
+
 import yaml
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
