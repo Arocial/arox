@@ -13,3 +13,4 @@ args = [
      "--stdio",
 ]
 env = {LOG_LEVEL = "ERROR"}
+tool_allowlist = ["definition", "references"]
