@@ -9,7 +9,9 @@ from pydantic_ai import (
     AgentStreamEvent,
     ModelMessage,
     ModelRequest,
+    PartEndEvent,
     RunContext,
+    TextPart,
     UserPromptPart,
 )
 
@@ -107,16 +109,12 @@ class ChatFiles:
         self.clear_pending()
         return file_content, fpaths
 
-    async def update_contents(self, agent, input_content):
+    async def update_contents(self, output):
         """Parse LLM output for file edit operations and execute them.
 
         Args:
             output: LLM output containing xml tags like <replace_in_file> and <write_to_file>
         """
-        # Access result through the state property
-        if agent.state.result is None:
-            return
-        output = agent.state.result.output
         tags = ["replace_in_file", "write_to_file"]
         tags_re = f"{'|'.join(tags)}"
         pattern = rf'^<({tags_re})\s+path="([^"]+)">\n?(.*?)\n?^</\1>$'
@@ -148,7 +146,6 @@ class SimpleState:
         self.workspace = self.agent.workspace
         diff_agent = self.agent.context.get("diff_agent")
         self.chat_files = ChatFiles(agent, self.workspace, diff_agent)
-        self.agent.add_after_step_hook(self.chat_files.update_contents)
         self._result = None
         self.reset()
 
@@ -215,4 +212,6 @@ class SimpleState:
         self, ctx: RunContext, events: AsyncIterable[AgentStreamEvent]
     ):
         async for event in events:
+            if isinstance(event, PartEndEvent) and isinstance(event.part, TextPart):
+                self.chat_files.update_contents(event.part.content)
             await ctx.deps.io_channel.send(event)
