@@ -17,5 +17,5 @@ class CoderTUI(TUIByIO):
 
 class CoderTextUI:
     def run(self):
-        composer = CoderComposer(TextIOAdapter.factory())
+        composer = CoderComposer(TextIOAdapter)
         asyncio.run(composer.run())

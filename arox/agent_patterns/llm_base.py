@@ -39,7 +39,6 @@ class LLMBaseAgent:
         self.uuid = str(uuid.uuid4())
         self.name = name
         self.context = context
-        self.io_channel = IOChannel(adapter=io_adapter)
         self.model_ref = None
         self.additional_prompt = ""
 
@@ -73,6 +72,9 @@ class LLMBaseAgent:
             toolsets=toolsets,
             deps_type=AgentDeps,
         )
+        self.io_adapter = io_adapter
+        self.io_channel = IOChannel(adapter=io_adapter)
+        self.io_adapter.setup(self)
 
     def add_local_tool(self, func):
         if not self.local_toolset:

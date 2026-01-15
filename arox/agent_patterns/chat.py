@@ -24,6 +24,7 @@ class ChatAgent(LLMBaseAgent):
         )
 
         self.command_manager = CommandManager(self)
+        self.io_adapter.setup(self)
 
     def register_commands(self, cmds: list[commands.Command]):
         self.command_manager.register_commands(cmds)

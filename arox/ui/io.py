@@ -18,10 +18,14 @@ from pydantic_ai import (
     ToolCallPartDelta,
 )
 
+from arox.commands import CommandCompleter
 from arox.utils import user_input_generator
 
 
 class AbstractIOAdapter(ABC):
+    def setup(self, agent):
+        pass
+
     @abstractmethod
     async def handle_output_stream(self, output_stream_out):
         pass
@@ -66,12 +70,16 @@ class IOChannel:
 
 
 class TextIOAdapter(AbstractIOAdapter):
-    def __init__(self, user_input=user_input_generator):
-        self.user_input = user_input
+    def setup(self, agent):
+        if hasattr(agent, "command_manager"):
+            completer = CommandCompleter(agent.command_manager)
 
-    @classmethod
-    def factory(cls, user_input=user_input_generator):
-        return lambda: cls(user_input=user_input)
+            def user_input():
+                return user_input_generator(completer=completer)
+
+            self.user_input = user_input
+        else:
+            self.user_input = user_input_generator
 
     async def _handle_output(self, event):
         if isinstance(event, PartStartEvent):
