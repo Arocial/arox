@@ -7,13 +7,10 @@ import git
 
 from arox.agent_patterns.llm_base import LLMBaseAgent
 from arox.codebase.file_edit import FileEdit
-
-logger = logging.getLogger(__name__)
-
-DEFAULT_READ_LIMIT = 2000
-MAX_LINE_LENGTH = 2000
-MAX_BYTES = 50 * 1024
-
+from arox.utils import (
+    DEFAULT_READ_LIMIT,
+    truncate_content,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,46 +120,21 @@ class ProjectManager:
         try:
             lines = self._read_raw(path)
 
-            total_lines = len(lines)
+            truncated = truncate_content(lines, offset, limit)
+            content_lines = truncated["lines"]
+            last_read_line = truncated["last_read_line"]
 
-            # Clamp offset and calculate end
-            offset = max(0, min(offset, total_lines))
-            end = min(total_lines, offset + limit)
-
-            raw = []
-            bytes_count = 0
-            truncated_by_bytes = False
-            last_read_line = offset
-
-            for i in range(offset, end):
-                line = lines[i].rstrip("\n\r")
-                if len(line) > MAX_LINE_LENGTH:
-                    line = line[:MAX_LINE_LENGTH] + "..."
-
-                # Estimate bytes for the line + newline
-                line_bytes = len(line.encode("utf-8")) + (1 if raw else 0)
-                if bytes_count + line_bytes > MAX_BYTES:
-                    truncated_by_bytes = True
-                    break
-
-                raw.append(line)
-                bytes_count += line_bytes
-                last_read_line = i + 1
-
-            content_lines = raw
             if content_lines:
                 result["content"] = (
                     f"<file path={path}>\n{'\n'.join(content_lines)}\n</file>\n"
                 )
 
-            has_more_lines = total_lines > last_read_line
-
-            if truncated_by_bytes:
+            if truncated["truncated_by_bytes"]:
                 result["truncated"] = (
-                    f"Output truncated at {MAX_BYTES} bytes. "
+                    f"Output truncated at {truncated['max_bytes']} bytes. "
                     f"Use 'offset' parameter to read beyond line {last_read_line}"
                 )
-            elif has_more_lines:
+            elif truncated["has_more_lines"]:
                 result["truncated"] = (
                     f"File has more lines. "
                     f"Use 'offset' parameter to read beyond line {last_read_line}"
