@@ -1,7 +1,6 @@
 import logging
 
 # https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/read.ts
-import re
 from pathlib import Path
 
 import git
@@ -26,6 +25,9 @@ class ProjectManager:
         self._pending_files: dict[str, str] = {}
         self.session_files = []
         self.agent.add_local_tool(self.read)
+        edit_tool = FileEdit()
+        self.agent.add_local_tool(edit_tool.replace_in_file)
+        self.agent.add_local_tool(edit_tool.write_to_file)
 
         self._pending_project_file_list = False
 
@@ -81,13 +83,18 @@ class ProjectManager:
     def consume_pending(self) -> str:
         result = ""
         if self._pending_files:
-            result += "User added following files for reference:\n" + (
-                "\n".join(
-                    [
-                        f"<file path={path}>\n{content}\n</file>\n"
-                        for path, content in self._pending_files.items()
-                    ]
-                )) + "\n"
+            result += (
+                "User added following files for reference:\n"
+                + (
+                    "\n".join(
+                        [
+                            f"<file path={path}>\n{content}\n</file>\n"
+                            for path, content in self._pending_files.items()
+                        ]
+                    )
+                )
+                + "\n"
+            )
             self._pending_files = {}
 
         if self._pending_project_file_list:
@@ -100,23 +107,21 @@ class ProjectManager:
 
     def read(
         self,
-        file_path: str,
+        path: str,
         offset: int = 0,
         limit: int = DEFAULT_READ_LIMIT,
     ) -> dict[str, str]:
         """Reads a file from the local filesystem.
+        It's better to read multiple files as a batch that are potentially useful.
 
         Args:
-            file_path: The path to the file to read.
+            path: The path to the file to read.
             offset: The line number to start reading from (0-based).
             limit: The number of lines to read (defaults to 2000).
-
-        Notes:  You have the capability to call multiple tools in a single response. It is always better to speculatively read multiple files as a batch that are potentially useful.
-
         """
-        result = {"file_name": file_path}
+        result = {"file_name": path}
         try:
-            lines = self._read_raw(file_path)
+            lines = self._read_raw(path)
 
             total_lines = len(lines)
 
@@ -146,7 +151,9 @@ class ProjectManager:
 
             content_lines = raw
             if content_lines:
-                result["content"] = f'<file path={file_path}>\n{"\n".join(content_lines)}\n</file>\n'
+                result["content"] = (
+                    f"<file path={path}>\n{'\n'.join(content_lines)}\n</file>\n"
+                )
 
             has_more_lines = total_lines > last_read_line
 
@@ -161,11 +168,11 @@ class ProjectManager:
                     f"Use 'offset' parameter to read beyond line {last_read_line}"
                 )
 
-            self._add_to_session(file_path)
+            self._add_to_session(path)
             return result
 
         except Exception as e:
-            logger.error(f"Error reading file {file_path}: {str(e)}")
+            logger.error(f"Error reading file {path}: {str(e)}")
             result["error"] = f"Error reading file: {str(e)}"
             return result
 
@@ -230,19 +237,3 @@ class ProjectManager:
         except Exception:
             # If we can't read it or stat it, treat it as binary/unreadable
             return True
-
-    async def update_contents(self, output, diff_agent):
-        """Parse LLM output for file edit operations and execute them.
-
-        Args:
-            output: LLM output containing xml tags like <replace_in_file> and <write_to_file>
-        """
-        file_tool = FileEdit(diff_agent)
-        tags = ["replace_in_file", "write_to_file"]
-        tags_re = f"{'|'.join(tags)}"
-        pattern = rf'^<({tags_re})\s+path="([^"]+)">\n?(.*?)\n?^</\1>$'
-        matches = re.findall(pattern, output, re.DOTALL | re.MULTILINE)
-        for m in matches:
-            method_str, path, content = m[0], m[1], m[2]
-            method = getattr(file_tool, method_str)
-            await method(path, content)

@@ -8,7 +8,6 @@ from pydantic_ai import FunctionToolset
 
 from arox import agent_patterns, commands, config
 from arox.agent_patterns.chat import ChatAgent
-from arox.agent_patterns.llm_base import LLMBaseAgent
 from arox.compose.coder.state import CoderState
 from arox.compose.git_commit import GitCommitAgent
 from arox.config import TomlConfigParser
@@ -53,20 +52,13 @@ class CoderComposer:
         )
         self.commit_agent = git_commit_agent
 
-        diff_agent = LLMBaseAgent(
-            "smart-diff",
-            toml_parser,
-            io_adapter=io_adapter_factory(),
-        )
-        self.diff_agent = diff_agent
-
         local_toolset = FunctionToolset()
         coder_agent = ChatAgent(
             "coder",
             toml_parser,
             local_toolset=local_toolset,
             state_cls=CoderState,
-            context={"commit_agent": self.commit_agent, "diff_agent": self.diff_agent},
+            context={"commit_agent": self.commit_agent},
             io_adapter=io_adapter_factory(),
         )
 
@@ -113,10 +105,8 @@ class CoderComposer:
         async with contextlib.AsyncExitStack() as stack:
             await stack.enter_async_context(self.coder_agent.io_channel)
             await stack.enter_async_context(self.commit_agent.io_channel)
-            await stack.enter_async_context(self.diff_agent.io_channel)
 
             await self.commit_agent.show_agent_info()
-            await self.diff_agent.show_agent_info()
             await self.coder_agent.show_agent_info()
             await self.coder_agent.start()
 
