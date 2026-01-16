@@ -19,7 +19,8 @@ class ProjectManager:
     def __init__(self, agent: LLMBaseAgent):
         self.workspace = agent.workspace
         self.agent = agent
-        self._pending_files: dict[str, str] = {}
+        self._pending_text_files: dict[str, str] = {}
+        self._pending_binary_files: dict[str, bytes] = {}
         self.session_files = []
         self.agent.add_local_tool(self.read)
         edit_tool = FileEdit()
@@ -69,38 +70,48 @@ class ProjectManager:
     async def read_by_user(self, file_paths: list[str]):
         for file_path in file_paths:
             try:
-                lines = self._read_raw(file_path)
-                self._pending_files[file_path] = "".join(lines)
+                path = self._normalize_path(file_path)
+                if self._is_binary_file(path):
+                    with open(path, "rb") as f:
+                        self._pending_binary_files[file_path] = f.read()
+                else:
+                    lines = self._read_raw(file_path)
+                    self._pending_text_files[file_path] = "".join(lines)
                 self._add_to_session(file_path)
             except Exception as e:
                 await self.agent.io_channel.send(
                     f"Error reading file {file_path}: {str(e)}"
                 )
 
-    def consume_pending(self) -> str:
-        result = ""
-        if self._pending_files:
-            result += (
+    def consume_pending(self) -> tuple[str, dict[str, bytes]]:
+        text_result = ""
+        if self._pending_text_files:
+            text_result += (
                 "User added following files for reference:\n"
                 + (
                     "\n".join(
                         [
                             f"<file path={path}>\n{content}\n</file>\n"
-                            for path, content in self._pending_files.items()
+                            for path, content in self._pending_text_files.items()
                         ]
                     )
                 )
                 + "\n"
             )
-            self._pending_files = {}
+            self._pending_text_files = {}
 
         if self._pending_project_file_list:
             file_list = "\n".join(self._get_tracked_files())
             if file_list:
-                result += f"\nFiles tracked in VC of current project:\n{file_list}\n"
+                text_result += (
+                    f"\nFiles tracked in VC of current project:\n{file_list}\n"
+                )
             self._pending_project_file_list = False
 
-        return result
+        binary_result = self._pending_binary_files
+        self._pending_binary_files = {}
+
+        return text_result, binary_result
 
     def read(
         self,
