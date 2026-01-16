@@ -21,10 +21,15 @@ class CommandManager:
 
         command = self.command_map.get(c_name)
         if command:
-            if asyncio.iscoroutinefunction(command.execute):
-                await command.execute(c_name, c_arg)
-            else:
-                command.execute(c_name, c_arg)
+            try:
+                if asyncio.iscoroutinefunction(command.execute):
+                    await command.execute(c_name, c_arg)
+                else:
+                    command.execute(c_name, c_arg)
+            except Exception as e:
+                await self.agent.io_channel.send(
+                    f"Error executing command {c_name}: {e}"
+                )
         else:
             await self.agent.io_channel.send(f"Command not found: {user_input}")
         return True
