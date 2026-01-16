@@ -14,7 +14,6 @@ from arox.config import TomlConfigParser
 from arox.tools.shell import Shell
 from arox.utils import run_command
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -115,6 +114,15 @@ class CoderComposer:
 
 
 def main():
+    log_dir = Path(".arox")
+    log_dir.mkdir(exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        filename=log_dir / "agents.log",
+        filemode="a",
+    )
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--ui",

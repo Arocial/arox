@@ -17,6 +17,7 @@ def init(config_parser):
 def setup_llm_observability(conf):
     if conf.observability.enable:
         logfire.configure(
+            console=False,
             send_to_logfire=conf.observability.logfire,
             scrubbing=conf.observability.scrubbing,
         )

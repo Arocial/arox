@@ -3,14 +3,10 @@ pre_commit_cmd = "tools/lint"
 
 [mcp_servers.python_language_server]
 # https://github.com/isaacphi/mcp-language-server
-command = "mcp-language-server"
+command = "bash"
 args = [
-     "--workspace",
-     ".",
-     "--lsp",
-     "basedpyright-langserver",
-     "--",
-     "--stdio",
+     "-c",
+     "mkdir -p .arox; mcp-language-server --workspace . --lsp basedpyright-langserver -- --stdio 2>> .arox/mcp.log",
 ]
 env = {LOG_LEVEL = "ERROR"}
 tool_allowlist = ["definition", "references"]
