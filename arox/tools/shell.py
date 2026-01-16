@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from arox.agent_patterns.llm_base import LLMBaseAgent
+from arox.utils import truncate_content
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,13 @@ class Shell:
                 if output:
                     output += "\n"
                 output += stderr_output
+
+            # Truncate output if it's too large
+            lines = output.splitlines()
+            truncated = truncate_content(lines)
+            output = "\n".join(truncated["lines"])
+            if truncated["truncated_by_bytes"] or truncated["has_more_lines"]:
+                output += f"\n\n[Output truncated due to size limits. Total lines: {len(lines)}]"
 
             # Add return code information
             if process.returncode != 0:
