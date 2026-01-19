@@ -76,10 +76,10 @@ class LLMBaseAgent:
         self.io_channel = IOChannel(adapter=io_adapter)
         self.io_adapter.setup(self)
 
-    def add_local_tool(self, func):
+    def add_local_tool(self, func, **kwargs):
         if not self.local_toolset:
             self.local_toolset = FunctionToolset()
-        self.local_toolset.add_function(func)
+        self.local_toolset.add_function(func, **kwargs)
 
     def set_model(self, model_ref: str):
         self.model_ref = model_ref

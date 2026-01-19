@@ -22,8 +22,8 @@ class ProjectManager:
         self.session_files = []
         self.agent.add_local_tool(self.read)
         edit_tool = FileEdit()
-        self.agent.add_local_tool(edit_tool.replace_in_file)
-        self.agent.add_local_tool(edit_tool.write_to_file)
+        self.agent.add_local_tool(edit_tool.replace_in_file, sequential=True)
+        self.agent.add_local_tool(edit_tool.write_to_file, sequential=True)
 
         self._pending_project_file_list = False
 
