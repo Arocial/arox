@@ -1,6 +1,4 @@
 import logging
-
-# https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/read.ts
 from pathlib import Path
 
 import git
@@ -28,6 +26,18 @@ class ProjectManager:
         self.agent.add_local_tool(edit_tool.write_to_file)
 
         self._pending_project_file_list = False
+
+        # Auto read agents.md or agent.md if present (case-insensitive)
+        for item in self.workspace.iterdir():
+            if item.is_file() and item.name.lower() in ("agents.md", "agent.md"):
+                try:
+                    self._pending_text_files[item.name] = "".join(
+                        self._read_raw(item.name)
+                    )
+                    self._add_to_session(item.name)
+                    break
+                except Exception:
+                    pass
 
     def _get_tracked_files(self):
         try:
@@ -113,6 +123,7 @@ class ProjectManager:
 
         return text_result, binary_result
 
+    # https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/read.ts
     def read(
         self,
         path: str,
