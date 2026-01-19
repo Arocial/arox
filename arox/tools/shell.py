@@ -50,6 +50,9 @@ class Shell:
 
     def _get_linux_sandboxed_cmd(self, command: str) -> list[str]:
         workspace_str = str(self.workspace_dir)
+        home_dir = Path.home()
+        home_str = str(home_dir)
+
         bwrap_args = [
             self.bwrap_path,
             "--ro-bind",
@@ -71,14 +74,32 @@ class Shell:
             "--tmpfs",
             "/tmp",
             "--bind",
+            home_str,
+            home_str,
+            "--bind",
             workspace_str,
             workspace_str,
-            "--chdir",
-            workspace_str,
-            "--unshare-all",
-            "--share-net",
-            "--die-with-parent",
         ]
+
+        # Mask sensitive directories/files in home
+        sensitive_paths = [
+            ".ssh",
+            ".gnupg",
+        ]
+        for p in sensitive_paths:
+            full_path = home_dir / p
+            if full_path.exists():
+                bwrap_args.extend(["--tmpfs", str(full_path)])
+
+        bwrap_args.extend(
+            [
+                "--chdir",
+                workspace_str,
+                "--unshare-all",
+                "--share-net",
+                "--die-with-parent",
+            ]
+        )
 
         if os.path.exists("/lib64"):
             bwrap_args.extend(["--ro-bind", "/lib64", "/lib64"])
