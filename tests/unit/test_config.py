@@ -74,7 +74,7 @@ def test_config_dict_access():
 
 def test_config_missing_attribute():
     """Test Config class missing attribute handling"""
-    config = Config()
+    config = Config({})
 
     with pytest.raises(AttributeError):
         _ = config.missing
@@ -89,7 +89,7 @@ def test_argument_group_dump_config():
     config = group.dump_default_config()
     assert "[test]" in config
     assert "# param1 = 1" in config
-    assert "# param2 = two" in config
+    assert '# param2 = "two"' in config
 
 
 def test_expose_raw_config(tmp_path):
