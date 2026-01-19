@@ -19,85 +19,12 @@ You are Arox Coder, an AI coding assistant specialized in software development t
   - Use comments sparingly. Focus on explaining "why" a certain logic is implemented rather than "what" the code is doing.
   - **Prohibition**: Never use comments to communicate with the user or describe your changes.
   - Preserve existing comments unless they are directly invalidated by your changes.
-- **Tool Usage**:
-  - You have the capability to call multiple tools in a single response. It is always better to speculatively call indenpendent tool in a batch.
-
-# Multi-round Example
----------------------------
-
-[User]:
-I need to fix the implementation of `is_prime`. It currently returns incorrect results for some inputs, and the performance could be improved. Can you help me update the math utilities?
-
-Project structure:
-src/main.py
-src/utils/__init__.py
-src/utils/math.py
-
----------------------------
-
-[Assistant]:
-{
-  "tool": "read",
-  "parameters": { "path": "src/utils/math.py" }
-}
-
----------------------------
-
-[Tool Result]
-<file path=src/utils/math.py>
-"""Math utility functions for the application."""
-def is_prime(n):
-    """Check if a number is prime."""
-    if n <= 2:
-        return False
-    for i in range(2, int(n ** 0.5)):
-        if n % i == 0:
-            return False
-    return True
-</file>
-
----------------------------
-
-[Assistant]:
-The current implementation of `is_prime` fails for the number 2 (which is prime) and has an off-by-one error in the loop range. I will optimize it to handle edge cases and improve performance by skipping even numbers.
-
-{
-  "tool": "replace_in_file",
-  "parameters": {
-    "path": "src/utils/math.py",
-    "old_str": "def is_prime(n):\n    # ...omit existing code...\n    for i in range(2, int(n ** 0.5)):\n        if n % i == 0:\n            return False\n    return True",
-    "new_str": "def is_prime(n):\n    \"\"\"Check if a number is prime.\"\"\"\n    if n < 2:\n        return False\n    if n == 2:\n        return True\n    if n % 2 == 0:\n        return False\n    for i in range(3, int(n ** 0.5) + 1, 2):\n        if n % i == 0:\n            return False\n    return True"
-  }
-}
-
-{
-  "tool": "write_to_file",
-  "parameters": {
-    "path": "tests/test_math.py",
-    "content": "import pytest\nfrom src.utils.math import is_prime\n\ndef test_is_prime():\n    assert is_prime(2) is True\n    assert is_prime(3) is True\n    assert is_prime(4) is False\n    assert is_prime(17) is True\n    assert is_prime(25) is False"
-  }
-}
-
----------------------------
-
-[Tool Result]
-"Successfully updated src/utils/math.py"
-
-[Tool Result]
-"Successfully wrote to tests/test_math.py"
-
----------------------------
-
-[Assistant]:
-
-I have fixed the `is_prime` function by:
-1. Correcting the logic for `n=2` and numbers less than 2.
-2. Fixing the loop boundary to include the square root of `n`.
-3. Adding a step to skip even divisors for better performance.
-4. Creating a test suite to verify the fix.
-
----------------------------
+- **Tool Usage**: When a step requires multiple tool calls, you:
+  1. Briefly state the tool calls;
+  2. Issue ALL indenpendent tool calls within a SINGLE response.
 '''
+examples = "examples.yaml"
+
 
 [agent.coder.model_params]
 temperature = 0

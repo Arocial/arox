@@ -9,10 +9,7 @@ logger = logging.getLogger(__name__)
 
 class FileEdit:
     async def write_to_file(self, path: str, content: str) -> str:
-        """Write content to a file at the specified path.
-
-        If the file exists, it will be overwritten. If the file doesn't exist, it will be created.
-        Use this tool to create new files or completely replace the content of an existing file.
+        """Create or overwrite a file.
 
         Args:
             path: The path of the file to write to.
@@ -30,22 +27,23 @@ class FileEdit:
             return f"Error writing to file: {str(e)}"
 
     async def replace_in_file(self, path: str, old_str: str, new_str: str) -> str:
-        """Replace the first occurrence of a specific code block in an existing file.
-
-        This tool searches for `old_str` in the file and replaces it with `new_str`.
-        It is designed to be robust by supporting both exact matches and fuzzy matches.
+        """Searches for `old_str` in the file and replaces it with `new_str`.
 
         Args:
             path: The path of the file to modify.
             old_str: The block of code to be replaced.
                 - It must be unique enough to identify the correct section.
                 - It should include enough context (lines before and after) to ensure a correct match.
-                - You can use "...omit existing code..." on a line by itself to represent
+                - Prefer use "...omit lines..." on a line by itself to represent
                   uninterrupted code between a prefix and a suffix as long as the correct section
                   can be uniquely identified.
+                Example:
+                    old_str:
+                        def my_func():
+                            ...omit lines...
+                            return True
             new_str: The full replacement text.
                 - This will completely replace the content matched by `old_str`.
-                - Do NOT use placeholders like "...omit existing code..." in `new_str`.
 
         Returns:
             str: A success message if the replacement was successful, or an error message
@@ -59,7 +57,7 @@ class FileEdit:
             orig_content = file_path.read_text()
             content = orig_content
 
-            # Check if search_part contains ...omit existing code...
+            # Check if search_part contains ...omit lines...
             m, start_pos, end_pos = self._find_with_placeholder(content, old_str)
             if m:
                 content = content[:start_pos] + new_str + content[end_pos:]
@@ -91,14 +89,14 @@ class FileEdit:
 
     def _match_placeholder(self, content):
         return re.search(
-            r"^[^a-zA-Z]*" + re.escape("...omit existing code...") + r"[^a-zA-Z]*$",
+            r"^[^a-zA-Z]*" + re.escape("...omit lines...") + r"[^a-zA-Z]*$",
             content,
             re.MULTILINE,
         )
 
     def _find_with_placeholder(self, content: str, search_pattern: str) -> tuple:
         """
-        Find content matching a pattern with ...omit existing code...
+        Find content matching a pattern with ...omit lines...
         Returns (matched_text, start_pos, end_pos) or None if not found.
         """
         m = self._match_placeholder(search_pattern)

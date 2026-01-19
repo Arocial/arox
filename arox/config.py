@@ -63,6 +63,7 @@ class TomlConfigParser:
         self.parsed = Config({})
         self.default_group_name = "DEFAULT"
         self.default_group = self.add_argument_group(self.default_group_name)
+        self.add_argument("config_dirs", default=[])
         # Define network proxy settings group
         proxy_group = self.add_argument_group(
             "network_proxy", help="Network proxy settings"
@@ -74,6 +75,15 @@ class TomlConfigParser:
         proxy_group.add_argument("port", default=None, help="Proxy port number")
         self.config_files = config_files
         self.override_configs = override_configs
+        self.config_dirs = []
+
+    def find_config(self, fpath: Path) -> Path | None:
+        if fpath.is_absolute():
+            return fpath
+        for dir in self.config_dirs:
+            if (dir / fpath).exists():
+                return dir / fpath
+        return None
 
     def parse_args(self):
         self.load_config()
@@ -117,11 +127,13 @@ class TomlConfigParser:
         """
         search_paths = []
         if self.config_files:
-            search_paths.extend(self.config_files)
+            search_paths.extend([Path(c) for c in self.config_files])
         home_config = Path.home() / ".config" / "arox" / "config.toml"
         search_paths.append(home_config)
         current_dir = Path.cwd()
         search_paths.append(current_dir / ".arox.config.toml")
+
+        self.config_dirs = [f.parent for f in search_paths]
 
         config = {}
         for path in search_paths:

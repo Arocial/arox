@@ -1,11 +1,14 @@
 import logging
 from collections.abc import AsyncIterable
+from pathlib import Path
 
 from pydantic_ai import (
     AgentStreamEvent,
     ModelMessage,
     RunContext,
 )
+
+from arox.agent_patterns.example_parser import parse_example_yaml
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +20,15 @@ class SimpleState:
     ):
         self.agent = agent
         self.system_prompt = self.agent.system_prompt
+        self.example_messages = []
+
+        examples_file = getattr(self.agent.agent_config, "examples", None)
+        if examples_file:
+            examples_path = self.agent.config_parser.find_config(Path(examples_file))
+            if examples_path:
+                with open(examples_path, "r") as f:
+                    self.example_messages = parse_example_yaml(f.read())
+
         self.workspace = self.agent.workspace
         self._result = None
         self.reset()
@@ -33,6 +45,8 @@ class SimpleState:
     def message_history(self):
         if self.result:
             return self.result.all_messages()
+        elif self.example_messages:
+            return self.example_messages
         else:
             return None
 
