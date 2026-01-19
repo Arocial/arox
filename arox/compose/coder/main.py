@@ -127,7 +127,7 @@ def main():
     parser.add_argument(
         "--ui",
         choices=["tui", "textui"],
-        default="tui",
+        default="textui",
         help="UI interface to use (tui or textui)",
     )
     args = parser.parse_args()
