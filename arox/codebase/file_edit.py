@@ -33,15 +33,6 @@ class FileEdit:
             path: The path of the file to modify.
             old_str: The block of code to be replaced.
                 - It must be unique enough to identify the correct section.
-                - It should include enough context (lines before and after) to ensure a correct match.
-                - Prefer use "...omit lines..." on a line by itself to represent
-                  uninterrupted code between a prefix and a suffix as long as the correct section
-                  can be uniquely identified.
-                Example:
-                    old_str:
-                        def my_func():
-                            ...omit lines...
-                            return True
             new_str: The full replacement text.
                 - This will completely replace the content matched by `old_str`.
 
