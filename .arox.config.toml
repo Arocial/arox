@@ -1,5 +1,4 @@
 [composer.coder]
-pre_commit_cmd = "tools/lint"
 
 [mcp_servers.python_language_server]
 # https://github.com/isaacphi/mcp-language-server
