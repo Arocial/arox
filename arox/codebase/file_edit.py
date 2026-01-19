@@ -7,6 +7,9 @@ from rapidfuzz import fuzz
 logger = logging.getLogger(__name__)
 
 
+_alnum_regex = re.compile(r"(?ui)\W")
+
+
 class FileEdit:
     async def write_to_file(self, path: str, content: str) -> str:
         """Create or overwrite a file.
@@ -56,15 +59,7 @@ class FileEdit:
                 if old_str in content:
                     content = content.replace(old_str, new_str, 1)
                 else:
-                    align = fuzz.partial_ratio_alignment(old_str, content)
-                    if align and align.score > 95:
-                        content = (
-                            content[: align.dest_start]
-                            + new_str
-                            + content[align.dest_end :]
-                        )
-                    else:
-                        content = None
+                    content = self._fuzzy_replace(old_str, new_str, content)
 
             if content:
                 file_path.write_text(content)
@@ -112,3 +107,49 @@ class FileEdit:
             return content[match.start() : match.end()], match.start(), match.end()
 
         return None, None, None
+
+    def _fuzzy_replace(self, old_str: str, new_str: str, content: str) -> str | None:
+        align = fuzz.partial_ratio_alignment(old_str, content)
+        if align and align.score > 98:
+            improved_range = self._improve_fuzz_match(content, old_str, align)
+            if improved_range:
+                start, end = improved_range
+                content = content[:start] + new_str + content[end:]
+                return content
+
+    def _improve_fuzz_match(
+        self, content: str, old_str: str, align
+    ) -> tuple[int, int] | None:
+        content_lines = content.splitlines(keepends=True)
+        line_starts = []
+        curr = 0
+        for line in content_lines:
+            line_starts.append(curr)
+            curr += len(line)
+        line_starts.append(curr)
+
+        # Align start and end of fuzzy matched old str to line boundary,
+        # And try to find one candidate that matches all alnum sequence.
+        dest_start, dest_end = align.dest_start, align.dest_end
+        start_candidates = [0]
+        end_candidates = [len(content)]
+        for i in range(len(line_starts) - 1):
+            current_idx = line_starts[i]
+            next_idx = line_starts[i + 1]
+            if current_idx <= dest_start and next_idx > dest_start:
+                start_candidates = [current_idx, next_idx]
+            if current_idx < dest_end and next_idx >= dest_end:
+                end_candidates = [current_idx, next_idx]
+                break
+
+        def clean_str(sentence: str) -> str:
+            string_out = _alnum_regex.sub("", sentence)
+            return string_out.strip().lower()
+
+        for s in start_candidates:
+            for e in end_candidates:
+                matched = content[s:e]
+                if clean_str(old_str) == clean_str(matched):
+                    return s, e
+
+        return None

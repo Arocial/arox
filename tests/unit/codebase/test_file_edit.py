@@ -1,14 +1,25 @@
+import random
+import string
 import tempfile
 from pathlib import Path
 
 import pytest
-from arox.tools.file_edit import FileEdit
+
+from arox.codebase.file_edit import FileEdit
+
+original_content = """import yaml
+import os
+import sys
+from pathlib import Path
+
+def test():
+    pass"""
 
 
 class TestFileEdit:
     @classmethod
     def setup_class(cls):
-        cls.tool = FileEdit(None, None)
+        cls.tool = FileEdit()
 
     @pytest.mark.asyncio
     async def test_write_to_file_new_file(self):
@@ -54,65 +65,33 @@ class TestFileEdit:
         """Test simple content replacement"""
         with tempfile.TemporaryDirectory() as temp_dir:
             file_path = Path(temp_dir) / "test.py"
-            original_content = """import yaml
-from pathlib import Path
-
-def test():
-    pass"""
             file_path.write_text(original_content)
 
-            diff = """
-<<<<<<< SEARCH
-import yaml
-=======
-import json
->>>>>>> REPLACE
-            """
+            old_str = "import yaml"
+            new_str = "import json"
 
-            result = await self.tool.replace_in_file(str(file_path), diff)
+            result = await self.tool.replace_in_file(str(file_path), old_str, new_str)
 
             assert "Successfully updated" in result
             updated_content = file_path.read_text()
             assert "import json" in updated_content
             assert "import yaml" not in updated_content
 
-            diff2 = """
-<<<<<<< SEARCH
-import yaml
-=======
->>>>>>> REPLACE
-            """
-            result = await self.tool.replace_in_file(str(file_path), diff2)
-
-            assert "Successfully updated" in result
-            updated_content = file_path.read_text()
-            assert "import yaml" not in updated_content
-
     @pytest.mark.asyncio
     async def test_replace_in_file_with_placeholder(self):
-        """Test replacement with ...existing code... placeholder"""
+        """Test replacement with ...omit lines... placeholder"""
         with tempfile.TemporaryDirectory() as temp_dir:
             file_path = Path(temp_dir) / "test.py"
-            original_content = """import yaml
-import os
-import sys
-from pathlib import Path
-
-def test():
-    pass"""
             file_path.write_text(original_content)
 
-            diff = """<<<<<<< SEARCH
-import yaml
-# ...existing code...
-from pathlib import Path
-=======
-import json
+            old_str = """import yaml
+...omit lines...
+from pathlib import Path"""
+            new_str = """import json
 
-from pathlib import Path
->>>>>>> REPLACE"""
+from pathlib import Path"""
 
-            result = await self.tool.replace_in_file(str(file_path), diff)
+            result = await self.tool.replace_in_file(str(file_path), old_str, new_str)
 
             assert "Successfully updated" in result
             updated_content = file_path.read_text()
@@ -123,5 +102,36 @@ from pathlib import Path
     @pytest.mark.asyncio
     async def test_replace_in_file_nonexistent(self):
         """Test replacement on non-existent file"""
-        result = await self.tool.replace_in_file("/nonexistent/file.py", "some diff")
+        result = await self.tool.replace_in_file("/nonexistent/file.py", "old", "new")
         assert "File not found" in result
+
+    @pytest.mark.asyncio
+    async def test_replace_in_file_fuzzy(self):
+        """Test fuzzy content replacement with minor whitespace/case differences"""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            characters = string.ascii_letters + string.digits
+            file_path = Path(temp_dir) / "test.py"
+            random_string = original_content
+            for _ in range(10):
+                length = random.randint(0, 100)
+                line = "".join(random.choice(characters) for _ in range(length))
+                random_string = f"{random_string}\n{line}"
+
+            lines = random_string.splitlines()
+            old_strs = [
+                "\n".join(lines[1:-1]).replace("import sys", "import   sys"),
+                "\n".join(lines[1:-1]).replace("import sys", "importsys"),
+                "\n".join(lines[1:-2]) + "\n  " + lines[-2],
+                "\n".join(lines[1:-2]) + lines[-2],
+            ]
+            new_str = "replaced\n"
+
+            for old_str in old_strs:
+                file_path.write_text(random_string)
+                result = await self.tool.replace_in_file(
+                    str(file_path), old_str, new_str
+                )
+
+                assert "Successfully updated" in result
+                updated_content = file_path.read_text()
+                assert f"{lines[0]}\nreplaced\n{lines[-1]}" == updated_content
