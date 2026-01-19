@@ -23,7 +23,6 @@ def setup_llm_observability(conf):
         )
         # https://github.com/orgs/langfuse/discussions/5036#discussioncomment-15019422
         logfire.instrument_pydantic_ai(version=1)
-        logfire.instrument_httpx(capture_all=True)
 
 
 def add_agent_options(parser):
