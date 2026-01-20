@@ -39,16 +39,19 @@ def test_deep_merge_nested_structures():
 async def test_user_input_generator_quit():
     with create_pipe_input() as pipe_input:
         pipe_input.send_text("test1\n")
-        pipe_input.send_text("\x04")  # EOF (Ctrl+D)
 
-        gen = user_input_generator(
+        result = await user_input_generator(
             input=pipe_input,
             output=DummyOutput(),
         )
+        assert result == "test1"
 
-        assert await anext(gen) == "test1"
-        with pytest.raises(StopAsyncIteration):
-            await anext(gen)
+        pipe_input.send_text("\x04")  # EOF (Ctrl+D)
+        with pytest.raises(EOFError):
+            await user_input_generator(
+                input=pipe_input,
+                output=DummyOutput(),
+            )
 
 
 @pytest.mark.asyncio

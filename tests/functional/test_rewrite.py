@@ -39,15 +39,16 @@ async def test_rewrite_agent():
         async def user_input():
             return await user_input_generator(input=pipe_input)
 
-        io_adapter = TextIOAdapter(user_input=user_input)
+        io_adapter = TextIOAdapter()
         agent = ChatAgent(
-            "rewrite", toml_parser, io_adapter=io_adapter, toolsets=[local_toolset]
+            "rewrite", toml_parser, io_adapter=io_adapter, local_toolset=local_toolset
         )
-
+        io_adapter.user_input = user_input
         cmds = [commands.ProjectCommand(agent), commands.SaveCommand(agent)]
         agent.register_commands(cmds)
 
         for msg in test_user_msg:
             pipe_input.send_text(msg)
-        # TODO move run_to_end to agent?
-        await agent.io_channel.run_to_end(agent.start())
+
+        async with agent.io_channel:
+            await agent.start()
