@@ -1,4 +1,4 @@
-import asyncio
+import inspect
 
 from . import Command, CommandCompleter, parse_cmdline
 
@@ -22,7 +22,7 @@ class CommandManager:
         command = self.command_map.get(c_name)
         if command:
             try:
-                if asyncio.iscoroutinefunction(command.execute):
+                if inspect.iscoroutinefunction(command.execute):
                     await command.execute(c_name, c_arg)
                 else:
                     command.execute(c_name, c_arg)
