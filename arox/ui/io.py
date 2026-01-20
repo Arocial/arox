@@ -99,7 +99,10 @@ class TextIOAdapter(AbstractIOAdapter):
                 f"tool result: {event.tool_call_id!r} returned => {event.result.content}\n"
             )
         elif isinstance(event, FunctionToolCallEvent):
-            print(f"tool call: {event.part!r}")
+            part = event.part
+            print(
+                f"tool call: {part.tool_call_id}: {part.tool_name} args: {str(part.args)[:100]}"
+            )
         elif isinstance(event, FinalResultEvent):
             pass
         elif isinstance(event, EventNeedReply):
