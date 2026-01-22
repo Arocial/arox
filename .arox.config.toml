@@ -5,7 +5,7 @@
 command = "bash"
 args = [
      "-c",
-     "mkdir -p .arox; mcp-language-server --workspace . --lsp basedpyright-langserver -- --stdio 2>> .arox/mcp.log",
+     "mkdir -p .arox; exec mcp-language-server --workspace . --lsp basedpyright-langserver -- --stdio 2>> .arox/mcp.log",
 ]
 env = {LOG_LEVEL = "ERROR"}
 tools = {"definition" = {"tags" = ["enabled"]}, "references" = {"tags" = ["enabled"]}}
