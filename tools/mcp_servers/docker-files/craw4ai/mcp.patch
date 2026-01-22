@@ -1,0 +1,32 @@
+diff --git a/deploy/docker/mcp_bridge.py b/deploy/docker/mcp_bridge.py
+index c55ed14..c34fd4d 100644
+--- a/deploy/docker/mcp_bridge.py
++++ b/deploy/docker/mcp_bridge.py
+@@ -49,7 +49,7 @@ def _make_http_proxy(base_url: str, route):
+                 kwargs.pop(k)
+         url = base_url.rstrip("/") + path
+ 
+-        async with httpx.AsyncClient() as client:
++        async with httpx.AsyncClient(timeout=30) as client:
+             try:
+                 r = (
+                     await client.get(url, params=kwargs)
+@@ -221,13 +221,17 @@ def attach_mcp(
+     # ── SSE transport (official) ─────────────────────────────
+     sse = SseServerTransport(f"{base}/messages/")
+ 
+-    @app.get(f"{base}/sse")
+     async def _mcp_sse(request: Request):
+         async with sse.connect_sse(
+             request.scope, request.receive, request._send  # starlette ASGI primitives
+         ) as (read_stream, write_stream):
+             await mcp.run(read_stream, write_stream, init_opts)
+ 
++        async def _hacker(*args, **kwargs):
++            pass
++        return _hacker
++
++    app.add_route(f"{base}/sse", _mcp_sse, methods=["GET"])
+     # client → server frames are POSTed here
+     app.mount(f"{base}/messages", app=sse.handle_post_message)
+ 

@@ -1,0 +1,25 @@
+{
+    "mcpServers": {
+        "web_fetch": {
+            "tools": {
+                "md": {
+                    "description": "Crawls the URL, return content as markdown.",
+                    "arguments": {
+                        "f": {"hide": true},
+                        "q": {"hide": true},
+                        "c": {"hide": true},
+                        "provider": {"hide": true},
+                        "temperature": {"hide": true},
+                        "base_url": {"hide": true}
+                    },
+                    "tags": ["enabled"]
+                }},
+            "include_tags": ["enabled"],
+            "url": "http://web-fetch:11235/mcp/sse"
+        },
+        "web_search": {
+            "url": "http://web-search:3333/mcp",
+            "tools": {"search": {"name": "google"}}
+        }
+    }
+}

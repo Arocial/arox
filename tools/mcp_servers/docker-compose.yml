@@ -1,0 +1,36 @@
+services:
+  aggregator:
+    build: ./docker-files/aggregator/
+    depends_on:
+    - web-fetch
+    - web-search
+    image: ${AGGREGATOR_IMAGE:-mcp-aggregator:${AGGREGATOR_TAG:-latest}}
+    ports:
+      - "3300:8000"
+    volumes:
+      - ./config.json:/app/config.json
+    restart: unless-stopped
+    # entrypoint: ["sleep", "10d"]
+  web-fetch:
+    build: ./docker-files/craw4ai/
+    image: ${FETCH_IMAGE:-unclecode/crawl4ai:${FETCH_TAG:-latest-fix}}
+    ports:
+      - "11235:11235"
+    volumes:
+      - /dev/shm:/dev/shm
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11235/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    user: "appuser"
+  web-search:
+    image: ${SEARCH_IMAGE:-web-search-mcp:${SEARCH_TAG:-latest}}
+    init: true
+    ports:
+      - "3333:3333"
+    volumes:
+      - ./web-search-state:/app/state
+    restart: unless-stopped
