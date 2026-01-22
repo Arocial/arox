@@ -1,6 +1,6 @@
 [composer.coder]
 
-[mcp_servers.python_language_server]
+[mcp_servers.pyls]
 # https://github.com/isaacphi/mcp-language-server
 command = "bash"
 args = [
@@ -8,4 +8,5 @@ args = [
      "mkdir -p .arox; mcp-language-server --workspace . --lsp basedpyright-langserver -- --stdio 2>> .arox/mcp.log",
 ]
 env = {LOG_LEVEL = "ERROR"}
-tool_allowlist = ["definition", "references"]
+tools = {"definition" = {"tags" = ["enabled"]}, "references" = {"tags" = ["enabled"]}}
+include_tags = ["enabled"]

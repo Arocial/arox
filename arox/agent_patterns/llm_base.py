@@ -1,3 +1,4 @@
+import contextlib
 import json
 import logging
 import re
@@ -5,7 +6,8 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-
+import fastmcp
+from pydantic_ai.toolsets.fastmcp import FastMCPToolset
 from pydantic_ai import (
     Agent,
     AgentRunResult,
@@ -44,26 +46,18 @@ class LLMBaseAgent:
 
         self.config_parser = config_parser
         self.config = self.parse_configs()
-        # Manage tool specs.
-        mcp_server_configs = self.config.mcp_servers or {}
-        self.mcp_servers = []
-        with tempfile.NamedTemporaryFile(mode="w") as tmpf:
-            json.dump({"mcpServers": mcp_server_configs}, tmpf)
-            tmpf.flush()
-            self.mcp_servers = mcp.load_mcp_servers(tmpf.name)
 
+        # Manage tools
         self.local_toolset = local_toolset
         toolsets = [local_toolset] if local_toolset else []
-        for mcp_server in self.mcp_servers:
-            c = mcp_server_configs.get(mcp_server.id, {})
-            if c.get("tool_allowlist"):
-                toolsets.append(
-                    mcp_server.filtered(
-                        lambda ctx, tool_def: tool_def.name in c["tool_allowlist"]
-                    )
-                )
-            else:
-                toolsets.append(mcp_server)
+
+        mcp_server_configs = self.config.mcp_servers
+        self.mcp_client = None
+        if mcp_server_configs:
+            self.mcp_client = fastmcp.Client({"mcpServers": mcp_server_configs})
+            mcp_toolset = FastMCPToolset(self.mcp_client)
+            toolsets.append(mcp_toolset)
+
         self.state = state_cls(self)
 
         self.pydantic_agent = Agent(
@@ -75,6 +69,16 @@ class LLMBaseAgent:
         self.io_adapter = io_adapter
         self.io_channel = IOChannel(adapter=io_adapter)
         self.io_adapter.setup(self)
+        self._stack = contextlib.AsyncExitStack()
+
+    async def __aenter__(self):
+        await self._stack.enter_async_context(self.io_channel)
+        if self.mcp_client:
+            await self._stack.enter_async_context(self.mcp_client)
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self._stack.aclose()
 
     def add_local_tool(self, func, **kwargs):
         if not self.local_toolset:

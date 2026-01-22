@@ -105,8 +105,8 @@ class CoderComposer:
 
     async def run(self):
         async with contextlib.AsyncExitStack() as stack:
-            await stack.enter_async_context(self.coder_agent.io_channel)
-            await stack.enter_async_context(self.commit_agent.io_channel)
+            await stack.enter_async_context(self.coder_agent)
+            await stack.enter_async_context(self.commit_agent)
 
             await self.commit_agent.show_agent_info()
             await self.coder_agent.show_agent_info()
