@@ -32,11 +32,18 @@ class ChatAgent(LLMBaseAgent):
     async def start(self):
         """Start the agent with optional input generator"""
         while True:
-            user_input = await self.io_channel.wait_reply(None)
-            if isinstance(user_input, EOFError):
-                break
-            if not user_input.strip():
-                continue
-            is_command = await self.command_manager.try_execute_command(user_input)
-            if not is_command:
-                await self.step(user_input)
+            try:
+                user_input = await self.io_channel.wait_reply(None)
+                if isinstance(user_input, EOFError):
+                    break
+                if not user_input.strip():
+                    continue
+                is_command = await self.command_manager.try_execute_command(user_input)
+                if not is_command:
+                    await self.step(user_input)
+            except Exception as e:
+                await self.io_channel.send(f"An error occurred: {e}")
+                await self.io_channel.send("Do you want to continue? (y/n)")
+                reply = await self.io_channel.wait_reply(None)
+                if isinstance(reply, EOFError) or reply.strip().lower() != "y":
+                    break
