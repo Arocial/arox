@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -15,11 +16,14 @@ from pydantic_ai import (
     TextPartDelta,
     ThinkingPart,
     ThinkingPartDelta,
+    ToolCallPart,
     ToolCallPartDelta,
 )
 
 from arox.commands import CommandCompleter
 from arox.utils import user_input_generator
+
+logger = logging.getLogger(__name__)
 
 
 class AbstractIOAdapter(ABC):
@@ -103,7 +107,7 @@ class TextIOAdapter(AbstractIOAdapter):
             print(
                 f"tool call: {part.tool_call_id}: {part.tool_name} args: {str(part.args)[:100]}"
             )
-        elif isinstance(event, FinalResultEvent):
+        elif isinstance(event, (FinalResultEvent, StepDoneEvent)):
             pass
         elif isinstance(event, EventNeedReply):
             try:
@@ -120,6 +124,10 @@ class TextIOAdapter(AbstractIOAdapter):
                 await self._handle_output(event)
 
 
+class StepDoneEvent:
+    pass
+
+
 class EventNeedReply:
     def __init__(self, nested_event):
         self.nested_event = nested_event
@@ -132,3 +140,130 @@ class EventNeedReply:
 
     async def wait(self):
         return await self.future
+
+
+class VercelStreamIOAdapter(AbstractIOAdapter):
+    def __init__(self):
+        self.stream_in, self.stream_out = create_memory_object_stream[str](100)
+        self.pending_reply_event = None
+        self.tool_ids = {}
+
+    async def handle_output_stream(self, output_stream_out):
+        async with output_stream_out:
+            async with self.stream_in:
+                async for event in output_stream_out:
+                    if isinstance(event, EventNeedReply):
+                        self.pending_reply_event = event
+                        try:
+                            await event.wait()
+                        except Exception:
+                            pass
+                        self.pending_reply_event = None
+                    elif isinstance(event, StepDoneEvent):
+                        await self.stream_in.send("data: [DONE]\n\n")
+                    else:
+                        formatted_events = self._format_event(event)
+                        for fmt in formatted_events:
+                            await self.stream_in.send(fmt)
+
+                await self.stream_in.send("data: [DONE]\n\n")
+
+    def _format_event(self, event) -> list[str]:
+        import json
+
+        events = []
+
+        if isinstance(event, PartStartEvent):
+            part = event.part
+            index = event.index
+
+            if isinstance(part, TextPart):
+                events.append(
+                    f"data: {json.dumps({'type': 'text-start', 'id': f'text_{index}'})}\n\n"
+                )
+                if part.content:
+                    events.append(
+                        f"data: {json.dumps({'type': 'text-delta', 'id': f'text_{index}', 'delta': part.content})}\n\n"
+                    )
+
+            elif isinstance(part, ThinkingPart):
+                events.append(
+                    f"data: {json.dumps({'type': 'reasoning-start', 'id': f'reasoning_{index}'})}\n\n"
+                )
+                if part.content:
+                    events.append(
+                        f"data: {json.dumps({'type': 'reasoning-delta', 'id': f'reasoning_{index}', 'delta': part.content})}\n\n"
+                    )
+
+            elif isinstance(part, ToolCallPart):
+                self.tool_ids[index] = part.tool_call_id
+                events.append(
+                    f"data: {json.dumps({'type': 'tool-input-start', 'toolCallId': part.tool_call_id, 'toolName': part.tool_name})}\n\n"
+                )
+                if part.args and isinstance(part.args, str):
+                    events.append(
+                        f"data: {json.dumps({'type': 'tool-input-delta', 'toolCallId': part.tool_call_id, 'inputTextDelta': part.args})}\n\n"
+                    )
+
+        elif isinstance(event, PartDeltaEvent):
+            delta = event.delta
+            index = event.index
+
+            if isinstance(delta, TextPartDelta):
+                events.append(
+                    f"data: {json.dumps({'type': 'text-delta', 'id': f'text_{index}', 'delta': delta.content_delta})}\n\n"
+                )
+
+            elif isinstance(delta, ThinkingPartDelta):
+                events.append(
+                    f"data: {json.dumps({'type': 'reasoning-delta', 'id': f'reasoning_{index}', 'delta': delta.content_delta})}\n\n"
+                )
+
+            elif isinstance(delta, ToolCallPartDelta):
+                tool_id = self.tool_ids.get(index)
+                if tool_id:
+                    events.append(
+                        f"data: {json.dumps({'type': 'tool-input-delta', 'toolCallId': tool_id, 'inputTextDelta': delta.args_delta})}\n\n"
+                    )
+
+        elif isinstance(event, PartEndEvent):
+            part = event.part
+            index = event.index
+
+            if isinstance(part, TextPart):
+                events.append(
+                    f"data: {json.dumps({'type': 'text-end', 'id': f'text_{index}'})}\n\n"
+                )
+            elif isinstance(part, ThinkingPart):
+                events.append(
+                    f"data: {json.dumps({'type': 'reasoning-end', 'id': f'reasoning_{index}'})}\n\n"
+                )
+
+        elif isinstance(event, FunctionToolCallEvent):
+            part = event.part
+            events.append(
+                f"data: {json.dumps({'type': 'tool-input-available', 'toolCallId': part.tool_call_id, 'toolName': part.tool_name, 'input': part.args})}\n\n"
+            )
+
+        elif isinstance(event, FunctionToolResultEvent):
+            events.append(
+                f"data: {json.dumps({'type': 'tool-output-available', 'toolCallId': event.tool_call_id, 'output': event.result.content})}\n\n"
+            )
+
+        elif isinstance(event, FinalResultEvent):
+            events.append(f"data: {json.dumps({'type': 'finish'})}\n\n")
+
+        return events
+
+    async def output_generator(self):
+        async for chunk in self.stream_out:
+            yield chunk
+
+    async def submit_user_input(self, text: str):
+        for _ in range(10):
+            if self.pending_reply_event:
+                self.pending_reply_event.set_reply(text)
+                return True
+            await asyncio.sleep(1)
+        logger.warning(f"No input required, ignoring: {text}")
+        return False

@@ -1,20 +1,18 @@
 import contextlib
-import json
 import logging
 import re
-import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+
 import fastmcp
-from pydantic_ai.toolsets.fastmcp import FastMCPToolset
 from pydantic_ai import (
     Agent,
     AgentRunResult,
     FunctionToolset,
     ModelSettings,
-    mcp,
 )
+from pydantic_ai.toolsets.fastmcp import FastMCPToolset
 
 from arox import utils
 from arox.agent_patterns.state import SimpleState

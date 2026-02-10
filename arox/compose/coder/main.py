@@ -126,9 +126,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--ui",
-        choices=["tui", "textui"],
+        choices=["tui", "textui", "restapi"],
         default="textui",
-        help="UI interface to use (tui or textui)",
+        help="UI interface to use (tui, textui or restapi)",
     )
     args = parser.parse_args()
 
@@ -136,6 +136,10 @@ def main():
         from arox.compose.coder.ui import CoderTUI
 
         app = CoderTUI("Coder")
+    elif args.ui == "restapi":
+        from arox.compose.coder.rest_api import CoderRestUI
+
+        app = CoderRestUI()
     else:
         from arox.compose.coder.ui import CoderTextUI
 

@@ -22,6 +22,7 @@ dependencies = [
     "logfire>=4.16.0",
     "rapidfuzz>=3.14.3",
     "fastmcp>=2.14.2",
+    "fastapi>=0.128.6",
 ]
 [project.urls]
 Homepage = "https://github.com/Arocial/arox"

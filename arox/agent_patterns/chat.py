@@ -1,7 +1,12 @@
+import logging
+
 from arox import commands
 from arox.agent_patterns.llm_base import LLMBaseAgent
 from arox.agent_patterns.state import SimpleState
 from arox.commands.manager import CommandManager
+from arox.ui.io import StepDoneEvent
+
+logger = logging.getLogger(__name__)
 
 
 class ChatAgent(LLMBaseAgent):
@@ -41,6 +46,7 @@ class ChatAgent(LLMBaseAgent):
                 is_command = await self.command_manager.try_execute_command(user_input)
                 if not is_command:
                     await self.step(user_input)
+                await self.io_channel.send(StepDoneEvent())
             except Exception as e:
                 await self.io_channel.send(f"An error occurred: {e}")
                 await self.io_channel.send("Do you want to continue? (y/n)")
