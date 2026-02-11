@@ -55,7 +55,7 @@ class IOChannel:
             await self.output_stream_in.send(event)
 
     async def wait_reply(self, event):
-        wrap_event = EventNeedReply(event)
+        wrap_event = NeedReplyEvent(event)
         await self.send(wrap_event)
         return await wrap_event.wait()
 
@@ -109,7 +109,7 @@ class TextIOAdapter(AbstractIOAdapter):
             )
         elif isinstance(event, (FinalResultEvent, StepDoneEvent)):
             pass
-        elif isinstance(event, EventNeedReply):
+        elif isinstance(event, NeedReplyEvent):
             try:
                 line = await self.user_input()
                 event.set_reply(line)
@@ -128,7 +128,7 @@ class StepDoneEvent:
     pass
 
 
-class EventNeedReply:
+class NeedReplyEvent:
     def __init__(self, nested_event):
         self.nested_event = nested_event
         loop = asyncio.get_running_loop()
@@ -152,7 +152,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         async with output_stream_out:
             async with self.stream_in:
                 async for event in output_stream_out:
-                    if isinstance(event, EventNeedReply):
+                    if isinstance(event, NeedReplyEvent):
                         self.pending_reply_event = event
                         try:
                             await event.wait()

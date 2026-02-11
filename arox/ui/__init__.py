@@ -23,7 +23,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.widgets import Collapsible, Footer, Label, ListItem, ListView, TextArea
 
-from arox.ui.io import AbstractIOAdapter, EventNeedReply
+from arox.ui.io import AbstractIOAdapter, NeedReplyEvent
 
 logger = logging.getLogger(__name__)
 
@@ -398,7 +398,7 @@ class TextualIOAdapter(AbstractIOAdapter):
             )
         elif isinstance(event, (FunctionToolCallEvent, FinalResultEvent)):
             pass
-        elif isinstance(event, EventNeedReply):
+        elif isinstance(event, NeedReplyEvent):
             reply = await self.read()
             event.set_reply(reply)
         else:
