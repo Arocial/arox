@@ -41,9 +41,28 @@ class ProjectManager:
 
     def _get_tracked_files(self):
         try:
-            repo = git.Repo(self.workspace)
-            tracked_files = repo.git.ls_files().splitlines()
-            return sorted(tracked_files)
+            repo = git.Repo(self.workspace, search_parent_directories=True)
+            if not repo.working_dir:
+                return []
+
+            repo_root = Path(repo.working_dir).resolve()
+            workspace_resolved = self.workspace.resolve()
+
+            files = repo.git.ls_files(str(workspace_resolved)).splitlines()
+
+            if repo_root == workspace_resolved:
+                return sorted(files)
+
+            normalized_files = []
+            for f in files:
+                full_path = repo_root / f
+                try:
+                    rel_path = full_path.relative_to(workspace_resolved)
+                    normalized_files.append(str(rel_path))
+                except ValueError:
+                    continue
+
+            return sorted(normalized_files)
         except (git.InvalidGitRepositoryError, git.GitCommandError) as e:
             logger.debug(f"Failed to get git tracked files: {e}")
             return []
