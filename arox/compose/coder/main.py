@@ -136,14 +136,14 @@ def main():
         from arox.compose.coder.ui import CoderTUI
 
         app = CoderTUI("Coder")
+    elif args.ui == "textui":
+        from arox.compose.coder.ui import CoderTextUI
+
+        app = CoderTextUI()
     elif args.ui == "restapi":
         from arox.compose.coder.rest_api import CoderRestUI
 
         app = CoderRestUI()
-    else:
-        from arox.compose.coder.ui import CoderTextUI
-
-        app = CoderTextUI()
 
     app.run()
 
