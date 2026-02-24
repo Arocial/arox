@@ -114,23 +114,29 @@ class CoderComposer:
 
 
 def main():
-    log_dir = Path(".arox")
-    log_dir.mkdir(exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        filename=log_dir / "agents.log",
-        filemode="a",
-    )
-
     parser = argparse.ArgumentParser()
-    parser.add_argument(
+    _ = parser.add_argument(
         "--ui",
         choices=["tui", "textui", "restapi"],
         default="textui",
         help="UI interface to use (tui, textui or restapi)",
     )
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
+
+    if args.ui == "restapi":
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        )
+    else:
+        log_dir = Path(".arox")
+        log_dir.mkdir(exist_ok=True)
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+            filename=log_dir / "agents.log",
+            filemode="a",
+        )
 
     if args.ui == "tui":
         from arox.compose.coder.ui import CoderTUI
