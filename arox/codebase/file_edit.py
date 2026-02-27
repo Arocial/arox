@@ -27,7 +27,7 @@ class FileEdit:
             file_path.write_text(content)
             return f"Successfully wrote to {file_path}"
         except Exception as e:
-            return f"Error writing to file: {str(e)}"
+            return f"Error writing to file: {e!s}"
 
     async def replace_in_file(self, path: str, old_str: str, new_str: str) -> str:
         """Searches for `old_str` in the file and replaces it with `new_str`.
@@ -69,7 +69,7 @@ class FileEdit:
             logger.info(msg)
             return msg
         except Exception as e:
-            msg = f"Error replacing in file `{path}` with exception: {str(e)}"
+            msg = f"Error replacing in file `{path}` with exception: {e!s}"
             logger.info(msg)
             return msg
 
@@ -114,8 +114,7 @@ class FileEdit:
             improved_range = self._improve_fuzz_match(content, old_str, align)
             if improved_range:
                 start, end = improved_range
-                content = content[:start] + new_str + content[end:]
-                return content
+                return content[:start] + new_str + content[end:]
 
     def _improve_fuzz_match(
         self, content: str, old_str: str, align

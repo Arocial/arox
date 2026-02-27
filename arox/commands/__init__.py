@@ -80,7 +80,7 @@ class ProjectCommand(Command):
         if name == "add":
             files = arg.split(" ")
             if not files:
-                await self.agent.io_channel.send("Please specify files.")
+                await self.agent.agent_io.agent_send("Please specify files.")
                 return
             await project_manager.read_by_user(files)
         elif name == "add_file_list":
@@ -116,7 +116,7 @@ class ModelCommand(Command):
 
     async def execute(self, name: str, new_model: str):
         if not new_model:
-            await self.agent.io_channel.send("Please specify a model name")
+            await self.agent.agent_io.agent_send("Please specify a model name")
             return
         self.agent.set_model(new_model)
 
@@ -136,9 +136,9 @@ class SaveCommand(Command):
             await self._save_content(
                 self.agent.result.output, self.tag_name, output_file
             )
-            await self.agent.io_channel.send(f"Saved to {output_file}!")
+            await self.agent.agent_io.agent_send(f"Saved to {output_file}!")
         else:
-            await self.agent.io_channel.send("Nothing to save!")
+            await self.agent.agent_io.agent_send("Nothing to save!")
 
     async def _save_content(
         self, content_msg: str, tag_name: str | None, file_name: str
@@ -155,7 +155,7 @@ class SaveCommand(Command):
         else:
             result = content_msg
         output_path = self.agent.workspace / file_name
-        await self.agent.io_channel.send(f"Saving content to {output_path}")
+        await self.agent.agent_io.agent_send(f"Saving content to {output_path}")
         with output_path.open("w") as f:
             f.write(result)
 
@@ -169,7 +169,7 @@ class InvokeToolCommand(Command):
 
         parts = arg.split(maxsplit=1)
         if len(parts) < 1:
-            await self.agent.io_channel.send(
+            await self.agent.agent_io.agent_send(
                 "Usage: /invoke-tool <function_name> [json_args]"
             )
             return
@@ -182,10 +182,10 @@ class InvokeToolCommand(Command):
             if not isinstance(args, dict):
                 raise ValueError("Arguments must be a JSON object (dictionary).")
         except json.JSONDecodeError as e:
-            await self.agent.io_channel.send(f"Error: Invalid JSON arguments: {e}")
+            await self.agent.agent_io.agent_send(f"Error: Invalid JSON arguments: {e}")
             return
         except ValueError as e:
-            await self.agent.io_channel.send(f"Error: {e}")
+            await self.agent.agent_io.agent_send(f"Error: {e}")
             return
 
         # Prepare the tool_call structure expected by execute_tool_call
@@ -197,28 +197,28 @@ class InvokeToolCommand(Command):
         }
 
         try:
-            await self.agent.io_channel.send(
+            await self.agent.agent_io.agent_send(
                 f"Invoking tool '{function_name}' with args: {args}"
             )
             result = await tool_registry.execute_tool_call(tool_call_data)
-            await self.agent.io_channel.send(
+            await self.agent.agent_io.agent_send(
                 f"Tool '{function_name}' executed successfully."
             )
-            await self.agent.io_channel.send("Result:")
-            await self.agent.io_channel.send(result)
+            await self.agent.agent_io.agent_send("Result:")
+            await self.agent.agent_io.agent_send(result)
         except ValueError as e:
-            await self.agent.io_channel.send(
+            await self.agent.agent_io.agent_send(
                 f"Error invoking tool '{function_name}': {e}"
             )
         except ConnectionError as e:
-            await self.agent.io_channel.send(
+            await self.agent.agent_io.agent_send(
                 f"Error connecting to MCP server for tool '{function_name}': {e}"
             )
         except Exception as e:
             logger.error(
                 f"Unexpected error invoking tool '{function_name}': {e}", exc_info=True
             )
-            await self.agent.io_channel.send(f"An unexpected error occurred: {e}")
+            await self.agent.agent_io.agent_send(f"An unexpected error occurred: {e}")
 
 
 class ListToolCommand(Command):
@@ -229,11 +229,11 @@ class ListToolCommand(Command):
         tool_registry = self.agent.tool_registry
         tool_specs = await tool_registry.get_tools_specs()
         if not tool_specs:
-            await self.agent.io_channel.send("No tools registered.")
+            await self.agent.agent_io.agent_send("No tools registered.")
             return
 
-        await self.agent.io_channel.send("Registered Tools:")
-        await self.agent.io_channel.send(yaml.safe_dump(tool_specs))
+        await self.agent.agent_io.agent_send("Registered Tools:")
+        await self.agent.agent_io.agent_send(yaml.safe_dump(tool_specs))
 
 
 class InfoCommand(Command):
@@ -243,16 +243,18 @@ class InfoCommand(Command):
     async def execute(self, name: str, arg: str):
         # Show current model
         current_model = getattr(self.agent, "provider_model", "Unknown")
-        await self.agent.io_channel.send(f"Current model: {current_model}")
+        await self.agent.agent_io.agent_send(f"Current model: {current_model}")
 
         # Show chat files
         project_manager = self.agent.state.project_manager.all_files
         if project_manager:
-            await self.agent.io_channel.send(f"\nChat files ({len(project_manager)}):")
+            await self.agent.agent_io.agent_send(
+                f"\nChat files ({len(project_manager)}):"
+            )
             for file_path in project_manager:
-                await self.agent.io_channel.send(f"  - {file_path}")
+                await self.agent.agent_io.agent_send(f"  - {file_path}")
         else:
-            await self.agent.io_channel.send("\nNo chat files currently loaded.")
+            await self.agent.agent_io.agent_send("\nNo chat files currently loaded.")
 
 
 class ResetCommand(Command):
@@ -261,7 +263,7 @@ class ResetCommand(Command):
 
     async def execute(self, name: str, arg: str):
         self.agent.state.reset()
-        await self.agent.io_channel.send("Reset complete.")
+        await self.agent.agent_io.agent_send("Reset complete.")
 
 
 class CommitCommand(Command):
@@ -271,6 +273,6 @@ class CommitCommand(Command):
     async def execute(self, name: str, arg: str):
         commit_agent = self.agent.context.get("commit_agent")
         if not commit_agent:
-            await self.agent.io_channel.send("No commit agent, ignoring.")
+            await self.agent.agent_io.agent_send("No commit agent, ignoring.")
         result = await commit_agent.auto_commit_changes()
-        await self.agent.io_channel.send(result)
+        await self.agent.agent_io.agent_send(result)

@@ -155,7 +155,7 @@ class Shell:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(), timeout=timeout
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 process.kill()
                 await process.wait()
                 error_msg = f"Command timed out after {timeout} seconds"
@@ -185,6 +185,6 @@ class Shell:
             return output
 
         except Exception as e:
-            error_msg = f"Error executing command: {str(e)}"
+            error_msg = f"Error executing command: {e!s}"
             logger.error(error_msg)
             return error_msg

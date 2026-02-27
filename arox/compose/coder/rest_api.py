@@ -20,8 +20,9 @@ class ChatRequest(BaseModel):
 
 class CoderRestUI:
     def __init__(self):
-        self.adapter = VercelStreamIOAdapter()
-        self.composer = CoderComposer(lambda: self.adapter)
+        self.composer = CoderComposer(VercelStreamIOAdapter)
+        # TODO(fangzhen) support all adapters
+        self.io_adapter = self.composer.coder_adapter
         self.app = FastAPI(lifespan=self.lifespan)
 
         self.app.add_middleware(
@@ -36,7 +37,6 @@ class CoderRestUI:
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
-        # Start the composer in background
         asyncio.create_task(self.composer.run())
         try:
             yield
@@ -54,7 +54,7 @@ class CoderRestUI:
                 if isinstance(part, vercel_ui_types.TextUIPart):
                     content = part.text
                     logger.info(f"Got user input: {content}")
-                    await self.adapter.submit_user_input(content)
+                    await self.io_adapter.submit_user_input(content)
                 else:
                     logger.warning("Unsupported input type.")
 
@@ -63,7 +63,7 @@ class CoderRestUI:
         )
 
     async def response_generator(self):
-        async for chunk in self.adapter.output_generator():
+        async for chunk in self.io_adapter.output_generator():
             logger.info(chunk)
             yield chunk
             if "data: [DONE]\n\n" == chunk:

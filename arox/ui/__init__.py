@@ -1,8 +1,8 @@
 import asyncio
 import inspect
 import logging
+from collections.abc import Callable, Iterable
 from enum import Enum
-from typing import Callable, Iterable, Optional
 
 from prompt_toolkit.completion import Completion
 from prompt_toolkit.history import FileHistory, History
@@ -23,7 +23,12 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.widgets import Collapsible, Footer, Label, ListItem, ListView, TextArea
 
-from arox.ui.io import AbstractIOAdapter, NeedReplyEvent
+from arox.ui.io import (
+    AbstractIOAdapter,
+    AdapterIOInterface,
+    NeedReplyEvent,
+    StepDoneEvent,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -89,9 +94,11 @@ class TUIByIO(App):
     def __init__(self, app_name):
         self.input_suggester = None
         self.app_name = app_name
-        self.io_adapter = TextualIOAdapter(self, title=app_name)
         self.follow = True
         super().__init__()
+
+    def io_adapter_fun(self, adapter_io):
+        return TextualIOAdapter(self, adapter_io)
 
     def on_mount(self) -> None:
         self.theme = "nord"
@@ -112,11 +119,12 @@ class TUIByIO(App):
         self.refresh_bindings()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        if action == "enable_follow" and self.follow:
-            return False
-        elif action == "disable_follow" and not self.follow:
-            return False
-        return True
+        return not (
+            action == "enable_follow"
+            and self.follow
+            or action == "disable_follow"
+            and not self.follow
+        )
 
     async def update_and_scroll(self, func, *args, **kwargs):
         result = func(*args, **kwargs)
@@ -163,7 +171,7 @@ class UserInput(TextArea):
         self,
         input_future,
         history: History = None,
-        suggester: Optional[Callable[[TextArea], Iterable[Completion]]] = None,
+        suggester: Callable[[TextArea], Iterable[Completion]] | None = None,
         *args,
         **kwargs,
     ):
@@ -174,7 +182,7 @@ class UserInput(TextArea):
         self.history_search_text = ""
         self.history_search_mode = False
         self.suggester = suggester
-        self.suggestion_popup: Optional[SuggestionPopup] = None
+        self.suggestion_popup: SuggestionPopup | None = None
         self.suggestions_visible = False
 
     async def _on_key(self, event: events.Key) -> None:
@@ -372,11 +380,12 @@ class CollapsibleLabel(Collapsible):
 
 
 class TextualIOAdapter(AbstractIOAdapter):
-    def __init__(self, app, title=""):
+    def __init__(self, app, adapter_io: AdapterIOInterface, title=""):
         self.app = app
         self.output_widget = None
         self.title = title
         self.current_stream_widget = None
+        self.adapter_io = adapter_io
 
     async def _handle_output(self, event):
         if isinstance(event, PartStartEvent):
@@ -396,18 +405,26 @@ class TextualIOAdapter(AbstractIOAdapter):
             await self.write(
                 f"<tool_result> {event.tool_call_id!r} returned => {event.result.content}</tool_result>\n"
             )
-        elif isinstance(event, (FunctionToolCallEvent, FinalResultEvent)):
+        elif isinstance(
+            event, (FunctionToolCallEvent, FinalResultEvent, StepDoneEvent)
+        ):
             pass
         elif isinstance(event, NeedReplyEvent):
             reply = await self.read()
-            event.set_reply(reply)
+            await self.adapter_io.adapter_send(reply)
         else:
             await self.write(f"\nUnexpected event type: {event.__class__.__name__}\n")
 
-    async def handle_output_stream(self, output_stream_out):
-        async with output_stream_out:
-            async for event in output_stream_out:
-                await self._handle_output(event)
+    async def start(self):
+        from anyio import EndOfStream
+
+        async with self.adapter_io:
+            try:
+                while True:
+                    event = await self.adapter_io.adapter_receive()
+                    await self._handle_output(event)
+            except EndOfStream:
+                pass
 
     async def read(self):
         input_future = asyncio.get_running_loop().create_future()
@@ -440,7 +457,7 @@ class TextualIOAdapter(AbstractIOAdapter):
         return user_input
 
     async def write(self, content, metadata=None):
-        output_content = f"{self.title}: {str(content)}"
+        output_content = f"{self.title}: {content!s}"
         output_widget = Label(output_content)
         await self.app.update_and_scroll(self.app.mount, output_widget)
 
@@ -501,13 +518,12 @@ def _process_xml_tags(content_str, title, app):
             )
             sub_widgets.append(output_widget)
 
-        main_collapsible = Collapsible(
+        return Collapsible(
             *sub_widgets,
             title=title,
             collapsed=False,
         )
 
-        return main_collapsible
     else:
         # If no XML tags found, return a simple CollapsibleLabel
         return CollapsibleLabel(

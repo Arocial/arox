@@ -1,4 +1,5 @@
 import argparse
+import asyncio
 import contextlib
 import logging
 import sys
@@ -12,13 +13,14 @@ from arox.compose.coder.state import CoderState
 from arox.compose.git_commit import GitCommitAgent
 from arox.config import TomlConfigParser
 from arox.tools.shell import Shell
+from arox.ui.io import IOChannel
 from arox.utils import run_command
 
 logger = logging.getLogger(__name__)
 
 
 class CoderComposer:
-    def __init__(self, io_adapter_factory):
+    def __init__(self, io_adapter_func):
         parser = argparse.ArgumentParser()
 
         parser.add_argument(
@@ -45,13 +47,17 @@ class CoderComposer:
 
         agent_patterns.init(toml_parser)
 
+        self.git_io_channel = IOChannel()
+        self.git_adapter = io_adapter_func(self.git_io_channel)
+
         git_commit_agent = GitCommitAgent(
             "git_commit_agent",
             toml_parser,
-            io_adapter=io_adapter_factory(),
+            agent_io=self.git_io_channel,
         )
         self.commit_agent = git_commit_agent
 
+        self.coder_io_channel = IOChannel()
         local_toolset = FunctionToolset()
         coder_agent = ChatAgent(
             "coder",
@@ -59,11 +65,10 @@ class CoderComposer:
             local_toolset=local_toolset,
             state_cls=CoderState,
             context={"commit_agent": self.commit_agent},
-            io_adapter=io_adapter_factory(),
+            agent_io=self.coder_io_channel,
         )
         shell_tool = Shell(coder_agent.workspace.absolute())
         shell_tool.register_tool(coder_agent)
-
         coder_commands = [
             commands.ProjectCommand(coder_agent),
             commands.ModelCommand(coder_agent),
@@ -74,6 +79,9 @@ class CoderComposer:
             commands.CommitCommand(coder_agent),
         ]
         coder_agent.register_commands(coder_commands)
+
+        self.coder_adapter = io_adapter_func(self.coder_io_channel)
+        self.coder_adapter.setup(coder_agent)
 
         self.coder_agent = coder_agent
 
@@ -105,8 +113,13 @@ class CoderComposer:
 
     async def run(self):
         async with contextlib.AsyncExitStack() as stack:
+            await stack.enter_async_context(self.coder_io_channel)
+            await stack.enter_async_context(self.git_io_channel)
             await stack.enter_async_context(self.coder_agent)
             await stack.enter_async_context(self.commit_agent)
+
+            asyncio.create_task(self.git_adapter.start())
+            asyncio.create_task(self.coder_adapter.start())
 
             await self.commit_agent.show_agent_info()
             await self.coder_agent.show_agent_info()

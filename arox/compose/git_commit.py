@@ -114,10 +114,10 @@ if __name__ == "__main__":
     agent_patterns.init(toml_parser)
 
     io_channel = TextIOAdapter()
-    agent = GitCommitAgent("git_commit_agent", toml_parser, io_adapter=io_channel)
+    agent = GitCommitAgent("git_commit_agent", toml_parser, agent_io=io_channel)
 
     async def wrapper():
-        async with agent.io_channel:
+        async with agent:
             await agent.auto_commit_changes()
 
     asyncio.run(wrapper())

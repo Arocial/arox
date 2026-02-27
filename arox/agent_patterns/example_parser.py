@@ -1,5 +1,4 @@
 import uuid
-from typing import List
 
 import yaml
 from pydantic_ai.messages import (
@@ -13,7 +12,7 @@ from pydantic_ai.messages import (
 )
 
 
-def parse_example_yaml(yaml_content: str) -> List[ModelMessage]:
+def parse_example_yaml(yaml_content: str) -> list[ModelMessage]:
     data = yaml.safe_load(yaml_content)
     messages = []
 

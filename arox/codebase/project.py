@@ -93,8 +93,7 @@ class ProjectManager:
             raise Exception(f"Cannot read binary file: {file_path}")
 
         with open(path, "r", encoding="utf-8", errors="replace") as f:
-            lines = f.readlines()
-            return lines
+            return f.readlines()
 
     async def read_by_user(self, file_paths: list[str]):
         for file_path in file_paths:
@@ -108,8 +107,8 @@ class ProjectManager:
                     self._pending_text_files[file_path] = "".join(lines)
                 self._add_to_session(file_path)
             except Exception as e:
-                await self.agent.io_channel.send(
-                    f"Error reading file {file_path}: {str(e)}"
+                await self.agent.agent_io.agent_send(
+                    f"Error reading file {file_path}: {e!s}"
                 )
 
     def consume_pending(self) -> tuple[str, dict[str, bytes]]:
@@ -185,8 +184,8 @@ class ProjectManager:
             return result
 
         except Exception as e:
-            logger.error(f"Error reading file {path}: {str(e)}")
-            result["error"] = f"Error reading file: {str(e)}"
+            logger.error(f"Error reading file {path}: {e!s}")
+            result["error"] = f"Error reading file: {e!s}"
             return result
 
     def _is_binary_file(self, path: Path) -> bool:

@@ -16,14 +16,14 @@ from pydantic_ai.toolsets.fastmcp import FastMCPToolset
 
 from arox import utils
 from arox.agent_patterns.state import SimpleState
-from arox.ui.io import AbstractIOAdapter, IOChannel
+from arox.ui.io import AgentIOInterface
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class AgentDeps:
-    io_channel: AbstractIOAdapter
+    agent_io: AgentIOInterface
 
 
 class LLMBaseAgent:
@@ -31,11 +31,13 @@ class LLMBaseAgent:
         self,
         name,
         config_parser,
-        io_adapter: AbstractIOAdapter,
+        agent_io: AgentIOInterface,
         local_toolset: FunctionToolset | None = None,
         state_cls=SimpleState,
-        context={},
+        context=None,
     ):
+        if context is None:
+            context = {}
         self.uuid = str(uuid.uuid4())
         self.name = name
         self.context = context
@@ -64,13 +66,13 @@ class LLMBaseAgent:
             toolsets=toolsets,
             deps_type=AgentDeps,
         )
-        self.io_adapter = io_adapter
-        self.io_channel = IOChannel(adapter=io_adapter)
-        self.io_adapter.setup(self)
+
+        self.agent_io = agent_io
+
         self._stack = contextlib.AsyncExitStack()
 
     async def __aenter__(self):
-        await self._stack.enter_async_context(self.io_channel)
+        await self._stack.enter_async_context(self.agent_io)
         if self.mcp_client:
             await self._stack.enter_async_context(self.mcp_client)
         return self
@@ -104,7 +106,9 @@ class LLMBaseAgent:
         return config
 
     async def show_agent_info(self):
-        await self.io_channel.send(f"Using model {self.provider_model} for {self.name}")
+        await self.agent_io.agent_send(
+            f"Using model {self.provider_model} for {self.name}"
+        )
 
     def parse_configs(self):
         config_parser = self.config_parser
@@ -144,8 +148,7 @@ class LLMBaseAgent:
                     }
                 )
 
-        config = self.set_model(self.model_ref)
-        return config
+        return self.set_model(self.model_ref)
 
     async def _run_before_hooks(self, input_content: str):
         if hasattr(self, "before_step_hooks"):
@@ -165,7 +168,7 @@ class LLMBaseAgent:
             model_settings=ModelSettings(**self.model_params),
             instructions=f"{self.system_prompt}\n{self.additional_prompt}",
             message_history=self.state.message_history,
-            deps=AgentDeps(io_channel=self.io_channel),
+            deps=AgentDeps(agent_io=self.agent_io),
         )
         await self._run_after_hooks(input_content)
         return self.state.result

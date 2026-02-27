@@ -37,9 +37,7 @@ def parse_dot_config(cli_args: list[str]) -> dict[str, Any]:
 
         current = result
         for key in keys[:-1]:
-            if key not in current:
-                current[key] = {}
-            elif not isinstance(current[key], dict):
+            if key not in current or not isinstance(current[key], dict):
                 current[key] = {}
             current = current[key]
 

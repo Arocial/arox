@@ -1,10 +1,10 @@
-import asyncio
 import contextlib
 import logging
+import math
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, override
 
-from anyio import create_memory_object_stream
+from anyio import EndOfStream, create_memory_object_stream
 from pydantic_ai import (
     FinalResultEvent,
     FunctionToolCallEvent,
@@ -26,54 +26,116 @@ from arox.utils import user_input_generator
 logger = logging.getLogger(__name__)
 
 
+class AgentIOInterface(ABC):
+    @abstractmethod
+    async def agent_send(self, event):
+        pass
+
+    @contextlib.asynccontextmanager
+    async def chat_round(self):
+        yield
+
+    @abstractmethod
+    async def agent_receive(self):
+        pass
+
+    @abstractmethod
+    async def agent_wait_reply(self, event):
+        pass
+
+
+class AdapterIOInterface(ABC):
+    @abstractmethod
+    async def adapter_send(self, reply):
+        pass
+
+    @abstractmethod
+    async def adapter_receive(self):
+        pass
+
+
+class IOChannel(AgentIOInterface, AdapterIOInterface):
+    def __init__(self):
+        # agent_event: Agent -> Adapter
+        self.agent_event_tx, self.agent_event_rx = create_memory_object_stream[Any](
+            math.inf
+        )
+        # adapter_event: Adapter -> Agent
+        self.adapter_event_tx, self.adapter_event_rx = create_memory_object_stream[Any](
+            math.inf
+        )
+        self._stack = contextlib.AsyncExitStack()
+
+    @override
+    @contextlib.asynccontextmanager
+    async def chat_round(self):
+        try:
+            yield await self.agent_wait_reply(None)
+        finally:
+            await self.agent_send(StepDoneEvent())
+
+    @override
+    async def agent_send(self, event):
+        if isinstance(event, str):
+            await self.agent_event_tx.send(
+                PartStartEvent(part=TextPart(content=event), index=-1)
+            )
+            await self.agent_event_tx.send(
+                PartEndEvent(part=TextPart(content=event), index=-1)
+            )
+        else:
+            await self.agent_event_tx.send(event)
+
+    @override
+    async def agent_receive(self):
+        return await self.adapter_event_rx.receive()
+
+    @override
+    async def agent_wait_reply(self, prompt):
+        wrap_event = NeedReplyEvent(prompt)
+        await self.agent_send(wrap_event)
+        return await self.adapter_event_rx.receive()
+
+    @override
+    async def adapter_send(self, reply):
+        await self.adapter_event_tx.send(reply)
+
+    @override
+    async def adapter_receive(self):
+        return await self.agent_event_rx.receive()
+
+    async def __aenter__(self):
+        await self._stack.enter_async_context(self.agent_event_tx)
+        await self._stack.enter_async_context(self.agent_event_rx)
+        await self._stack.enter_async_context(self.adapter_event_tx)
+        await self._stack.enter_async_context(self.adapter_event_tx)
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self._stack.aclose()
+
+
+class StepDoneEvent:
+    pass
+
+
+class NeedReplyEvent:
+    def __init__(self, nested_event):
+        self.nested_event = nested_event
+
+
 class AbstractIOAdapter(ABC):
     def setup(self, agent):
         pass
 
     @abstractmethod
-    async def handle_output_stream(self, output_stream_out):
+    async def start(self):
         pass
 
 
-class IOChannel:
-    def __init__(self, adapter: AbstractIOAdapter):
-        self.output_stream_in, self.output_stream_out = create_memory_object_stream[
-            Any
-        ]()
-        self.adapter = adapter
-        self.async_stack = contextlib.AsyncExitStack()
-
-    async def send(self, event):
-        if isinstance(event, str):
-            await self.output_stream_in.send(
-                PartStartEvent(part=TextPart(content=event), index=-1)
-            )
-            await self.output_stream_in.send(
-                PartEndEvent(part=TextPart(content=event), index=-1)
-            )
-        else:
-            await self.output_stream_in.send(event)
-
-    async def wait_reply(self, event):
-        wrap_event = NeedReplyEvent(event)
-        await self.send(wrap_event)
-        return await wrap_event.wait()
-
-    async def start(self):
-        await self.async_stack.enter_async_context(self.output_stream_in)
-        asyncio.create_task(self.adapter.handle_output_stream(self.output_stream_out))
-
-    async def end(self):
-        await self.async_stack.aclose()
-
-    async def __aenter__(self):
-        return await self.start()
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self.end()
-
-
 class TextIOAdapter(AbstractIOAdapter):
+    def __init__(self, adapter_io: AdapterIOInterface):
+        self.adapter_io = adapter_io
+
     def setup(self, agent):
         if hasattr(agent, "command_manager"):
             completer = CommandCompleter(agent.command_manager)
@@ -97,7 +159,7 @@ class TextIOAdapter(AbstractIOAdapter):
             elif isinstance(event.delta, ToolCallPartDelta):
                 print(event.delta.args_delta, end="")
         elif isinstance(event, PartEndEvent):
-            print("")
+            print()
         elif isinstance(event, FunctionToolResultEvent):
             print(
                 f"tool result: {event.tool_call_id!r} returned => {str(event.result.content)[:100]}\n"
@@ -112,60 +174,44 @@ class TextIOAdapter(AbstractIOAdapter):
         elif isinstance(event, NeedReplyEvent):
             try:
                 line = await self.user_input()
-                event.set_reply(line)
+                await self.adapter_io.adapter_send(line)
             except EOFError as e:
-                event.set_reply(e)
+                await self.adapter_io.adapter_send(e)
         else:
             print(f"\nUnexpected event type: {event.__class__.__name__}\n")
 
-    async def handle_output_stream(self, output_stream_out):
-        async with output_stream_out:
-            async for event in output_stream_out:
-                await self._handle_output(event)
-
-
-class StepDoneEvent:
-    pass
-
-
-class NeedReplyEvent:
-    def __init__(self, nested_event):
-        self.nested_event = nested_event
-        loop = asyncio.get_running_loop()
-        reply_fut = loop.create_future()
-        self.future = reply_fut
-
-    def set_reply(self, reply):
-        self.future.set_result(reply)
-
-    async def wait(self):
-        return await self.future
+    @override
+    async def start(self):
+        async with self.adapter_io:
+            try:
+                while True:
+                    event = await self.adapter_io.adapter_receive()
+                    await self._handle_output(event)
+            except EndOfStream:
+                pass
 
 
 class VercelStreamIOAdapter(AbstractIOAdapter):
-    def __init__(self):
+    def __init__(self, adapter_io: AdapterIOInterface):
         self.stream_in, self.stream_out = create_memory_object_stream[str](100)
-        self.pending_reply_event = None
         self.tool_ids = {}
+        self.adapter_io = adapter_io
 
-    async def handle_output_stream(self, output_stream_out):
-        async with output_stream_out:
-            async with self.stream_in:
-                async for event in output_stream_out:
+    @override
+    async def start(self):
+        async with self.stream_in:
+            try:
+                while True:
+                    event = await self.adapter_io.adapter_receive()
                     if isinstance(event, NeedReplyEvent):
-                        self.pending_reply_event = event
-                        try:
-                            await event.wait()
-                        except Exception:
-                            pass
-                        self.pending_reply_event = None
+                        pass
                     elif isinstance(event, StepDoneEvent):
                         await self.stream_in.send("data: [DONE]\n\n")
                     else:
                         formatted_events = self._format_event(event)
                         for fmt in formatted_events:
                             await self.stream_in.send(fmt)
-
+            except EndOfStream:
                 await self.stream_in.send("data: [DONE]\n\n")
 
     def _format_event(self, event) -> list[str]:
@@ -219,7 +265,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     f"data: {json.dumps({'type': 'reasoning-delta', 'id': f'reasoning_{index}', 'delta': delta.content_delta})}\n\n"
                 )
 
-            elif isinstance(delta, ToolCallPartDelta):
+            elif isinstance(event.delta, ToolCallPartDelta):
                 tool_id = self.tool_ids.get(index)
                 if tool_id:
                     events.append(
@@ -260,10 +306,4 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             yield chunk
 
     async def submit_user_input(self, text: str):
-        for _ in range(10):
-            if self.pending_reply_event:
-                self.pending_reply_event.set_reply(text)
-                return True
-            await asyncio.sleep(1)
-        logger.warning(f"No input required, ignoring: {text}")
-        return False
+        await self.adapter_io.adapter_send(text)

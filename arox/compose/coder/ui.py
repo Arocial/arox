@@ -8,10 +8,11 @@ from arox.ui.io import TextIOAdapter
 
 class CoderTUI(TUIByIO):
     def on_mount(self) -> None:
-        composer = CoderComposer(lambda: self.io_adapter)
+        composer = CoderComposer(self.io_adapter_fun)
         self.input_suggester = CommandCompleter(
             composer.coder_agent.command_manager
         ).textual_suggester
+
         self.run_worker(composer.run, name="composer", exclusive=True)
 
 

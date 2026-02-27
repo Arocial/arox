@@ -60,4 +60,4 @@ class SimpleState:
         self, ctx: RunContext, events: AsyncIterable[AgentStreamEvent]
     ):
         async for event in events:
-            await ctx.deps.io_channel.send(event)
+            await ctx.deps.agent_io.agent_send(event)

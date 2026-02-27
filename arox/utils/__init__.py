@@ -53,8 +53,7 @@ async def user_input_generator(completer=None, input=None, output=None):
         input=input,
         output=output,
     )
-    user_input = await session.prompt_async("\nUser (Ctrl+D to quit): ")
-    return user_input
+    return await session.prompt_async("\nUser (Ctrl+D to quit): ")
 
 
 def xml_wrap(contents: list[tuple[str, str]]) -> str:
