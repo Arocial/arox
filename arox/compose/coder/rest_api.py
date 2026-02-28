@@ -3,8 +3,10 @@ import json
 import logging
 from contextlib import asynccontextmanager
 
+from typing import Optional
+
 from anyio import EndOfStream
-from fastapi import FastAPI
+from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -152,6 +154,17 @@ class ChatRequest(BaseModel):
     messages: list[dict]
 
 
+class SuggestionItem(BaseModel):
+    id: str
+    value: str
+    label: str
+    description: Optional[str] = None
+
+
+class SuggestionResponse(BaseModel):
+    items: list[SuggestionItem]
+
+
 class CoderRestUI:
     def __init__(self):
         self.composer = CoderComposer(VercelStreamIOAdapter)
@@ -167,6 +180,9 @@ class CoderRestUI:
         )
 
         self.app.post("/api/chat")(self.chat)
+        self.app.get("/api/suggestions", response_model=SuggestionResponse)(
+            self.suggestions
+        )
 
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
@@ -199,6 +215,43 @@ class CoderRestUI:
             yield chunk
             if "data: [DONE]\n\n" == chunk:
                 break
+
+    async def suggestions(self, command: Optional[str] = None, q: Optional[str] = None):
+        command_manager = self.composer.coder_agent.command_manager
+        items = []
+
+        if not command:
+            for cmd_name, cmd_obj in command_manager.command_map.items():
+                if q and q.lower() not in cmd_name.lower():
+                    continue
+                items.append(
+                    SuggestionItem(
+                        id=cmd_name,
+                        value=f"/{cmd_name}",
+                        label=f"/{cmd_name}",
+                        description=cmd_obj.description,
+                    )
+                )
+        else:
+            args = q if q else ""
+            completions = command_manager.get_completions(command, args)
+            if completions:
+                for idx, completion in enumerate(completions):
+                    display_text = getattr(completion, "display_text", completion.text)
+                    description = getattr(completion, "display_meta_text", None)
+                    if not description:
+                        description = None
+
+                    items.append(
+                        SuggestionItem(
+                            id=f"comp-{command}-{idx}",
+                            value=completion.text,
+                            label=display_text,
+                            description=description,
+                        )
+                    )
+
+        return SuggestionResponse(items=items)
 
     def run(self):
         import uvicorn
