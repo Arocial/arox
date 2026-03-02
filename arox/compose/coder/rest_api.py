@@ -3,10 +3,8 @@ import json
 import logging
 from contextlib import asynccontextmanager
 
-from typing import Optional
-
 from anyio import EndOfStream
-from fastapi import FastAPI, Query
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -158,7 +156,7 @@ class SuggestionItem(BaseModel):
     id: str
     value: str
     label: str
-    description: Optional[str] = None
+    description: str | None = None
 
 
 class SuggestionResponse(BaseModel):
@@ -216,7 +214,7 @@ class CoderRestUI:
             if "data: [DONE]\n\n" == chunk:
                 break
 
-    async def suggestions(self, command: Optional[str] = None, q: Optional[str] = None):
+    async def suggestions(self, command: str | None = None, q: str | None = None):
         command_manager = self.composer.coder_agent.command_manager
         items = []
 

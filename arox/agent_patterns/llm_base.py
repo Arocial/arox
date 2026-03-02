@@ -4,21 +4,68 @@ import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import fastmcp
+from httpx import AsyncClient, HTTPStatusError
 from pydantic_ai import (
     Agent,
     AgentRunResult,
     FunctionToolset,
     ModelSettings,
 )
+from pydantic_ai.models import infer_model
+from pydantic_ai.providers import Provider, gateway, google, infer_provider_class
+from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
 from pydantic_ai.toolsets.fastmcp import FastMCPToolset
+from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from arox import utils
 from arox.agent_patterns.state import SimpleState
 from arox.ui.io import AgentIOInterface
 
 logger = logging.getLogger(__name__)
+
+
+def create_retrying_client():
+    """Create a client with smart retry handling for multiple error types."""
+
+    def should_retry_status(response):
+        """Raise exceptions for retryable HTTP status codes."""
+        if response.status_code in (429, 502, 503, 504):
+            response.raise_for_status()  # This will raise HTTPStatusError
+
+    transport = AsyncTenacityTransport(
+        config=RetryConfig(
+            # Retry on HTTP errors and connection issues
+            retry=retry_if_exception_type((HTTPStatusError, ConnectionError)),
+            # Smart waiting: respects Retry-After headers, falls back to exponential backoff
+            wait=wait_retry_after(
+                fallback_strategy=wait_exponential(multiplier=2, max=60), max_wait=300
+            ),
+            stop=stop_after_attempt(5),
+            # Re-raise the last exception if all retries fail
+            reraise=True,
+        ),
+        validate_response=should_retry_status,
+    )
+    return AsyncClient(transport=transport)
+
+
+# Copyied from pydantic_ai.providers.infer_provider and add http_client parameter.
+def infer_provider(provider: str) -> Provider[Any]:
+    """Infer the provider from the provider name."""
+    client = create_retrying_client()
+    if provider.startswith("gateway/"):
+        upstream_provider = provider.removeprefix("gateway/")
+        return gateway.gateway_provider(upstream_provider)
+    elif provider in ("google-vertex", "google-gla"):
+        return google.GoogleProvider(
+            vertexai=provider == "google-vertex", http_client=client
+        )
+    else:
+        provider_class = infer_provider_class(provider)
+        return provider_class(http_client=client)
 
 
 @dataclass
@@ -59,9 +106,9 @@ class LLMBaseAgent:
             toolsets.append(mcp_toolset)
 
         self.state = state_cls(self)
-
+        self.model = infer_model(self.provider_model, provider_factory=infer_provider)
         self.pydantic_agent = Agent(
-            self.provider_model,
+            self.model,
             history_processors=[self.state.process_history],
             toolsets=toolsets,
             deps_type=AgentDeps,
