@@ -18,7 +18,12 @@ from pydantic_ai.models import infer_model
 from pydantic_ai.providers import Provider, gateway, google, infer_provider_class
 from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
 from pydantic_ai.toolsets.fastmcp import FastMCPToolset
-from tenacity import retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import (
+    before_sleep_log,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from arox import utils
 from arox.agent_patterns.state import SimpleState
@@ -46,6 +51,7 @@ def create_retrying_client():
             stop=stop_after_attempt(5),
             # Re-raise the last exception if all retries fail
             reraise=True,
+            before_sleep=before_sleep_log(logger, logging.WARNING),
         ),
         validate_response=should_retry_status,
     )

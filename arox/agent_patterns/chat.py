@@ -57,8 +57,8 @@ class ChatAgent(LLMBaseAgent):
                         ):
                             break
                         chat_mode = "normal"
-                        await self.step("")
                 except Exception as e:
+                    logger.exception("An error occurred.")
                     await self.agent_io.agent_send(f"An error occurred: {e}")
                     await self.agent_io.agent_send("Do you want to continue? (y/n)")
                     chat_mode = "ask_continue"
