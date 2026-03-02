@@ -78,7 +78,7 @@ class ProjectCommand(Command):
     async def execute(self, name: str, arg: str):
         project_manager = self.agent.state.project_manager
         if name == "add":
-            files = arg.split(" ")
+            files = arg.split() if arg else []
             if not files:
                 await self.agent.agent_io.agent_send("Please specify files.")
                 return
