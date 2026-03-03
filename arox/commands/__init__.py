@@ -246,12 +246,12 @@ class InfoCommand(Command):
         await self.agent.agent_io.agent_send(f"Current model: {current_model}")
 
         # Show chat files
-        project_manager = self.agent.state.project_manager.all_files
-        if project_manager:
+        session_files = self.agent.state.project_manager.session_files
+        if session_files:
             await self.agent.agent_io.agent_send(
-                f"\nChat files ({len(project_manager)}):"
+                f"\nChat files ({len(session_files)}):"
             )
-            for file_path in project_manager:
+            for file_path in session_files:
                 await self.agent.agent_io.agent_send(f"  - {file_path}")
         else:
             await self.agent.agent_io.agent_send("\nNo chat files currently loaded.")
