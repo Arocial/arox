@@ -125,12 +125,12 @@ class Shell:
         """
         Run arbitrary shell commands in system's shell and return its output.
 
-        Rules:
+        Rules
             1. For searching code, use `rg` or `ast-grep`
 
-        Examples:
+        Examples
             command: "ls -la | rg staff"
-            result: "total 24\ndrwxr-xr-x  5 user  staff  160 Jan  1 12:00 .\n..."
+            result: "total 24\\ndrwxr-xr-x  5 user  staff  160 Jan  1 12:00 .\\n..."
 
         Args:
             command: The shell command to execute (e.g., "ls -la", "pwd", "git status")
