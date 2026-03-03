@@ -1,0 +1,3 @@
+- By default, use English for comments and prompt messages in the code unless otherwise specified.
+- use `uv` for package management.
+- python version: >=3.12
