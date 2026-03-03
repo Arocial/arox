@@ -127,6 +127,7 @@ class Shell:
 
         Rules
             1. For searching code, use `rg` or `ast-grep`
+            2. Interactive commands that require user input are not supported and will fail.
 
         Examples
             command: "ls -la | rg staff"
@@ -147,6 +148,7 @@ class Shell:
 
             process = await asyncio.create_subprocess_exec(
                 *sandboxed_cmd,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
