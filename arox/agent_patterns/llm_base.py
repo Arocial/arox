@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import fastmcp
-from httpx import AsyncClient, HTTPStatusError
+from httpx import AsyncClient, HTTPStatusError, TransportError
 from pydantic_ai import (
     Agent,
     AgentRunResult,
@@ -43,7 +43,9 @@ def create_retrying_client():
     transport = AsyncTenacityTransport(
         config=RetryConfig(
             # Retry on HTTP errors and connection issues
-            retry=retry_if_exception_type((HTTPStatusError, ConnectionError)),
+            retry=retry_if_exception_type(
+                (HTTPStatusError, TransportError, ConnectionError)
+            ),
             # Smart waiting: respects Retry-After headers, falls back to exponential backoff
             wait=wait_retry_after(
                 fallback_strategy=wait_exponential(multiplier=2, max=60), max_wait=300
