@@ -217,16 +217,33 @@ class LLMBaseAgent:
 
     async def step(self, input_content: str) -> AgentRunResult:
         await self._run_before_hooks(input_content)
-        self.state.result = await self.pydantic_agent.run(
+
+        import asyncio
+
+        from pydantic_ai._agent_graph import build_run_context
+
+        async with self.pydantic_agent.iter(
             input_content,
-            event_stream_handler=self.state.handle_event,
             model_settings=ModelSettings(**self.model_params),
             instructions=f"{self.system_prompt}\n{self.additional_prompt}",
             message_history=self.state.message_history,
             deps=AgentDeps(agent_io=self.agent_io),
-        )
-        await self._run_after_hooks(input_content)
-        return self.state.result
+        ) as agent_run:
+            try:
+                async for node in agent_run:
+                    if self.pydantic_agent.is_model_request_node(
+                        node
+                    ) or self.pydantic_agent.is_call_tools_node(node):
+                        async with node.stream(agent_run.ctx) as stream:
+                            await self.state.handle_event(
+                                build_run_context(agent_run.ctx), stream
+                            )
+                self.state.message_history = agent_run.result.all_messages()
+                await self._run_after_hooks(input_content)
+                return agent_run.result
+            except (asyncio.CancelledError, Exception):
+                self.state.message_history = agent_run.ctx.state.message_history
+                raise
 
     def reset(self):
         return self.state.reset()

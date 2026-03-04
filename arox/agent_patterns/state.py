@@ -30,31 +30,13 @@ class SimpleState:
                     self.example_messages = parse_example_yaml(f.read())
 
         self.workspace = self.agent.workspace
-        self._result = None
         self.reset()
-
-    @property
-    def result(self):
-        return self._result
-
-    @result.setter
-    def result(self, value):
-        self._result = value
-
-    @property
-    def message_history(self):
-        if self.result:
-            return self.result.all_messages()
-        elif self.example_messages:
-            return self.example_messages
-        else:
-            return None
 
     async def process_history(self, messages: list[ModelMessage]) -> list[ModelMessage]:
         return messages
 
     def reset(self):
-        self.result = None
+        self.message_history = self.example_messages
 
     async def handle_event(
         self, ctx: RunContext, events: AsyncIterable[AgentStreamEvent]
