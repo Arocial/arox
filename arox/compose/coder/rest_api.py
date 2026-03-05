@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 class VercelStreamIOAdapter(AbstractIOAdapter):
     def __init__(self, adapter_io: AdapterIOInterface):
-        self.adapter_io = adapter_io
+        super().__init__(adapter_io)
         self.tool_ids = {}
 
     async def start(self):

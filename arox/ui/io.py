@@ -1,6 +1,8 @@
+import asyncio
 import contextlib
 import logging
 import math
+import signal
 from abc import ABC, abstractmethod
 from typing import Any, override
 
@@ -42,6 +44,10 @@ class AgentIOInterface(ABC):
     async def agent_wait_reply(self, event):
         pass
 
+    @abstractmethod
+    async def run_cancellable(self, task):
+        pass
+
 
 class AdapterIOInterface(ABC):
     @abstractmethod
@@ -51,6 +57,9 @@ class AdapterIOInterface(ABC):
     @abstractmethod
     async def adapter_receive(self):
         pass
+
+    def set_adapter(self, adapter):
+        self.adapter = adapter
 
 
 class IOChannel(AgentIOInterface, AdapterIOInterface):
@@ -72,6 +81,10 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
             yield await self.agent_wait_reply(None)
         finally:
             await self.agent_send(StepDoneEvent())
+
+    @override
+    async def run_cancellable(self, task):
+        await self.adapter.run_cancellable(task)
 
     @override
     async def agent_send(self, event):
@@ -123,6 +136,10 @@ class NeedReplyEvent:
 
 
 class AbstractIOAdapter(ABC):
+    def __init__(self, adapter_io: AdapterIOInterface):
+        self.adapter_io = adapter_io
+        adapter_io.set_adapter(self)
+
     def setup(self, agent):
         pass
 
@@ -130,11 +147,11 @@ class AbstractIOAdapter(ABC):
     async def start(self):
         pass
 
+    async def run_cancellable(self, task):
+        await task
+
 
 class TextIOAdapter(AbstractIOAdapter):
-    def __init__(self, adapter_io: AdapterIOInterface):
-        self.adapter_io = adapter_io
-
     def setup(self, agent):
         if hasattr(agent, "command_manager"):
             completer = CommandCompleter(agent.command_manager)
@@ -145,6 +162,24 @@ class TextIOAdapter(AbstractIOAdapter):
             self.user_input = user_input
         else:
             self.user_input = user_input_generator
+
+    async def run_cancellable(self, task):
+        step_task = asyncio.create_task(task)
+        original_sigint_handler = signal.getsignal(signal.SIGINT)
+
+        def sigint_handler(signum, frame):
+            logger.info("Received SIGINT, cancelling current step...")
+            loop = asyncio.get_running_loop()
+            loop.call_soon_threadsafe(step_task.cancel)
+
+        signal.signal(signal.SIGINT, sigint_handler)
+
+        try:
+            await step_task
+        except asyncio.CancelledError:
+            print("\n[Step cancelled by user]")
+        finally:
+            signal.signal(signal.SIGINT, original_sigint_handler)
 
     async def _handle_output(self, event):
         if isinstance(event, PartStartEvent):

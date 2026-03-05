@@ -381,11 +381,11 @@ class CollapsibleLabel(Collapsible):
 
 class TextualIOAdapter(AbstractIOAdapter):
     def __init__(self, app, adapter_io: AdapterIOInterface, title=""):
+        super().__init__(adapter_io)
         self.app = app
         self.output_widget = None
         self.title = title
         self.current_stream_widget = None
-        self.adapter_io = adapter_io
 
     async def _handle_output(self, event):
         if isinstance(event, PartStartEvent):
