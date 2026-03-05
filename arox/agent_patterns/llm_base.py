@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import fastmcp
-from httpx import AsyncClient, HTTPStatusError, TransportError
+from httpx import AsyncClient, HTTPStatusError, Timeout, TransportError
 from pydantic_ai import (
     Agent,
     AgentRunResult,
@@ -57,7 +57,10 @@ def create_retrying_client():
         ),
         validate_response=should_retry_status,
     )
-    return AsyncClient(transport=transport)
+    return AsyncClient(
+        transport=transport,
+        timeout=Timeout(timeout=None, read=40.0)
+    )
 
 
 # Copyied from pydantic_ai.providers.infer_provider and add http_client parameter.
