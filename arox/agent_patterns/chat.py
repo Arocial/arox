@@ -1,4 +1,6 @@
+import asyncio
 import logging
+import signal
 
 from arox import commands
 from arox.agent_patterns.llm_base import LLMBaseAgent
@@ -37,6 +39,8 @@ class ChatAgent(LLMBaseAgent):
     async def start(self):
         """Start the agent with optional input generator"""
         chat_mode = "normal"
+        loop = asyncio.get_running_loop()
+
         while True:
             async with self.agent_io.chat_round() as user_input:
                 try:
@@ -49,7 +53,26 @@ class ChatAgent(LLMBaseAgent):
                             user_input
                         )
                         if not is_command:
-                            await self.step(user_input)
+                            step_task = asyncio.create_task(self.step(user_input))
+                            original_sigint_handler = signal.getsignal(signal.SIGINT)
+
+                            def sigint_handler(signum, frame):
+                                logger.info(
+                                    "Received SIGINT, cancelling current step..."
+                                )
+                                loop.call_soon_threadsafe(step_task.cancel)
+
+                            signal.signal(signal.SIGINT, sigint_handler)
+
+                            try:
+                                await step_task
+                            except asyncio.CancelledError:
+                                await self.agent_io.agent_send(
+                                    "\n[Step cancelled by user]"
+                                )
+                            finally:
+                                signal.signal(signal.SIGINT, original_sigint_handler)
+
                     elif chat_mode == "ask_continue":
                         if (
                             isinstance(user_input, EOFError)
