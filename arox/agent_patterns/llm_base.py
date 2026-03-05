@@ -50,17 +50,14 @@ def create_retrying_client():
             wait=wait_retry_after(
                 fallback_strategy=wait_exponential(multiplier=2, max=60), max_wait=300
             ),
-            stop=stop_after_attempt(5),
+            stop=stop_after_attempt(7),
             # Re-raise the last exception if all retries fail
             reraise=True,
             before_sleep=before_sleep_log(logger, logging.WARNING),
         ),
         validate_response=should_retry_status,
     )
-    return AsyncClient(
-        transport=transport,
-        timeout=Timeout(timeout=None, read=40.0)
-    )
+    return AsyncClient(transport=transport, timeout=Timeout(timeout=None, read=40.0))
 
 
 # Copyied from pydantic_ai.providers.infer_provider and add http_client parameter.
