@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import logging
 import re
@@ -13,6 +14,7 @@ from pydantic_ai import (
     AgentRunResult,
     FunctionToolset,
     ModelSettings,
+    capture_run_messages,
 )
 from pydantic_ai.models import infer_model
 from pydantic_ai.providers import Provider, gateway, google, infer_provider_class
@@ -217,32 +219,21 @@ class LLMBaseAgent:
 
     async def step(self, input_content: str) -> AgentRunResult:
         await self._run_before_hooks(input_content)
-
-        import asyncio
-
-        from pydantic_ai._agent_graph import build_run_context
-
-        async with self.pydantic_agent.iter(
-            input_content,
-            model_settings=ModelSettings(**self.model_params),
-            instructions=f"{self.system_prompt}\n{self.additional_prompt}",
-            message_history=self.state.message_history,
-            deps=AgentDeps(agent_io=self.agent_io),
-        ) as agent_run:
+        with capture_run_messages() as messages:
             try:
-                async for node in agent_run:
-                    if self.pydantic_agent.is_model_request_node(
-                        node
-                    ) or self.pydantic_agent.is_call_tools_node(node):
-                        async with node.stream(agent_run.ctx) as stream:
-                            await self.state.handle_event(
-                                build_run_context(agent_run.ctx), stream
-                            )
-                self.state.message_history = agent_run.result.all_messages()
+                result = await self.pydantic_agent.run(
+                    input_content,
+                    event_stream_handler=self.state.handle_event,
+                    model_settings=ModelSettings(**self.model_params),
+                    instructions=f"{self.system_prompt}\n{self.additional_prompt}",
+                    message_history=self.state.message_history,
+                    deps=AgentDeps(agent_io=self.agent_io),
+                )
+                self.state.message_history = result.all_messages()
                 await self._run_after_hooks(input_content)
-                return agent_run.result
+                return result
             except (asyncio.CancelledError, Exception):
-                self.state.message_history = agent_run.ctx.state.message_history
+                self.state.message_history = messages
                 raise
 
     def reset(self):
