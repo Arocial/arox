@@ -39,9 +39,30 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     def __init__(self, adapter_io: AdapterIOInterface):
         super().__init__(adapter_io)
         self.tool_ids = {}
+        self.current_task = None
+        self.read_lock = asyncio.Lock()
 
     async def start(self):
         pass
+
+    async def run_cancellable(self, task):
+        self.current_task = asyncio.create_task(task)
+        try:
+            await self.current_task
+        except asyncio.CancelledError:
+            logger.info("Task cancelled by client disconnect")
+        finally:
+            self.current_task = None
+
+    async def drain_until_need_reply(self):
+        try:
+            while True:
+                async with self.read_lock:
+                    event = await self.adapter_io.adapter_receive()
+                if isinstance(event, StepDoneEvent):
+                    break
+        except Exception as e:
+            logger.error(f"Error draining events: {e}")
 
     def _format_event(self, event) -> list[str]:
         events = []
@@ -131,7 +152,8 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     async def output_generator(self):
         try:
             while True:
-                event = await self.adapter_io.adapter_receive()
+                async with self.read_lock:
+                    event = await self.adapter_io.adapter_receive()
                 if isinstance(event, NeedReplyEvent):
                     pass
                 elif isinstance(event, StepDoneEvent):
@@ -208,11 +230,18 @@ class CoderRestUI:
         )
 
     async def response_generator(self):
-        async for chunk in self.io_adapter.output_generator():
-            logger.info(chunk)
-            yield chunk
-            if "data: [DONE]\n\n" == chunk:
-                break
+        try:
+            async for chunk in self.io_adapter.output_generator():
+                logger.info(chunk)
+                yield chunk
+                if "data: [DONE]\n\n" == chunk:
+                    break
+        except asyncio.CancelledError:
+            logger.info("Client disconnected, cancelling current task")
+            if self.io_adapter.current_task:
+                self.io_adapter.current_task.cancel()
+            asyncio.create_task(self.io_adapter.drain_until_need_reply())
+            raise
 
     async def suggestions(self, command: str | None = None, q: str | None = None):
         command_manager = self.composer.coder_agent.command_manager
