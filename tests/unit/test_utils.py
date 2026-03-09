@@ -4,7 +4,13 @@ import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from arox.utils import deep_merge, run_command, user_input_generator
+from arox.utils import (
+    deep_merge,
+    render_template,
+    run_command,
+    truncate_content,
+    user_input_generator,
+)
 
 
 def test_deep_merge_basic():
@@ -80,3 +86,57 @@ async def test_run_command_failure():
         assert stdout == ""
         assert stderr == "error"
         assert returncode == 1
+
+
+def test_render_template():
+    template = "Hello {{ name }}!"
+    result = render_template(template, name="World")
+    assert result == "Hello World!"
+
+
+def test_truncate_content_basic():
+    lines = ["line 1", "line 2", "line 3"]
+    result = truncate_content(lines)
+    assert result["lines"] == ["line 1", "line 2", "line 3"]
+    assert result["last_read_line"] == 3
+    assert result["truncated_by_bytes"] is False
+    assert result["has_more_lines"] is False
+    assert result["offset"] == 0
+
+
+def test_truncate_content_limit():
+    lines = ["line 1", "line 2", "line 3"]
+    result = truncate_content(lines, limit=2)
+    assert result["lines"] == ["line 1", "line 2"]
+    assert result["last_read_line"] == 2
+    assert result["truncated_by_bytes"] is False
+    assert result["has_more_lines"] is True
+    assert result["offset"] == 0
+
+
+def test_truncate_content_offset():
+    lines = ["line 1", "line 2", "line 3"]
+    result = truncate_content(lines, offset=1)
+    assert result["lines"] == ["line 2", "line 3"]
+    assert result["last_read_line"] == 3
+    assert result["truncated_by_bytes"] is False
+    assert result["has_more_lines"] is False
+    assert result["offset"] == 1
+
+
+def test_truncate_content_max_line_length():
+    lines = ["this is a very long line", "short line"]
+    result = truncate_content(lines, max_line_length=10)
+    assert result["lines"] == ["this is a ...", "short line"]
+    assert result["last_read_line"] == 2
+    assert result["truncated_by_bytes"] is False
+    assert result["has_more_lines"] is False
+
+
+def test_truncate_content_max_bytes():
+    lines = ["line 1", "line 2", "line 3"]
+    result = truncate_content(lines, max_bytes=10)
+    assert result["lines"] == ["line 1"]
+    assert result["last_read_line"] == 1
+    assert result["truncated_by_bytes"] is True
+    assert result["has_more_lines"] is True

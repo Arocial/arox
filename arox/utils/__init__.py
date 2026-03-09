@@ -1,6 +1,5 @@
 from typing import Any
 
-import yaml
 from jinja2 import Template
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
@@ -20,13 +19,6 @@ def deep_merge(source, overrides):
         else:
             source[key] = value
     return source
-
-
-def parse_dict(value: str) -> dict:
-    """Parse a string of key=value pairs into a dictionary"""
-    if not value.strip():
-        return {}
-    return dict(yaml.safe_load(value))
 
 
 def render_template(template, **kwargs):
@@ -60,14 +52,6 @@ async def user_input_generator(completer=None, input=None, output=None):
         output=output,
     )
     return await session.prompt_async("\nUser (Ctrl+D to quit): ")
-
-
-def xml_wrap(contents: list[tuple[str, str]]) -> str:
-    xmled = []
-    for tag, content in contents:
-        if content is not None:
-            xmled.append(f"<{tag}>\n{content}\n</{tag}>\n")
-    return "\n".join(xmled)
 
 
 async def run_command(command: str) -> tuple[str, str, int]:
