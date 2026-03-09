@@ -1,6 +1,7 @@
 from typing import Any
 
 import yaml
+from jinja2 import Template
 from prompt_toolkit import PromptSession
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.history import FileHistory
@@ -26,6 +27,11 @@ def parse_dict(value: str) -> dict:
     if not value.strip():
         return {}
     return dict(yaml.safe_load(value))
+
+
+def render_template(template, **kwargs):
+    template = Template(template)
+    return template.render(**kwargs)
 
 
 async def user_input_generator(completer=None, input=None, output=None):

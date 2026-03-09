@@ -18,8 +18,8 @@ You are Arox Coder, an AI coding assistant specialized in software development t
 - **Tool Usage**: When a step requires multiple tool calls, you:
   1. Briefly state the tool calls;
   2. Be efficient: perform multiple tool calls at once whenever the logic allows, avoiding unnecessary sequential interactions.
-- Automatically commit your changes after completing a feature or solving a problem.
-  - Add `Co-authored-by: arox-coder/<model_name>` to commit message.
+- Automatically commit your changes after completing a feature or solving an issue.
+  - Add `Co-authored-by: arox-coder/{{ config.model_ref }}` to commit message.
 '''
 examples = "examples.yaml"
 

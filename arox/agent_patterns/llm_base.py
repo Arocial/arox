@@ -191,7 +191,9 @@ class LLMBaseAgent:
         self.agent_config = group_config
 
         # Load default metadata using configargparse
-        self.system_prompt = group_config.system_prompt
+        self.system_prompt = utils.render_template(
+            group_config.system_prompt, config=config
+        )
 
         skills = discover_skills(self.workspace)
         if skills:
