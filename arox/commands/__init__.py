@@ -4,7 +4,6 @@ import re
 
 import yaml
 from prompt_toolkit.completion import Completer, Completion
-from textual.widgets import TextArea
 
 logger = logging.getLogger(__name__)
 
@@ -42,11 +41,6 @@ class CommandCompleter(Completer):
             return
 
         yield from self.command_manager.get_completions(name, args)
-
-    def textual_suggester(self, text_area: TextArea):
-        current_location = text_area.cursor_location
-        text = text_area.document.get_text_range((0, 0), current_location)
-        yield from self._get_completions(text)
 
 
 class Command:

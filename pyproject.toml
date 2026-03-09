@@ -17,7 +17,6 @@ dependencies = [
     "pyyaml>=6.0",
     "asyncio",
     "GitPython>=3.1.30",
-    "textual>=5.0",
     "anyio>=4.9.0",
     "logfire>=4.16.0",
     "rapidfuzz>=3.14.3",
@@ -37,7 +36,5 @@ where = ["."]
 dev = [
     "pytest>=8.3.4",
     "pytest-asyncio>=1.0.0",
-    "textual-dev",
-    "textual-key-recorder",
     "remote-pdb",
 ]

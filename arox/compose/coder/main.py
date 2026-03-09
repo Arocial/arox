@@ -130,9 +130,9 @@ def main():
     parser = argparse.ArgumentParser()
     _ = parser.add_argument(
         "--ui",
-        choices=["tui", "textui", "restapi"],
+        choices=["textui", "restapi"],
         default="textui",
-        help="UI interface to use (tui, textui or restapi)",
+        help="UI interface to use (textui or restapi)",
     )
     args, _ = parser.parse_known_args()
 
@@ -151,20 +151,16 @@ def main():
             filemode="a",
         )
 
-    if args.ui == "tui":
-        from arox.compose.coder.ui import CoderTUI
+    if args.ui == "textui":
+        from arox.ui.io import TextIOAdapter
 
-        app = CoderTUI("Coder")
-    elif args.ui == "textui":
-        from arox.compose.coder.ui import CoderTextUI
-
-        app = CoderTextUI()
+        composer = CoderComposer(TextIOAdapter)
+        asyncio.run(composer.run())
     elif args.ui == "restapi":
         from arox.compose.coder.rest_api import CoderRestUI
 
         app = CoderRestUI()
-
-    app.run()
+        app.run()
 
 
 if __name__ == "__main__":
