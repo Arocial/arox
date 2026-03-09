@@ -54,26 +54,6 @@ async def user_input_generator(completer=None, input=None, output=None):
     return await session.prompt_async("\nUser (Ctrl+D to quit): ")
 
 
-async def run_command(command: str) -> tuple[str, str, int]:
-    """
-    Run a shell command asynchronously.
-
-    Args:
-        command: The command to run
-
-    Returns:
-        tuple: (stdout, stderr, return_code)
-    """
-    import asyncio
-
-    process = await asyncio.create_subprocess_shell(
-        command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-    )
-
-    stdout, stderr = await process.communicate()
-    return stdout.decode(), stderr.decode(), process.returncode
-
-
 def truncate_content(
     lines: list[str],
     offset: int = 0,

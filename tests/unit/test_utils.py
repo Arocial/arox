@@ -1,5 +1,3 @@
-from unittest.mock import patch
-
 import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
@@ -7,7 +5,6 @@ from prompt_toolkit.output import DummyOutput
 from arox.utils import (
     deep_merge,
     render_template,
-    run_command,
     truncate_content,
     user_input_generator,
 )
@@ -58,34 +55,6 @@ async def test_user_input_generator_quit():
                 input=pipe_input,
                 output=DummyOutput(),
             )
-
-
-@pytest.mark.asyncio
-async def test_run_command_success():
-    """Test run_command with a successful command."""
-    with patch("asyncio.create_subprocess_shell") as mock_create:
-        mock_process = mock_create.return_value
-        mock_process.communicate.return_value = (b"stdout", b"stderr")
-        mock_process.returncode = 0
-
-        stdout, stderr, returncode = await run_command("echo hello")
-        assert stdout == "stdout"
-        assert stderr == "stderr"
-        assert returncode == 0
-
-
-@pytest.mark.asyncio
-async def test_run_command_failure():
-    """Test run_command with a failing command."""
-    with patch("asyncio.create_subprocess_shell") as mock_create:
-        mock_process = mock_create.return_value
-        mock_process.communicate.return_value = (b"", b"error")
-        mock_process.returncode = 1
-
-        stdout, stderr, returncode = await run_command("false")
-        assert stdout == ""
-        assert stderr == "error"
-        assert returncode == 1
 
 
 def test_render_template():
