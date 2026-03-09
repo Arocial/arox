@@ -1,11 +1,11 @@
 import asyncio
-from pathlib import Path
 
 import pytest
 from prompt_toolkit.input import create_pipe_input
 from pydantic_ai import FunctionToolset
+from pydantic_ai.models.test import TestModel
 
-from arox import agent_patterns, commands
+from arox import agent_patterns
 from arox.agent_patterns.chat import ChatAgent
 from arox.config import TomlConfigParser
 from arox.ui.io import TextIOAdapter
@@ -18,23 +18,29 @@ def multiply(a: int, b: int) -> int:
 
 
 @pytest.mark.asyncio
-async def test_rewrite_agent():
-    current_dir = Path(__file__).parent.absolute()
-    default_agent_config = current_dir / "rewrite.toml"
+async def test_rewrite_agent(tmp_path):
+    # Create dummy config
+    default_agent_config = tmp_path / "rewrite.toml"
+    default_agent_config.write_text("""
+[DEFAULT]
+[agent.rewrite]
+system_prompt = "Hi there."
+[agent.rewrite.model_params]
+""")
+
     toml_parser = TomlConfigParser(
         config_files=[default_agent_config],
-        override_configs={"workspace": str(current_dir)},
+        override_configs={"workspace": str(tmp_path)},
     )
     agent_patterns.init(toml_parser)
-    file_name = Path(__file__).parent / "test_sample.md"
+
     test_user_msg = [
-        f"/add {file_name}\n",
-        "Translate file content to chinese and calculate 1488*2083.\n",
-        f"/save {file_name}.testres\n",
+        "Calculate 1488*2083.\n",
         "\x04",
     ]
     local_toolset = FunctionToolset()
     local_toolset.add_function(multiply)
+
     with create_pipe_input() as pipe_input:
 
         async def user_input():
@@ -48,12 +54,24 @@ async def test_rewrite_agent():
             "rewrite", toml_parser, agent_io=io_channel, local_toolset=local_toolset
         )
         io_adapter.user_input = user_input
-        cmds = [commands.ProjectCommand(agent), commands.SaveCommand(agent)]
-        agent.register_commands(cmds)
 
         for msg in test_user_msg:
             pipe_input.send_text(msg)
 
         asyncio.create_task(io_adapter.start())
-        async with agent:
-            await agent.start()
+
+        test_model = TestModel()
+        with agent.pydantic_agent.override(model=test_model):
+            async with agent:
+                await agent.start()
+
+        # Verify that the tool was called
+        messages = agent.state.message_history
+        tool_calls = [
+            part.tool_name
+            for msg in messages
+            if hasattr(msg, "parts")
+            for part in msg.parts
+            if hasattr(part, "tool_name")
+        ]
+        assert "multiply" in tool_calls
