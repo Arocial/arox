@@ -29,6 +29,7 @@ from tenacity import (
 
 from arox import utils
 from arox.agent_patterns.state import SimpleState
+from arox.skills import build_skill_catalog, discover_skills
 from arox.ui.io import AgentIOInterface
 
 logger = logging.getLogger(__name__)
@@ -191,6 +192,12 @@ class LLMBaseAgent:
 
         # Load default metadata using configargparse
         self.system_prompt = group_config.system_prompt
+
+        skills = discover_skills(self.workspace)
+        if skills:
+            catalog = build_skill_catalog(skills)
+            self.system_prompt += f"\n\n{catalog}"
+
         self.model_ref = group_config.model_ref or config.model_ref
         self.agent_model_params = group_config.model_params
         self.model_aware_prompts = []
