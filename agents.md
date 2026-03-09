@@ -1,4 +1,4 @@
 - By default, use English for comments and prompt messages in the code unless otherwise specified.
-- use `uv` for package management.
-- python version: >=3.12
-- Run unit test: `uv run pytest tests/unit/`
+- Use `uv` for package management.
+- Python version: >=3.12.
+- Run `tools/lint` before commit your changes.

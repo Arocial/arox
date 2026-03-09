@@ -14,7 +14,6 @@ from arox.compose.git_commit import GitCommitAgent
 from arox.config import TomlConfigParser
 from arox.tools.shell import Shell
 from arox.ui.io import IOChannel
-from arox.utils import run_command
 
 logger = logging.getLogger(__name__)
 
@@ -37,13 +36,9 @@ class CoderComposer:
         )
 
         self.name = "coder"
-        composer_group = toml_parser.add_argument_group(
-            name=f"composer.{self.name}", expose_raw=True
-        )
-        composer_group.add_argument("pre_commit_cmd", default=None)
+        toml_parser.add_argument_group(name=f"composer.{self.name}", expose_raw=True)
         self.config = toml_parser.parse_args()
-        composer_config = getattr(self.config.composer, self.name)
-        self.pre_commit_cmd = composer_config.pre_commit_cmd
+        getattr(self.config.composer, self.name)
 
         agent_patterns.init(toml_parser)
 
@@ -90,20 +85,7 @@ class CoderComposer:
             logger.info("Running pre-LLM commit hook")
             await self.commit_agent.auto_commit_changes()
 
-        async def after_llm_hook(agent, input_content: str):
-            logger.info("Running post-LLM commit hook")
-            if self.pre_commit_cmd:
-                stdout, stderr, returncode = await run_command(self.pre_commit_cmd)
-                if returncode != 0:
-                    logger.error(f"Pre-commit command failed: {self.pre_commit_cmd}")
-                    logger.error(f"stdout: {stdout}")
-                    logger.error(f"stderr: {stderr}")
-
-            co_author = f"arox-coder/{agent.provider_model}"
-            await self.commit_agent.auto_commit_changes(co_author=co_author)
-
         self.coder_agent.add_before_step_hook(before_llm_hook)
-        self.coder_agent.add_after_step_hook(after_llm_hook)
 
         if args.dump_default_config:
             logger.debug(f"Dumping default config to {args.dump_default_config}")
