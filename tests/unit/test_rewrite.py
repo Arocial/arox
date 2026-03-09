@@ -23,6 +23,7 @@ async def test_rewrite_agent(tmp_path):
     default_agent_config = tmp_path / "rewrite.toml"
     default_agent_config.write_text("""
 [DEFAULT]
+model_ref = "test"
 [agent.rewrite]
 system_prompt = "Hi there."
 [agent.rewrite.model_params]
