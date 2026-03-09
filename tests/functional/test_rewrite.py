@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -39,9 +40,12 @@ async def test_rewrite_agent():
         async def user_input():
             return await user_input_generator(input=pipe_input)
 
-        io_adapter = TextIOAdapter()
+        from arox.ui.io import IOChannel
+
+        io_channel = IOChannel()
+        io_adapter = TextIOAdapter(io_channel)
         agent = ChatAgent(
-            "rewrite", toml_parser, agent_io=io_adapter, local_toolset=local_toolset
+            "rewrite", toml_parser, agent_io=io_channel, local_toolset=local_toolset
         )
         io_adapter.user_input = user_input
         cmds = [commands.ProjectCommand(agent), commands.SaveCommand(agent)]
@@ -50,5 +54,6 @@ async def test_rewrite_agent():
         for msg in test_user_msg:
             pipe_input.send_text(msg)
 
+        asyncio.create_task(io_adapter.start())
         async with agent:
             await agent.start()
