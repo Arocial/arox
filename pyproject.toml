@@ -37,5 +37,6 @@ where = ["."]
 dev = [
     "pytest>=8.3.4",
     "pytest-asyncio>=1.0.0",
+    "pytest-profiling>=1.8.1",
     "remote-pdb",
 ]

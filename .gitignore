@@ -18,3 +18,5 @@ build/
 *.testres
 
 pyrightconfig.json
+
+prof/
