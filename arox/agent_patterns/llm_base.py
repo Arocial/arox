@@ -184,9 +184,7 @@ class LLMBaseAgent:
         )
         config = config_parser.parse_args()
 
-        self.workspace = Path(config.workspace)
-        if not self.workspace.is_absolute():
-            self.workspace = self.workspace.absolute()
+        self.workspace = Path.cwd()
         group_config = getattr(config.agent, name)
         self.agent_config = group_config
 

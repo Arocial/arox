@@ -31,11 +31,6 @@ def add_agent_options(parser):
         default="deepseek/deepseek-chat",
         help="Model to use with ChatLiteLLM",
     )
-    parser.add_argument(
-        "workspace",
-        default="workspace",
-        help="Path for agents to work, default to $current_dir/workspace",
-    )
 
     # Observability configuration group
     obs_group = parser.add_argument_group(
@@ -73,10 +68,6 @@ def add_agent_options(parser):
 
     for var_name, value in args.env_vars.items():
         os.environ[var_name] = value
-
-    # Ensure workspace directory exists
-    workspace_path = Path(args.workspace)
-    workspace_path.mkdir(parents=True, exist_ok=True)
 
     add_extra_config(args)
     return args
