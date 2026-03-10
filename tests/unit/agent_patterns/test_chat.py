@@ -2,6 +2,7 @@ import asyncio
 
 import pytest
 from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
 from pydantic_ai import FunctionToolset
 from pydantic_ai.models.test import TestModel
 
@@ -45,7 +46,7 @@ system_prompt = "Hi there."
     with create_pipe_input() as pipe_input:
 
         async def user_input():
-            return await user_input_generator(input=pipe_input)
+            return await user_input_generator(input=pipe_input, output=DummyOutput())
 
         from arox.ui.io import IOChannel
 
