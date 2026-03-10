@@ -12,3 +12,4 @@ def mock_home_env(monkeypatch, tmp_path):
 
     monkeypatch.setenv("HOME", str(mock_home))
     monkeypatch.setenv("USERPROFILE", str(mock_home))
+    monkeypatch.chdir(mock_home)
