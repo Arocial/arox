@@ -18,15 +18,15 @@ def multiply(a: int, b: int) -> int:
 
 
 @pytest.mark.asyncio
-async def test_rewrite_agent(tmp_path):
+async def test_chat_agent(tmp_path):
     # Create dummy config
-    default_agent_config = tmp_path / "rewrite.toml"
+    default_agent_config = tmp_path / "dummy_chat.toml"
     default_agent_config.write_text("""
 [DEFAULT]
 model_ref = "test"
-[agent.rewrite]
+[agent.dummy_chat]
 system_prompt = "Hi there."
-[agent.rewrite.model_params]
+[agent.dummy_chat.model_params]
 """)
 
     toml_parser = TomlConfigParser(
@@ -52,7 +52,7 @@ system_prompt = "Hi there."
         io_channel = IOChannel()
         io_adapter = TextIOAdapter(io_channel)
         agent = ChatAgent(
-            "rewrite", toml_parser, agent_io=io_channel, local_toolset=local_toolset
+            "dummy_chat", toml_parser, agent_io=io_channel, local_toolset=local_toolset
         )
         io_adapter.user_input = user_input
 
