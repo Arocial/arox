@@ -10,6 +10,7 @@ from typing import Any
 import fastmcp
 from httpx import AsyncClient, HTTPStatusError, Timeout, TransportError
 from pydantic_ai import (
+    AbstractToolset,
     Agent,
     AgentRunResult,
     FunctionToolset,
@@ -90,7 +91,7 @@ class LLMBaseAgent:
         name,
         config_parser,
         agent_io: AgentIOInterface,
-        local_toolset: FunctionToolset | None = None,
+        local_toolset: FunctionToolset[AgentDeps] | None = None,
         state_cls=SimpleState,
         context=None,
     ):
@@ -107,18 +108,20 @@ class LLMBaseAgent:
 
         # Manage tools
         self.local_toolset = local_toolset
-        toolsets = [local_toolset] if local_toolset else []
+        toolsets: list[AbstractToolset[AgentDeps]] = (
+            [local_toolset] if local_toolset else []
+        )
 
         mcp_server_configs = self.config.mcp_servers
         self.mcp_client = None
         if mcp_server_configs:
             self.mcp_client = fastmcp.Client({"mcpServers": mcp_server_configs})
-            mcp_toolset = FastMCPToolset(self.mcp_client)
+            mcp_toolset = FastMCPToolset[AgentDeps](self.mcp_client)
             toolsets.append(mcp_toolset)
 
         self.state = state_cls(self)
         self.model = infer_model(self.provider_model, provider_factory=infer_provider)
-        self.pydantic_agent = Agent(
+        self.pydantic_agent = Agent[AgentDeps](
             self.model,
             history_processors=[self.state.process_history],
             toolsets=toolsets,
