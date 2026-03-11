@@ -41,7 +41,7 @@ class AgentIOInterface(ABC):
         pass
 
     @abstractmethod
-    async def agent_wait_reply(self, event):
+    async def agent_wait_reply(self):
         pass
 
     @abstractmethod
@@ -78,7 +78,7 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
     @contextlib.asynccontextmanager
     async def chat_round(self):
         try:
-            yield await self.agent_wait_reply(None)
+            yield await self.agent_wait_reply()
         finally:
             await self.agent_send(StepDoneEvent())
 
@@ -103,8 +103,8 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
         return await self.adapter_event_rx.receive()
 
     @override
-    async def agent_wait_reply(self, prompt):
-        wrap_event = NeedReplyEvent(prompt)
+    async def agent_wait_reply(self):
+        wrap_event = ChatInputEvent()
         await self.agent_send(wrap_event)
         return await self.adapter_event_rx.receive()
 
@@ -130,9 +130,8 @@ class StepDoneEvent:
     pass
 
 
-class NeedReplyEvent:
-    def __init__(self, nested_event):
-        self.nested_event = nested_event
+class ChatInputEvent:
+    pass
 
 
 class AbstractIOAdapter(ABC):
@@ -205,7 +204,7 @@ class TextIOAdapter(AbstractIOAdapter):
             )
         elif isinstance(event, (FinalResultEvent, StepDoneEvent)):
             pass
-        elif isinstance(event, NeedReplyEvent):
+        elif isinstance(event, ChatInputEvent):
             try:
                 line = await self.user_input()
                 await self.adapter_io.adapter_send(line)

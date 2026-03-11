@@ -28,7 +28,7 @@ from arox.compose.coder.main import CoderComposer
 from arox.ui.io import (
     AbstractIOAdapter,
     AdapterIOInterface,
-    NeedReplyEvent,
+    ChatInputEvent,
     StepDoneEvent,
 )
 
@@ -154,7 +154,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             while True:
                 async with self.read_lock:
                     event = await self.adapter_io.adapter_receive()
-                if isinstance(event, NeedReplyEvent):
+                if isinstance(event, ChatInputEvent):
                     pass
                 elif isinstance(event, StepDoneEvent):
                     yield "data: [DONE]\n\n"
