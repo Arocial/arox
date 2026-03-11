@@ -121,7 +121,7 @@ class Shell:
         bwrap_args.extend(["--", "/bin/bash", "-c", command])
         return bwrap_args
 
-    async def shell(self, command: str, timeout: int | None = None) -> str:
+    async def shell(self, command: str, timeout: int | None = 100) -> str:
         """
         Run arbitrary shell commands in system's shell and return its output.
 
@@ -135,7 +135,7 @@ class Shell:
 
         Args:
             command: The shell command to execute (e.g., "ls -la", "pwd", "git status")
-            timeout: Optional timeout in seconds for the command execution
+            timeout: Optional timeout in seconds for the command execution (default: 100)
 
         Returns:
             str: The combined stdout and stderr output of the command
