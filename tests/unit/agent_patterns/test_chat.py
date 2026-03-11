@@ -62,7 +62,7 @@ system_prompt = "Hi there."
 
         asyncio.create_task(io_adapter.start())
 
-        test_model = TestModel()
+        test_model = TestModel(call_tools=["multiply"])
         with agent.pydantic_agent.override(model=test_model):
             async with agent:
                 await agent.start()

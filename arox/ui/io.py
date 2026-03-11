@@ -8,6 +8,7 @@ from typing import Any, override
 
 from anyio import EndOfStream, create_memory_object_stream
 from pydantic_ai import (
+    DeferredToolResults,
     FinalResultEvent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -32,8 +33,12 @@ class AgentIOInterface(ABC):
     async def agent_send(self, event):
         pass
 
+    @abstractmethod
+    async def add_chat_input_request(self, question, key):
+        pass
+
     @contextlib.asynccontextmanager
-    async def chat_round(self):
+    async def chat_round(self, deferred_requests):
         yield
 
     @abstractmethod
@@ -41,7 +46,7 @@ class AgentIOInterface(ABC):
         pass
 
     @abstractmethod
-    async def agent_wait_reply(self):
+    async def chat_input(self):
         pass
 
     @abstractmethod
@@ -74,17 +79,39 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
         )
         self._stack = contextlib.AsyncExitStack()
 
+        self.chat_input_event = ChatInputEvent()
+
     @override
     @contextlib.asynccontextmanager
-    async def chat_round(self):
+    async def chat_round(self, deferred_requests):
+        input = await self.chat_input()
         try:
-            yield await self.agent_wait_reply()
+            if deferred_requests:
+                deferred_results = DeferredToolResults()
+                for call in deferred_requests.calls:
+                    deferred_results.calls[
+                        call.tool_call_id
+                    ] = await deferred_requests.metadata[call.tool_call_id][
+                        "result_callback"
+                    ]()
+                self.chat_input_event.clear()
+                yield None, deferred_results
+            else:
+                self.chat_input_event.clear()
+                yield input, None
         finally:
             await self.agent_send(StepDoneEvent())
 
     @override
+    async def add_chat_input_request(self, question, key):
+        self.chat_input_event.add_question(question, key)
+
+    async def get_chat_input_result(self, key):
+        return self.chat_input_event.get_input(key)
+
+    @override
     async def run_cancellable(self, task):
-        await self.adapter.run_cancellable(task)
+        return await self.adapter.run_cancellable(task)
 
     @override
     async def agent_send(self, event):
@@ -103,10 +130,11 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
         return await self.adapter_event_rx.receive()
 
     @override
-    async def agent_wait_reply(self):
-        wrap_event = ChatInputEvent()
-        await self.agent_send(wrap_event)
-        return await self.adapter_event_rx.receive()
+    async def chat_input(self):
+        await self.agent_send(self.chat_input_event)
+        user_input = await self.adapter_event_rx.receive()
+        self.chat_input_event.set_input(user_input)
+        return user_input
 
     @override
     async def adapter_send(self, reply):
@@ -131,7 +159,21 @@ class StepDoneEvent:
 
 
 class ChatInputEvent:
-    pass
+    def __init__(self):
+        self.clear()
+
+    def clear(self):
+        self.questions = {}
+        self._user_input = {}
+
+    def add_question(self, question: str, uuid: str):
+        self.questions[uuid] = question
+
+    def get_input(self, key):
+        return self._user_input.get(key)
+
+    def set_input(self, input):
+        self._user_input = input
 
 
 class AbstractIOAdapter(ABC):
@@ -147,7 +189,7 @@ class AbstractIOAdapter(ABC):
         pass
 
     async def run_cancellable(self, task):
-        await task
+        return await task
 
 
 class TextIOAdapter(AbstractIOAdapter):
@@ -174,9 +216,10 @@ class TextIOAdapter(AbstractIOAdapter):
         signal.signal(signal.SIGINT, sigint_handler)
 
         try:
-            await step_task
+            return await step_task
         except asyncio.CancelledError:
             print("\n[Step cancelled by user]")
+            return None
         finally:
             signal.signal(signal.SIGINT, original_sigint_handler)
 
@@ -205,11 +248,22 @@ class TextIOAdapter(AbstractIOAdapter):
         elif isinstance(event, (FinalResultEvent, StepDoneEvent)):
             pass
         elif isinstance(event, ChatInputEvent):
-            try:
-                line = await self.user_input()
-                await self.adapter_io.adapter_send(line)
-            except EOFError as e:
-                await self.adapter_io.adapter_send(e)
+            if event.questions:
+                results = {}
+                for key, question in event.questions.items():
+                    print(f"\n[Agent asks]: {question}")
+                    try:
+                        line = await self.user_input()
+                        results[key] = line
+                    except EOFError:
+                        results[key] = ""
+                await self.adapter_io.adapter_send(results)
+            else:
+                try:
+                    line = await self.user_input()
+                    await self.adapter_io.adapter_send(line)
+                except EOFError as e:
+                    await self.adapter_io.adapter_send(e)
         else:
             print(f"\nUnexpected event type: {event.__class__.__name__}\n")
 

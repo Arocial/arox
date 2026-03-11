@@ -20,6 +20,7 @@ from pydantic_ai import (
 from pydantic_ai.models import infer_model
 from pydantic_ai.providers import Provider, gateway, google, infer_provider_class
 from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets.fastmcp import FastMCPToolset
 from tenacity import (
     before_sleep_log,
@@ -126,6 +127,7 @@ class LLMBaseAgent:
             history_processors=[self.state.process_history],
             toolsets=toolsets,
             deps_type=AgentDeps,
+            output_type=DeferredToolRequests | str,
         )
 
         self.agent_io = agent_io
@@ -217,17 +219,21 @@ class LLMBaseAgent:
 
         return self.set_model(self.model_ref)
 
-    async def _run_pre_step_hooks(self, input_content: str):
+    async def _run_pre_step_hooks(self, input_content: str | None):
         if hasattr(self, "pre_step_hooks"):
             for hook in self.pre_step_hooks:
                 await hook(self, input_content)
 
-    async def _run_post_step_hooks(self, input_content: str):
+    async def _run_post_step_hooks(self, input_content: str | None):
         if hasattr(self, "post_step_hooks"):
             for hook in self.post_step_hooks:
                 await hook(self, input_content)
 
-    async def step(self, input_content: str) -> AgentRunResult:
+    async def step(
+        self,
+        input_content: str | None = None,
+        deferred_tool_results: DeferredToolResults | None = None,
+    ) -> AgentRunResult:
         await self._run_pre_step_hooks(input_content)
         with capture_run_messages() as messages:
             try:
@@ -238,6 +244,7 @@ class LLMBaseAgent:
                     instructions=f"{self.system_prompt}\n{self.additional_prompt}",
                     message_history=self.state.message_history,
                     deps=AgentDeps(agent_io=self.agent_io),
+                    deferred_tool_results=deferred_tool_results,
                 )
                 self.state.message_history = result.all_messages()
                 await self._run_post_step_hooks(input_content)

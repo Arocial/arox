@@ -1,5 +1,6 @@
-import asyncio
 import logging
+
+from pydantic_ai.tools import DeferredToolRequests
 
 from arox import commands
 from arox.agent_patterns.llm_base import LLMBaseAgent
@@ -38,21 +39,37 @@ class ChatAgent(LLMBaseAgent):
     async def start(self):
         """Start the agent with optional input generator"""
         chat_mode = "normal"
-        asyncio.get_running_loop()
+
+        deferred_requests = None
 
         while True:
-            async with self.agent_io.chat_round() as user_input:
+            async with self.agent_io.chat_round(deferred_requests) as (
+                user_input,
+                deferred_results,
+            ):
                 try:
                     if chat_mode == "normal":
-                        if isinstance(user_input, EOFError):
-                            break
-                        if not user_input.strip():
-                            continue
-                        is_command = await self.command_manager.try_execute_command(
-                            user_input
-                        )
-                        if not is_command:
-                            await self.agent_io.run_cancellable(self.step(user_input))
+                        result = None
+                        if deferred_requests:
+                            result = await self.agent_io.run_cancellable(
+                                self.step(None, deferred_tool_results=deferred_results)
+                            )
+                            deferred_requests = None
+                        else:
+                            if isinstance(user_input, EOFError):
+                                break
+                            if not user_input.strip():
+                                continue
+                            is_command = await self.command_manager.try_execute_command(
+                                user_input
+                            )
+                            if not is_command:
+                                result = await self.agent_io.run_cancellable(
+                                    self.step(user_input)
+                                )
+                        if result and isinstance(result.output, DeferredToolRequests):
+                            deferred_requests = result.output
+
                     elif chat_mode == "ask_continue":
                         if (
                             isinstance(user_input, EOFError)

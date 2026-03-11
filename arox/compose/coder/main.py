@@ -12,6 +12,7 @@ from arox.agent_patterns.chat import ChatAgent
 from arox.compose.coder.state import CoderState
 from arox.compose.git_commit import GitCommitAgent
 from arox.config import TomlConfigParser
+from arox.tools import ask_human
 from arox.tools.shell import Shell
 from arox.ui.io import IOChannel
 
@@ -64,6 +65,7 @@ class CoderComposer:
         )
         shell_tool = Shell(coder_agent.workspace.absolute())
         shell_tool.register_tool(coder_agent)
+        coder_agent.add_local_tool(ask_human)
         coder_commands = [
             commands.ProjectCommand(coder_agent),
             commands.ModelCommand(coder_agent),
