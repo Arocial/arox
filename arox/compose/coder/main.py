@@ -81,11 +81,11 @@ class CoderComposer:
         self.coder_agent = coder_agent
 
         # Add commit hooks
-        async def before_llm_hook(agent, input_content: str):
+        async def pre_step_hook(agent, input_content: str):
             logger.info("Running pre-LLM commit hook")
             await self.commit_agent.auto_commit_changes()
 
-        self.coder_agent.add_before_step_hook(before_llm_hook)
+        self.coder_agent.add_pre_step_hook(pre_step_hook)
 
         if args.dump_default_config:
             logger.debug(f"Dumping default config to {args.dump_default_config}")

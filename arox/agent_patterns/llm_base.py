@@ -214,18 +214,18 @@ class LLMBaseAgent:
 
         return self.set_model(self.model_ref)
 
-    async def _run_before_hooks(self, input_content: str):
-        if hasattr(self, "before_step_hooks"):
-            for hook in self.before_step_hooks:
+    async def _run_pre_step_hooks(self, input_content: str):
+        if hasattr(self, "pre_step_hooks"):
+            for hook in self.pre_step_hooks:
                 await hook(self, input_content)
 
-    async def _run_after_hooks(self, input_content: str):
-        if hasattr(self, "after_step_hooks"):
-            for hook in self.after_step_hooks:
+    async def _run_post_step_hooks(self, input_content: str):
+        if hasattr(self, "post_step_hooks"):
+            for hook in self.post_step_hooks:
                 await hook(self, input_content)
 
     async def step(self, input_content: str) -> AgentRunResult:
-        await self._run_before_hooks(input_content)
+        await self._run_pre_step_hooks(input_content)
         with capture_run_messages() as messages:
             try:
                 result = await self.pydantic_agent.run(
@@ -237,7 +237,7 @@ class LLMBaseAgent:
                     deps=AgentDeps(agent_io=self.agent_io),
                 )
                 self.state.message_history = result.all_messages()
-                await self._run_after_hooks(input_content)
+                await self._run_post_step_hooks(input_content)
                 return result
             except (asyncio.CancelledError, Exception):
                 self.state.message_history = messages
@@ -246,12 +246,12 @@ class LLMBaseAgent:
     def reset(self):
         return self.state.reset()
 
-    def add_before_step_hook(self, hook):
-        if not hasattr(self, "before_step_hooks"):
-            self.before_step_hooks = []
-        self.before_step_hooks.append(hook)
+    def add_pre_step_hook(self, hook):
+        if not hasattr(self, "pre_step_hooks"):
+            self.pre_step_hooks = []
+        self.pre_step_hooks.append(hook)
 
-    def add_after_step_hook(self, hook):
-        if not hasattr(self, "after_step_hooks"):
-            self.after_step_hooks = []
-        self.after_step_hooks.append(hook)
+    def add_post_step_hook(self, hook):
+        if not hasattr(self, "post_step_hooks"):
+            self.post_step_hooks = []
+        self.post_step_hooks.append(hook)
