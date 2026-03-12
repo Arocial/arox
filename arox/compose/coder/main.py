@@ -85,7 +85,7 @@ class CoderComposer:
         # Add commit hooks
         async def pre_step_hook(agent, input_content: str):
             logger.info("Running pre-LLM commit hook")
-            await self.commit_agent.auto_commit_changes()
+            # await self.commit_agent.auto_commit_changes()
 
         self.coder_agent.add_pre_step_hook(pre_step_hook)
 

@@ -1,5 +1,6 @@
 import logging
 
+from pydantic_ai import DeferredToolResults
 from pydantic_ai.tools import DeferredToolRequests
 
 from arox import commands
@@ -38,47 +39,59 @@ class ChatAgent(LLMBaseAgent):
 
     async def start(self):
         """Start the agent with optional input generator"""
-        chat_mode = "normal"
-
         deferred_requests = None
+        chat_input_event = self.agent_io.create_chat_input_event()
+        chat_input_event.normal_input.request = True
+        await self.agent_io.agent_send(chat_input_event)
 
         while True:
-            async with self.agent_io.chat_round(deferred_requests) as (
-                user_input,
-                deferred_results,
-            ):
-                try:
-                    if chat_mode == "normal":
-                        result = None
-                        if deferred_requests:
-                            result = await self.agent_io.run_cancellable(
-                                self.step(None, deferred_tool_results=deferred_results)
-                            )
-                            deferred_requests = None
-                        else:
-                            if isinstance(user_input, EOFError):
-                                break
-                            if not user_input.strip():
-                                continue
-                            is_command = await self.command_manager.try_execute_command(
-                                user_input
-                            )
-                            if not is_command:
-                                result = await self.agent_io.run_cancellable(
-                                    self.step(user_input)
-                                )
-                        if result and isinstance(result.output, DeferredToolRequests):
-                            deferred_requests = result.output
+            async with self.agent_io.chat_round():
+                if deferred_requests:
+                    deferred_results = DeferredToolResults()
+                    for call in deferred_requests.calls:
+                        deferred_results.calls[
+                            call.tool_call_id
+                        ] = await deferred_requests.metadata[call.tool_call_id][
+                            "result_callback"
+                        ]()
+                else:
+                    deferred_results = None
+                if (
+                    chat_input_event.exception_input.exception
+                    and chat_input_event.exception_input.to_continue
+                ):
+                    user_input = "Please continue."
+                elif chat_input_event.normal_input.request:
+                    user_input = chat_input_event.normal_input.user_input
+                else:
+                    user_input = None
 
-                    elif chat_mode == "ask_continue":
-                        if (
-                            isinstance(user_input, EOFError)
-                            or user_input.strip().lower() != "y"
-                        ):
-                            break
-                        chat_mode = "normal"
+                chat_input_event = self.agent_io.create_chat_input_event()
+
+                if user_input is None and deferred_results is None:
+                    break
+
+                try:
+                    if user_input is not None:
+                        if not user_input.strip():
+                            chat_input_event.normal_input.request = True
+                            continue
+                        is_command = await self.command_manager.try_execute_command(
+                            user_input
+                        )
+                        if is_command:
+                            chat_input_event.normal_input.request = True
+                            continue
+
+                    result = await self.agent_io.run_cancellable(
+                        self.step(user_input, deferred_tool_results=deferred_results)
+                    )
+                    if result and isinstance(result.output, DeferredToolRequests):
+                        deferred_requests = result.output
+                    else:
+                        deferred_requests = None
+                        chat_input_event.normal_input.request = True
+
                 except Exception as e:
                     logger.exception("An error occurred.")
-                    await self.agent_io.agent_send(f"An error occurred: {e}")
-                    await self.agent_io.agent_send("Do you want to continue? (y/n)")
-                    chat_mode = "ask_continue"
+                    chat_input_event.exception_input.exception = e

@@ -48,7 +48,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     async def run_cancellable(self, task):
         self.current_task = asyncio.create_task(task)
         try:
-            await self.current_task
+            return await self.current_task
         except asyncio.CancelledError:
             logger.info("Task cancelled by client disconnect")
         finally:
@@ -147,6 +147,11 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         elif isinstance(event, FinalResultEvent):
             events.append(f"data: {json.dumps({'type': 'finish'})}\n\n")
 
+        elif isinstance(event, ChatInputEvent):
+            events.append(
+                f"data: {json.dumps({'type': 'data-input-request', 'data': event.generate_request()})}\n\n"
+            )
+
         return events
 
     async def output_generator(self):
@@ -154,9 +159,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             while True:
                 async with self.read_lock:
                     event = await self.adapter_io.adapter_receive()
-                if isinstance(event, ChatInputEvent):
-                    pass
-                elif isinstance(event, StepDoneEvent):
+                if isinstance(event, StepDoneEvent):
                     yield "data: [DONE]\n\n"
                     break
                 else:
@@ -167,7 +170,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             yield "data: [DONE]\n\n"
 
     async def submit_user_input(self, text: str):
-        await self.adapter_io.adapter_send(text)
+        self.adapter_io.chat_input_event.set_reply(json.loads(text))
 
 
 class ChatRequest(BaseModel):

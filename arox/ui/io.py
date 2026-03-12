@@ -4,11 +4,12 @@ import logging
 import math
 import signal
 from abc import ABC, abstractmethod
+from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any, override
 
 from anyio import EndOfStream, create_memory_object_stream
 from pydantic_ai import (
-    DeferredToolResults,
     FinalResultEvent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -34,19 +35,23 @@ class AgentIOInterface(ABC):
         pass
 
     @abstractmethod
-    async def add_chat_input_request(self, question, key):
+    async def add_tool_input_request(self, question, key):
+        pass
+
+    @abstractmethod
+    async def get_tool_input_result(self, key):
+        pass
+
+    @abstractmethod
+    def create_chat_input_event(self):
         pass
 
     @contextlib.asynccontextmanager
-    async def chat_round(self, deferred_requests):
+    async def chat_round(self):
         yield
 
     @abstractmethod
     async def agent_receive(self):
-        pass
-
-    @abstractmethod
-    async def chat_input(self):
         pass
 
     @abstractmethod
@@ -79,35 +84,31 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
         )
         self._stack = contextlib.AsyncExitStack()
 
+        self.chat_input_event = None
+
+    @override
+    def create_chat_input_event(self):
         self.chat_input_event = ChatInputEvent()
+        return self.chat_input_event
 
     @override
     @contextlib.asynccontextmanager
-    async def chat_round(self, deferred_requests):
-        input = await self.chat_input()
+    async def chat_round(self):
+        await self.chat_input_event.wait()
         try:
-            if deferred_requests:
-                deferred_results = DeferredToolResults()
-                for call in deferred_requests.calls:
-                    deferred_results.calls[
-                        call.tool_call_id
-                    ] = await deferred_requests.metadata[call.tool_call_id][
-                        "result_callback"
-                    ]()
-                self.chat_input_event.clear()
-                yield None, deferred_results
-            else:
-                self.chat_input_event.clear()
-                yield input, None
+            yield
         finally:
+            await self.agent_send(self.chat_input_event)
             await self.agent_send(StepDoneEvent())
 
     @override
-    async def add_chat_input_request(self, question, key):
-        self.chat_input_event.add_question(question, key)
+    async def add_tool_input_request(self, question, key):
+        self.chat_input_event.add_deferred_tool(question, key)
 
-    async def get_chat_input_result(self, key):
-        return self.chat_input_event.get_input(key)
+    @override
+    async def get_tool_input_result(self, key):
+        await self.chat_input_event.wait()
+        return self.chat_input_event.get_deferred_tool_input(key)
 
     @override
     async def run_cancellable(self, task):
@@ -128,13 +129,6 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
     @override
     async def agent_receive(self):
         return await self.adapter_event_rx.receive()
-
-    @override
-    async def chat_input(self):
-        await self.agent_send(self.chat_input_event)
-        user_input = await self.adapter_event_rx.receive()
-        self.chat_input_event.set_input(user_input)
-        return user_input
 
     @override
     async def adapter_send(self, reply):
@@ -159,21 +153,60 @@ class StepDoneEvent:
 
 
 class ChatInputEvent:
+    @dataclass
+    class DeferredToolInput:
+        question: str
+        answer: str | None = None
+
+    @dataclass
+    class NormalInput:
+        request: bool
+        user_input: str | None
+
+    @dataclass
+    class ExceptionInput:
+        exception: BaseException | None = None
+        to_continue: bool = False
+
     def __init__(self):
-        self.clear()
+        self.deferred_tools = OrderedDict[str, self.DeferredToolInput]()
+        self.normal_input = self.NormalInput(False, "")
+        self.exception_input = self.ExceptionInput()
 
-    def clear(self):
-        self.questions = {}
-        self._user_input = {}
+        loop = asyncio.get_running_loop()
+        self.future = loop.create_future()
 
-    def add_question(self, question: str, uuid: str):
-        self.questions[uuid] = question
+    def add_deferred_tool(self, question: str, key: str):
+        self.deferred_tools[key] = self.DeferredToolInput(question)
 
-    def get_input(self, key):
-        return self._user_input.get(key)
+    def get_deferred_tool_input(self, key):
+        return self.deferred_tools[key].answer
 
-    def set_input(self, input):
-        self._user_input = input
+    async def wait(self):
+        await self.future
+
+    def generate_request(self):
+        return {
+            "deferred_tools": {k: t.question for k, t in self.deferred_tools.items()},
+            "normal_input": {"request": self.normal_input.request},
+            "exception_input": {
+                "exception": str(self.exception_input.exception)
+                if self.exception_input.exception
+                else None
+            },
+        }
+
+    def set_reply(self, reply: dict):
+        if "deferred_tools" in reply:
+            for k, v in reply["deferred_tools"].items():
+                if k in self.deferred_tools:
+                    self.deferred_tools[k].answer = v
+        if "exception_input" in reply:
+            self.exception_input.to_continue = reply["exception_input"]["to_continue"]
+        if "normal_input" in reply:
+            self.normal_input.user_input = reply["normal_input"]["user_input"]
+
+        self.future.set_result(True)
 
 
 class AbstractIOAdapter(ABC):
@@ -248,22 +281,34 @@ class TextIOAdapter(AbstractIOAdapter):
         elif isinstance(event, (FinalResultEvent, StepDoneEvent)):
             pass
         elif isinstance(event, ChatInputEvent):
-            if event.questions:
-                results = {}
-                for key, question in event.questions.items():
-                    print(f"\n[Agent asks]: {question}")
+            reply = {}
+            if event.deferred_tools:
+                reply["deferred_tools"] = {}
+                for key, tool in event.deferred_tools.items():
+                    print(f"\n[Agent asks]: {tool.question}")
                     try:
                         line = await self.user_input()
-                        results[key] = line
+                        reply["deferred_tools"][key] = line
                     except EOFError:
-                        results[key] = ""
-                await self.adapter_io.adapter_send(results)
-            else:
+                        reply["deferred_tools"][key] = ""
+            if event.exception_input.exception is not None:
+                print(
+                    f"An error occurred: {event.exception_input.exception}\nDo you want to continue? (y/n)"
+                )
                 try:
                     line = await self.user_input()
-                    await self.adapter_io.adapter_send(line)
-                except EOFError as e:
-                    await self.adapter_io.adapter_send(e)
+                    reply["exception_input"] = {
+                        "to_continue": line.strip().lower() == "y"
+                    }
+                except EOFError:
+                    reply["exception_input"] = {"to_continue": False}
+            if event.normal_input.request:
+                try:
+                    line = await self.user_input()
+                    reply["normal_input"] = {"user_input": line}
+                except EOFError:
+                    reply["normal_input"] = {"user_input": None}
+            event.set_reply(reply)
         else:
             print(f"\nUnexpected event type: {event.__class__.__name__}\n")
 
