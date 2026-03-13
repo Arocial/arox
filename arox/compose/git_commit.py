@@ -41,7 +41,9 @@ class GitCommitAgent(LLMBaseAgent):
 
         # Call the LLM to generate the commit message
         result = await self.step(prompt)
-        return result.output.strip()
+        if isinstance(result.output, str):
+            return result.output.strip()
+        return "Error: Unexpected output type from LLM"
 
     async def commit_changes(
         self, message: str | None = None, co_author: str | None = None
@@ -113,7 +115,10 @@ if __name__ == "__main__":
     toml_parser = TomlConfigParser()
     agent_patterns.init(toml_parser)
 
-    io_channel = TextIOAdapter()
+    from arox.ui.io import IOChannel
+
+    io_channel = IOChannel()
+    adapter = TextIOAdapter(io_channel)
     agent = GitCommitAgent("git_commit_agent", toml_parser, agent_io=io_channel)
 
     async def wrapper():

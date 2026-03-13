@@ -3,7 +3,7 @@ import asyncio
 import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
-from pydantic_ai import FunctionToolset
+from pydantic_ai import FunctionToolset, ToolCallPart
 from pydantic_ai.models.test import TestModel
 
 from arox import agent_patterns
@@ -40,7 +40,9 @@ system_prompt = "Hi there."
         "Calculate 1488*2083.\n",
         "\x04",
     ]
-    local_toolset = FunctionToolset()
+    from arox.agent_patterns.llm_base import AgentDeps
+
+    local_toolset = FunctionToolset[AgentDeps]()
     local_toolset.add_function(multiply)
 
     with create_pipe_input() as pipe_input:
@@ -74,6 +76,6 @@ system_prompt = "Hi there."
             for msg in messages
             if hasattr(msg, "parts")
             for part in msg.parts
-            if hasattr(part, "tool_name")
+            if isinstance(part, ToolCallPart)
         ]
         assert "multiply" in tool_calls

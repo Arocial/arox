@@ -1,6 +1,7 @@
 import logging
 from collections.abc import AsyncIterable
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic_ai import (
     AgentStreamEvent,
@@ -9,6 +10,9 @@ from pydantic_ai import (
 )
 
 from arox.agent_patterns.example_parser import parse_example_yaml
+
+if TYPE_CHECKING:
+    from arox.agent_patterns.llm_base import AgentDeps
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +43,7 @@ class SimpleState:
         self.message_history = self.example_messages
 
     async def handle_event(
-        self, ctx: RunContext, events: AsyncIterable[AgentStreamEvent]
+        self, ctx: RunContext["AgentDeps"], events: AsyncIterable[AgentStreamEvent]
     ):
         async for event in events:
             await ctx.deps.agent_io.agent_send(event)

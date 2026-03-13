@@ -78,7 +78,7 @@ def infer_provider(provider: str) -> Provider[Any]:
         )
     else:
         provider_class = infer_provider_class(provider)
-        return provider_class(http_client=client)
+        return provider_class(http_client=client)  # type: ignore
 
 
 @dataclass
@@ -122,12 +122,12 @@ class LLMBaseAgent:
 
         self.state = state_cls(self)
         self.model = infer_model(self.provider_model, provider_factory=infer_provider)
-        self.pydantic_agent = Agent[AgentDeps](
+        self.pydantic_agent = Agent[AgentDeps, DeferredToolRequests | str](
             self.model,
             history_processors=[self.state.process_history],
             toolsets=toolsets,
             deps_type=AgentDeps,
-            output_type=DeferredToolRequests | str,
+            output_type=(DeferredToolRequests, str),
         )
 
         self.agent_io = agent_io
@@ -233,7 +233,7 @@ class LLMBaseAgent:
         self,
         input_content: str | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
-    ) -> AgentRunResult:
+    ) -> AgentRunResult[DeferredToolRequests | str]:
         await self._run_pre_step_hooks(input_content)
         with capture_run_messages() as messages:
             try:

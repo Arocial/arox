@@ -39,7 +39,7 @@ class CoderState(SimpleState):
                 mime_type, _ = mimetypes.guess_type(path)
                 if not mime_type:
                     mime_type = "application/octet-stream"
-                content.append(BinaryContent(data=data, media_type=mime_type))
+                content.append(BinaryContent(data=data, media_type=mime_type))  # type: ignore
 
             if content:
                 new_part = UserPromptPart(content=content)

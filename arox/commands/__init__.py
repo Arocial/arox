@@ -108,11 +108,11 @@ class ModelCommand(Command):
     command = "model"
     description = "Switch LLM model - /model <model_name>"
 
-    async def execute(self, name: str, new_model: str):
-        if not new_model:
+    async def execute(self, name: str, arg: str):
+        if not arg:
             await self.agent.agent_io.agent_send("Please specify a model name")
             return
-        self.agent.set_model(new_model)
+        self.agent.set_model(arg)
 
 
 class SaveCommand(Command):

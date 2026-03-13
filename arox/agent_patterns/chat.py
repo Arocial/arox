@@ -39,7 +39,7 @@ class ChatAgent(LLMBaseAgent):
 
     async def start(self):
         """Start the agent with optional input generator"""
-        deferred_requests = None
+        deferred_requests: DeferredToolRequests | None = None
         chat_input_event = self.agent_io.create_chat_input_event()
         chat_input_event.normal_input.request = True
         await self.agent_io.agent_send(chat_input_event)

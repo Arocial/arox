@@ -39,11 +39,11 @@ class AgentIOInterface(ABC):
         pass
 
     @abstractmethod
-    async def get_tool_input_result(self, key):
+    async def get_tool_input_result(self, key) -> str | None:
         pass
 
     @abstractmethod
-    def create_chat_input_event(self):
+    def create_chat_input_event(self) -> "ChatInputEvent":
         pass
 
     @contextlib.asynccontextmanager
@@ -58,6 +58,12 @@ class AgentIOInterface(ABC):
     async def run_cancellable(self, task):
         pass
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
+
 
 class AdapterIOInterface(ABC):
     @abstractmethod
@@ -70,6 +76,12 @@ class AdapterIOInterface(ABC):
 
     def set_adapter(self, adapter):
         self.adapter = adapter
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        pass
 
 
 class IOChannel(AgentIOInterface, AdapterIOInterface):
@@ -94,6 +106,7 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
     @override
     @contextlib.asynccontextmanager
     async def chat_round(self):
+        assert self.chat_input_event is not None
         await self.chat_input_event.wait()
         try:
             yield
@@ -103,10 +116,12 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
 
     @override
     async def add_tool_input_request(self, question, key):
+        assert self.chat_input_event is not None
         self.chat_input_event.add_deferred_tool(question, key)
 
     @override
     async def get_tool_input_result(self, key):
+        assert self.chat_input_event is not None
         await self.chat_input_event.wait()
         return self.chat_input_event.get_deferred_tool_input(key)
 
@@ -143,6 +158,7 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
         await self._stack.enter_async_context(self.agent_event_rx)
         await self._stack.enter_async_context(self.adapter_event_tx)
         await self._stack.enter_async_context(self.adapter_event_tx)
+        return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self._stack.aclose()

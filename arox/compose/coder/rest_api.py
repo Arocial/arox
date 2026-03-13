@@ -170,7 +170,13 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             yield "data: [DONE]\n\n"
 
     async def submit_user_input(self, text: str):
-        self.adapter_io.chat_input_event.set_reply(json.loads(text))
+        from typing import cast
+
+        from arox.ui.io import IOChannel
+
+        io_channel = cast(IOChannel, self.adapter_io)
+        if io_channel.chat_input_event:
+            io_channel.chat_input_event.set_reply(json.loads(text))
 
 
 class ChatRequest(BaseModel):

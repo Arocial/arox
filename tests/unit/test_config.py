@@ -82,7 +82,8 @@ def test_config_missing_attribute():
 
 def test_argument_group_dump_config():
     """Test generating default config from argument group"""
-    group = ArgumentGroup(None, "test")
+    parser = TomlConfigParser()
+    group = ArgumentGroup(parser, "test")
     group.add_argument("param1", default=1, help="First param")
     group.add_argument("param2", default="two", help="Second param")
 
