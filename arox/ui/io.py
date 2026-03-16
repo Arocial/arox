@@ -157,7 +157,7 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
         await self._stack.enter_async_context(self.agent_event_tx)
         await self._stack.enter_async_context(self.agent_event_rx)
         await self._stack.enter_async_context(self.adapter_event_tx)
-        await self._stack.enter_async_context(self.adapter_event_tx)
+        await self._stack.enter_async_context(self.adapter_event_rx)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

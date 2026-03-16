@@ -104,7 +104,15 @@ class CoderComposer:
             await stack.enter_async_context(self.coder_agent)
             await stack.enter_async_context(self.commit_agent)
 
-            asyncio.create_task(self.git_adapter.start())
+            try:
+                from arox.compose.coder.telegram import TelegramIOAdapter
+
+                is_telegram = isinstance(self.git_adapter, TelegramIOAdapter)
+            except ImportError:
+                is_telegram = False
+
+            if not is_telegram:
+                asyncio.create_task(self.git_adapter.start())
             asyncio.create_task(self.coder_adapter.start())
 
             await self.commit_agent.show_agent_info()
@@ -116,18 +124,13 @@ def main():
     parser = argparse.ArgumentParser()
     _ = parser.add_argument(
         "--ui",
-        choices=["textui", "restapi"],
+        choices=["textui", "restapi", "telegram"],
         default="textui",
-        help="UI interface to use (textui or restapi)",
+        help="UI interface to use (textui, restapi, or telegram)",
     )
     args, _ = parser.parse_known_args()
 
-    if args.ui == "restapi":
-        logging.basicConfig(
-            level=logging.INFO,
-            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        )
-    else:
+    if args.ui == "textui":
         log_dir = Path(".arox")
         log_dir.mkdir(exist_ok=True)
         logging.basicConfig(
@@ -135,6 +138,11 @@ def main():
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
             filename=log_dir / "agents.log",
             filemode="a",
+        )
+    else:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
 
     if args.ui == "textui":
@@ -147,6 +155,11 @@ def main():
 
         app = CoderRestUI()
         app.run()
+    elif args.ui == "telegram":
+        from arox.compose.coder.telegram import TelegramIOAdapter
+
+        composer = CoderComposer(TelegramIOAdapter)
+        asyncio.run(composer.run())
 
 
 if __name__ == "__main__":

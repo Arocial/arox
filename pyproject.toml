@@ -23,6 +23,7 @@ dependencies = [
     "fastmcp>=2.14.2",
     "fastapi>=0.128.6",
     "jinja2>=3.1.6",
+    "python-telegram-bot>=21.0",
 ]
 [project.urls]
 Homepage = "https://github.com/Arocial/arox"
