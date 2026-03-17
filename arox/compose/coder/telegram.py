@@ -82,7 +82,8 @@ class TelegramIOAdapter(AbstractIOAdapter):
 
                 await app.initialize()
                 await app.start()
-                await app.updater.start_polling(drop_pending_updates=True)
+                if app.updater:
+                    await app.updater.start_polling(drop_pending_updates=True)
                 TelegramIOAdapter._shared_app = app
 
         asyncio.create_task(self.process_events())
@@ -91,6 +92,8 @@ class TelegramIOAdapter(AbstractIOAdapter):
     async def shared_start_command(
         cls, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
+        if not update.effective_chat or not update.message:
+            return
         chat_id = update.effective_chat.id
         allowed_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
         if allowed_chat_id and chat_id != int(allowed_chat_id):
@@ -107,6 +110,8 @@ class TelegramIOAdapter(AbstractIOAdapter):
     async def shared_handle_message(
         cls, update: Update, context: ContextTypes.DEFAULT_TYPE
     ):
+        if not update.effective_chat or not update.message or not update.message.text:
+            return
         chat_id = update.effective_chat.id
         allowed_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
         if allowed_chat_id and chat_id != int(allowed_chat_id):
@@ -141,7 +146,7 @@ class TelegramIOAdapter(AbstractIOAdapter):
             pass
 
     async def _handle_output(self, event):
-        if not self.app:
+        if not self.app or not self.current_chat_id:
             return
 
         await self.chat_id_event.wait()
