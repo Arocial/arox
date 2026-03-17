@@ -104,15 +104,7 @@ class CoderComposer:
             await stack.enter_async_context(self.coder_agent)
             await stack.enter_async_context(self.commit_agent)
 
-            try:
-                from arox.compose.coder.telegram import TelegramIOAdapter
-
-                is_telegram = isinstance(self.git_adapter, TelegramIOAdapter)
-            except ImportError:
-                is_telegram = False
-
-            if not is_telegram:
-                asyncio.create_task(self.git_adapter.start())
+            asyncio.create_task(self.git_adapter.start())
             asyncio.create_task(self.coder_adapter.start())
 
             await self.commit_agent.show_agent_info()

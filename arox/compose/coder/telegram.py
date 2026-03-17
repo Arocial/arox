@@ -33,6 +33,11 @@ logger = logging.getLogger(__name__)
 
 
 class TelegramIOAdapter(AbstractIOAdapter):
+    _shared_app = None
+    _app_lock = asyncio.Lock()
+    _adapters = []
+    _shared_input_queue = asyncio.Queue()
+
     def __init__(self, adapter_io: AdapterIOInterface):
         super().__init__(adapter_io)
         self.token = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -40,15 +45,20 @@ class TelegramIOAdapter(AbstractIOAdapter):
         if self.allowed_chat_id:
             self.allowed_chat_id = int(self.allowed_chat_id)
 
-        self.app = None
         self.current_chat_id = self.allowed_chat_id
         self.message_buffer = []
         self.current_task = None
         self.read_lock = asyncio.Lock()
-        self.input_queue = asyncio.Queue()
+        self.input_queue = TelegramIOAdapter._shared_input_queue
         self.chat_id_event = asyncio.Event()
         if self.current_chat_id:
             self.chat_id_event.set()
+
+        TelegramIOAdapter._adapters.append(self)
+
+    @property
+    def app(self):
+        return TelegramIOAdapter._shared_app
 
     def setup(self, agent):
         pass
@@ -60,36 +70,53 @@ class TelegramIOAdapter(AbstractIOAdapter):
             )
             return
 
-        self.app = Application.builder().token(self.token).build()
-        self.app.add_handler(CommandHandler("start", self.start_command))
-        self.app.add_handler(
-            MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message)
-        )
+        async with TelegramIOAdapter._app_lock:
+            if TelegramIOAdapter._shared_app is None:
+                app = Application.builder().token(self.token).build()
+                app.add_handler(CommandHandler("start", self.shared_start_command))
+                app.add_handler(
+                    MessageHandler(
+                        filters.TEXT & ~filters.COMMAND, self.shared_handle_message
+                    )
+                )
 
-        await self.app.initialize()
-        await self.app.start()
-        await self.app.updater.start_polling(drop_pending_updates=True)
+                await app.initialize()
+                await app.start()
+                await app.updater.start_polling(drop_pending_updates=True)
+                TelegramIOAdapter._shared_app = app
 
         asyncio.create_task(self.process_events())
 
-    async def start_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    @classmethod
+    async def shared_start_command(
+        cls, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         chat_id = update.effective_chat.id
-        if self.allowed_chat_id and chat_id != self.allowed_chat_id:
+        allowed_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+        if allowed_chat_id and chat_id != int(allowed_chat_id):
             await update.message.reply_text("Unauthorized.")
             return
-        self.current_chat_id = chat_id
-        self.chat_id_event.set()
+
+        for adapter in cls._adapters:
+            adapter.current_chat_id = chat_id
+            adapter.chat_id_event.set()
+
         await update.message.reply_text("Agent is ready. Send a message to start.")
 
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    @classmethod
+    async def shared_handle_message(
+        cls, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ):
         chat_id = update.effective_chat.id
-        if self.allowed_chat_id and chat_id != self.allowed_chat_id:
+        allowed_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+        if allowed_chat_id and chat_id != int(allowed_chat_id):
             return
 
-        self.current_chat_id = chat_id
-        self.chat_id_event.set()
-        text = update.message.text
-        await self.input_queue.put(text)
+        for adapter in cls._adapters:
+            adapter.current_chat_id = chat_id
+            adapter.chat_id_event.set()
+
+        await cls._shared_input_queue.put(update.message.text)
 
     async def run_cancellable(self, task):
         self.current_task = asyncio.create_task(task)
