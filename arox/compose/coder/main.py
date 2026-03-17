@@ -116,9 +116,9 @@ def main():
     parser = argparse.ArgumentParser()
     _ = parser.add_argument(
         "--ui",
-        choices=["textui", "restapi", "telegram"],
+        choices=["textui", "restapi", "telegram", "feishu"],
         default="textui",
-        help="UI interface to use (textui, restapi, or telegram)",
+        help="UI interface to use (textui, restapi, telegram, or feishu)",
     )
     args, _ = parser.parse_known_args()
 
@@ -151,6 +151,11 @@ def main():
         from arox.compose.coder.telegram import TelegramIOAdapter
 
         composer = CoderComposer(TelegramIOAdapter)
+        asyncio.run(composer.run())
+    elif args.ui == "feishu":
+        from arox.compose.coder.feishu import FeishuIOAdapter
+
+        composer = CoderComposer(FeishuIOAdapter)
         asyncio.run(composer.run())
 
 

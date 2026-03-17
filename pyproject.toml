@@ -22,8 +22,11 @@ dependencies = [
     "rapidfuzz>=3.14.3",
     "fastmcp>=2.14.2",
     "fastapi>=0.128.6",
+    "uvicorn>=0.34.0",
+    "httpx>=0.27.0",
     "jinja2>=3.1.6",
     "python-telegram-bot>=21.0",
+    "lark-oapi>=1.5.3",
 ]
 [project.urls]
 Homepage = "https://github.com/Arocial/arox"

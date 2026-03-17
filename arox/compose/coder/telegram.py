@@ -146,10 +146,10 @@ class TelegramIOAdapter(AbstractIOAdapter):
             pass
 
     async def _handle_output(self, event):
+        await self.chat_id_event.wait()
+
         if not self.app or not self.current_chat_id:
             return
-
-        await self.chat_id_event.wait()
 
         if isinstance(event, PartStartEvent):
             part = event.part
