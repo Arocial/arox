@@ -113,35 +113,17 @@ class ProjectManager:
                     f"Error reading file {file_path}: {e!s}"
                 )
 
-    def consume_pending(self) -> tuple[str, dict[str, bytes]]:
-        text_result = ""
-        if self._pending_text_files:
-            text_result += (
-                "User added following files for reference:\n"
-                + (
-                    "\n".join(
-                        [
-                            f"<file path={path}>\n{content}\n</file>\n"
-                            for path, content in self._pending_text_files.items()
-                        ]
-                    )
-                )
-                + "\n"
-            )
-            self._pending_text_files = {}
+    def consume_pending(self) -> tuple[dict[str, str], dict[str, bytes], bool]:
+        text_files = self._pending_text_files
+        self._pending_text_files = {}
 
-        if self._pending_project_file_list:
-            file_list = "\n".join(self._get_tracked_files())
-            if file_list:
-                text_result += (
-                    f"\nFiles tracked in VC of current project:\n{file_list}\n"
-                )
-            self._pending_project_file_list = False
+        project_file_list = self._pending_project_file_list
+        self._pending_project_file_list = False
 
-        binary_result = self._pending_binary_files
+        binary_files = self._pending_binary_files
         self._pending_binary_files = {}
 
-        return text_result, binary_result
+        return text_files, binary_files, project_file_list
 
     # https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/read.ts
     def read(
