@@ -1,6 +1,5 @@
 import json
 import logging
-import re
 
 import yaml
 from prompt_toolkit.completion import Completer, Completion
@@ -113,45 +112,6 @@ class ModelCommand(Command):
             await self.agent.agent_io.agent_send("Please specify a model name")
             return
         self.agent.set_model(arg)
-
-
-class SaveCommand(Command):
-    command = "save"
-    description = "Save last response - /save [filename] (default: output.md)"
-
-    def __init__(self, agent, tag_name: str | None = None, default_file: str = ""):
-        super().__init__(agent)
-        self.tag_name = tag_name or f"{agent.name}_content"
-        self.default_file = default_file or f"{agent.name}_output.md"
-
-    async def execute(self, name: str, arg: str):
-        output_file = arg if arg else self.default_file
-        if self.agent.result:
-            await self._save_content(
-                self.agent.result.output, self.tag_name, output_file
-            )
-            await self.agent.agent_io.agent_send(f"Saved to {output_file}!")
-        else:
-            await self.agent.agent_io.agent_send("Nothing to save!")
-
-    async def _save_content(
-        self, content_msg: str, tag_name: str | None, file_name: str
-    ):
-        """Save content from message to file"""
-        if tag_name is not None:
-            pattern = rf"<{tag_name}>(.*?)</{tag_name}>"
-            match = re.search(pattern, content_msg, re.DOTALL)
-
-            if match:
-                result = match.group(1)
-            else:
-                result = content_msg
-        else:
-            result = content_msg
-        output_path = self.agent.workspace / file_name
-        await self.agent.agent_io.agent_send(f"Saving content to {output_path}")
-        with output_path.open("w") as f:
-            f.write(result)
 
 
 class InvokeToolCommand(Command):
