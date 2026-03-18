@@ -2,18 +2,6 @@ import asyncio
 import logging
 import os
 
-from anyio import EndOfStream
-from pydantic_ai import (
-    FunctionToolCallEvent,
-    FunctionToolResultEvent,
-    PartDeltaEvent,
-    PartEndEvent,
-    PartStartEvent,
-    TextPart,
-    TextPartDelta,
-    ThinkingPart,
-    ThinkingPartDelta,
-)
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -23,16 +11,13 @@ from telegram.ext import (
     filters,
 )
 
-from arox.ui.io import (
-    AbstractIOAdapter,
-    AdapterIOInterface,
-    ChatInputEvent,
-)
+from arox.ui.bot_base import BotIOAdapter
+from arox.ui.io import AdapterIOInterface
 
 logger = logging.getLogger(__name__)
 
 
-class TelegramIOAdapter(AbstractIOAdapter):
+class TelegramIOAdapter(BotIOAdapter):
     _shared_app = None
     _app_lock = asyncio.Lock()
     _adapters = []
@@ -46,9 +31,6 @@ class TelegramIOAdapter(AbstractIOAdapter):
             self.allowed_chat_id = int(self.allowed_chat_id)
 
         self.current_chat_id = self.allowed_chat_id
-        self.message_buffer = []
-        self.current_task = None
-        self.read_lock = asyncio.Lock()
         self.input_queue = TelegramIOAdapter._shared_input_queue
         self.chat_id_event = asyncio.Event()
         if self.current_chat_id:
@@ -62,6 +44,15 @@ class TelegramIOAdapter(AbstractIOAdapter):
 
     def setup(self, agent):
         pass
+
+    async def send_message(self, text: str):
+        if not self.app or not self.current_chat_id:
+            return
+        await self.app.bot.send_message(chat_id=self.current_chat_id, text=text)
+
+    async def before_handle_output(self) -> bool:
+        await self.chat_id_event.wait()
+        return bool(self.app and self.current_chat_id)
 
     async def start(self):
         if not self.token:
@@ -122,83 +113,3 @@ class TelegramIOAdapter(AbstractIOAdapter):
             adapter.chat_id_event.set()
 
         await cls._shared_input_queue.put(update.message.text)
-
-    async def run_cancellable(self, task):
-        self.current_task = asyncio.create_task(task)
-        try:
-            return await self.current_task
-        except asyncio.CancelledError:
-            logger.info("Task cancelled")
-            if self.current_chat_id and self.app:
-                await self.app.bot.send_message(
-                    chat_id=self.current_chat_id, text="[Step cancelled]"
-                )
-        finally:
-            self.current_task = None
-
-    async def process_events(self):
-        try:
-            while True:
-                async with self.read_lock:
-                    event = await self.adapter_io.adapter_receive()
-                await self._handle_output(event)
-        except EndOfStream:
-            pass
-
-    async def _handle_output(self, event):
-        await self.chat_id_event.wait()
-
-        if not self.app or not self.current_chat_id:
-            return
-
-        if isinstance(event, PartStartEvent):
-            part = event.part
-            if isinstance(part, TextPart):
-                self.message_buffer.append(part.content)
-            elif isinstance(part, ThinkingPart):
-                self.message_buffer.append(f"🤔 Thinking...\n{part.content}")
-        elif isinstance(event, PartDeltaEvent):
-            delta = event.delta
-            if isinstance(delta, (TextPartDelta, ThinkingPartDelta)):
-                self.message_buffer.append(delta.content_delta)
-        elif isinstance(event, PartEndEvent):
-            if self.message_buffer:
-                text = "".join(self.message_buffer)
-                if text.strip():
-                    for i in range(0, len(text), 4000):
-                        await self.app.bot.send_message(
-                            chat_id=self.current_chat_id, text=text[i : i + 4000]
-                        )
-                self.message_buffer = []
-        elif isinstance(event, FunctionToolResultEvent):
-            result_text = f"🔧 Tool result: {str(event.result.content)[:500]}"
-            await self.app.bot.send_message(
-                chat_id=self.current_chat_id, text=result_text
-            )
-        elif isinstance(event, FunctionToolCallEvent):
-            part = event.part
-            call_text = f"🛠 Tool call: {part.tool_name}\nArgs: {str(part.args)[:500]}"
-            await self.app.bot.send_message(
-                chat_id=self.current_chat_id, text=call_text
-            )
-        elif isinstance(event, ChatInputEvent):
-            reply = {}
-            if event.deferred_tools:
-                reply["deferred_tools"] = {}
-                for key, tool in event.deferred_tools.items():
-                    await self.app.bot.send_message(
-                        chat_id=self.current_chat_id, text=f"❓ {tool.question}"
-                    )
-                    line = await self.input_queue.get()
-                    reply["deferred_tools"][key] = line
-            if event.exception_input.exception is not None:
-                await self.app.bot.send_message(
-                    chat_id=self.current_chat_id,
-                    text=f"⚠️ An error occurred: {event.exception_input.exception}\nDo you want to continue? (y/n)",
-                )
-                line = await self.input_queue.get()
-                reply["exception_input"] = {"to_continue": line.strip().lower() == "y"}
-            if event.normal_input.request:
-                line = await self.input_queue.get()
-                reply["normal_input"] = {"user_input": line}
-            event.set_reply(reply)

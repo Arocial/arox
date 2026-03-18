@@ -4,29 +4,15 @@ import logging
 import os
 
 import lark_oapi as lark
-from anyio import EndOfStream, to_thread
-from pydantic_ai import (
-    FunctionToolCallEvent,
-    FunctionToolResultEvent,
-    PartDeltaEvent,
-    PartEndEvent,
-    PartStartEvent,
-    TextPart,
-    TextPartDelta,
-    ThinkingPart,
-    ThinkingPartDelta,
-)
+from anyio import to_thread
 
-from arox.ui.io import (
-    AbstractIOAdapter,
-    AdapterIOInterface,
-    ChatInputEvent,
-)
+from arox.ui.bot_base import BotIOAdapter
+from arox.ui.io import AdapterIOInterface
 
 logger = logging.getLogger(__name__)
 
 
-class FeishuIOAdapter(AbstractIOAdapter):
+class FeishuIOAdapter(BotIOAdapter):
     _ws_client: lark.ws.Client | None = None
     _lark_client: lark.Client | None = None
     _app_lock = asyncio.Lock()
@@ -40,9 +26,6 @@ class FeishuIOAdapter(AbstractIOAdapter):
         self.allowed_chat_id = os.environ.get("FEISHU_CHAT_ID")
 
         self.current_chat_id = self.allowed_chat_id
-        self.message_buffer = []
-        self.current_task = None
-        self.read_lock = asyncio.Lock()
         self.input_queue = FeishuIOAdapter._shared_input_queue
 
         FeishuIOAdapter._adapters.append(self)
@@ -50,7 +33,10 @@ class FeishuIOAdapter(AbstractIOAdapter):
     def setup(self, agent):
         pass
 
-    async def send_message(self, chat_id: str, text: str):
+    async def send_message(self, text: str):
+        if not self.current_chat_id:
+            return
+
         client = FeishuIOAdapter._lark_client
         if client is None or client.im is None:
             return
@@ -60,7 +46,7 @@ class FeishuIOAdapter(AbstractIOAdapter):
             .receive_id_type("chat_id")
             .request_body(
                 lark.im.v1.CreateMessageRequestBody.builder()
-                .receive_id(chat_id)
+                .receive_id(self.current_chat_id)
                 .msg_type("text")
                 .content(json.dumps({"text": text}))
                 .build()
@@ -73,6 +59,9 @@ class FeishuIOAdapter(AbstractIOAdapter):
             logger.error(
                 f"client.im.v1.message.acreate failed, code: {response.code}, msg: {response.msg}, log_id: {response.get_log_id()}"
             )
+
+    async def before_handle_output(self) -> bool:
+        return bool(self.current_chat_id)
 
     async def start(self):
         if not self.app_id or not self.app_secret:
@@ -139,75 +128,5 @@ class FeishuIOAdapter(AbstractIOAdapter):
             return
 
         logger.info(f"Got user input: {text}")
-        await self.input_queue.put(text)
-
-    async def run_cancellable(self, task):
-        self.current_task = asyncio.create_task(task)
-        try:
-            return await self.current_task
-        except asyncio.CancelledError:
-            logger.info("Task cancelled")
-            if self.current_chat_id:
-                await self.send_message(self.current_chat_id, "[Step cancelled]")
-        finally:
-            self.current_task = None
-
-    async def process_events(self):
-        try:
-            while True:
-                async with self.read_lock:
-                    event = await self.adapter_io.adapter_receive()
-                await self._handle_output(event)
-        except EndOfStream:
-            pass
-
-    async def _handle_output(self, event):
-
-        if not self.current_chat_id:
-            return
-
-        if isinstance(event, PartStartEvent):
-            part = event.part
-            if isinstance(part, TextPart):
-                self.message_buffer.append(part.content)
-            elif isinstance(part, ThinkingPart):
-                self.message_buffer.append(f"🤔 Thinking...\n{part.content}")
-        elif isinstance(event, PartDeltaEvent):
-            delta = event.delta
-            if isinstance(delta, (TextPartDelta, ThinkingPartDelta)):
-                self.message_buffer.append(delta.content_delta)
-        elif isinstance(event, PartEndEvent):
-            if self.message_buffer:
-                text = "".join(self.message_buffer)
-                if text.strip():
-                    for i in range(0, len(text), 4000):
-                        await self.send_message(
-                            self.current_chat_id, text[i : i + 4000]
-                        )
-                self.message_buffer = []
-        elif isinstance(event, FunctionToolResultEvent):
-            result_text = f"🔧 Tool result: {str(event.result.content)[:500]}"
-            await self.send_message(self.current_chat_id, result_text)
-        elif isinstance(event, FunctionToolCallEvent):
-            part = event.part
-            call_text = f"🛠 Tool call: {part.tool_name}\nArgs: {str(part.args)[:500]}"
-            await self.send_message(self.current_chat_id, call_text)
-        elif isinstance(event, ChatInputEvent):
-            reply = {}
-            if event.deferred_tools:
-                reply["deferred_tools"] = {}
-                for key, tool in event.deferred_tools.items():
-                    await self.send_message(self.current_chat_id, f"❓ {tool.question}")
-                    line = await self.input_queue.get()
-                    reply["deferred_tools"][key] = line
-            if event.exception_input.exception is not None:
-                await self.send_message(
-                    self.current_chat_id,
-                    f"⚠️ An error occurred: {event.exception_input.exception}\nDo you want to continue? (y/n)",
-                )
-                line = await self.input_queue.get()
-                reply["exception_input"] = {"to_continue": line.strip().lower() == "y"}
-            if event.normal_input.request:
-                line = await self.input_queue.get()
-                reply["normal_input"] = {"user_input": line}
-            event.set_reply(reply)
+        if self.input_queue:
+            await self.input_queue.put(text)
