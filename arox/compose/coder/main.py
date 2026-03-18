@@ -10,7 +10,6 @@ from pydantic_ai import FunctionToolset
 from arox import agent_patterns, commands, config
 from arox.agent_patterns.chat import ChatAgent
 from arox.agent_patterns.llm_base import AgentDeps
-from arox.compose.coder.state import CoderState
 from arox.compose.git_commit import GitCommitAgent
 from arox.config import TomlConfigParser
 from arox.tools import ask_human
@@ -61,7 +60,6 @@ class CoderComposer:
             "coder",
             toml_parser,
             local_toolset=local_toolset,
-            state_cls=CoderState,
             context={"commit_agent": self.commit_agent},
             agent_io=self.coder_io_channel,
         )

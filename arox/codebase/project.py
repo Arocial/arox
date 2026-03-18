@@ -1,9 +1,11 @@
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import git
 
-from arox.agent_patterns.llm_base import LLMBaseAgent
+if TYPE_CHECKING:
+    from arox.agent_patterns.llm_base import LLMBaseAgent
 from arox.codebase.file_edit import FileEdit
 from arox.utils import (
     DEFAULT_READ_LIMIT,
@@ -14,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class ProjectManager:
-    def __init__(self, agent: LLMBaseAgent):
+    def __init__(self, agent: "LLMBaseAgent"):
         self.workspace = agent.workspace
         self.agent = agent
         self._pending_text_files: dict[str, str] = {}
