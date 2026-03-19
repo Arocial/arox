@@ -35,3 +35,8 @@ You are a senior software engineer that applies code changes to a file. Given th
 
 Respond ONLY with the whole updated content (no code block tags, no other formatting, no explanations).
 """
+
+[agent.compaction]
+system_prompt = """
+You are an expert at summarizing technical conversations.
+"""

@@ -224,10 +224,10 @@ class LLMBaseAgent:
             for hook in self.pre_step_hooks:
                 await hook(self, input_content)
 
-    async def _run_post_step_hooks(self, input_content: str | None):
+    async def _run_post_step_hooks(self, input_content: str | None, result: Any = None):
         if hasattr(self, "post_step_hooks"):
             for hook in self.post_step_hooks:
-                await hook(self, input_content)
+                await hook(self, input_content, result)
 
     async def step(
         self,
@@ -247,7 +247,7 @@ class LLMBaseAgent:
                     deferred_tool_results=deferred_tool_results,
                 )
                 self.state.message_history = result.all_messages()
-                await self._run_post_step_hooks(input_content)
+                await self._run_post_step_hooks(input_content, result)
                 return result
             except (asyncio.CancelledError, Exception):
                 self.state.message_history = messages

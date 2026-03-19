@@ -55,12 +55,24 @@ class CoderComposer:
 
         self.coder_io_channel = IOChannel()
 
+        from arox.agent_patterns.compaction import CompactionAgent
+
+        compaction_agent = CompactionAgent(
+            "compaction",
+            toml_parser,
+            agent_io=self.coder_io_channel,
+        )
+        self.compaction_agent = compaction_agent
+
         local_toolset = FunctionToolset[AgentDeps]()
         coder_agent = ChatAgent(
             "coder",
             toml_parser,
             local_toolset=local_toolset,
-            context={"commit_agent": self.commit_agent},
+            context={
+                "commit_agent": self.commit_agent,
+                "compaction_agent": self.compaction_agent,
+            },
             agent_io=self.coder_io_channel,
         )
         shell_tool = Shell(coder_agent.workspace.absolute())
@@ -74,6 +86,7 @@ class CoderComposer:
             commands.ResetCommand(coder_agent),
             commands.InfoCommand(coder_agent),
             commands.CommitCommand(coder_agent),
+            commands.CompactionCommand(coder_agent),
         ]
         coder_agent.register_commands(coder_commands)
 
@@ -89,6 +102,19 @@ class CoderComposer:
 
         self.coder_agent.add_pre_step_hook(pre_step_hook)
 
+        # Add post-step hook for automatic compaction
+        async def post_step_hook(agent, input_content: str, result):
+            if not result:
+                return
+            usage = result.usage()
+            if usage and usage.request_tokens and usage.request_tokens > 100000:
+                logger.info(
+                    f"Context size ({usage.request_tokens} tokens) exceeds threshold. Triggering automatic compaction."
+                )
+                await commands.CompactionCommand(agent).execute("compact", "")
+
+        self.coder_agent.add_post_step_hook(post_step_hook)
+
         if args.dump_default_config:
             logger.debug(f"Dumping default config to {args.dump_default_config}")
             with open(args.dump_default_config, "w") as f:
@@ -101,6 +127,7 @@ class CoderComposer:
             await stack.enter_async_context(self.git_io_channel)
             await stack.enter_async_context(self.coder_agent)
             await stack.enter_async_context(self.commit_agent)
+            await stack.enter_async_context(self.compaction_agent)
 
             asyncio.create_task(self.git_adapter.start())
             asyncio.create_task(self.coder_adapter.start())

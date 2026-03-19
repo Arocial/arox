@@ -230,3 +230,37 @@ class CommitCommand(Command):
             await self.agent.agent_io.agent_send("No commit agent, ignoring.")
         result = await commit_agent.auto_commit_changes()
         await self.agent.agent_io.agent_send(result)
+
+
+class CompactionCommand(Command):
+    command = "compact"
+    description = "Compact conversation history - /compact"
+
+    async def execute(self, name: str, arg: str):
+        compaction_agent = self.agent.context.get("compaction_agent")
+        if not compaction_agent:
+            await self.agent.agent_io.agent_send("No compaction agent configured.")
+            return
+
+        example_len = len(self.agent.state.example_messages)
+        messages_to_compact = self.agent.state.message_history[example_len:]
+
+        if not messages_to_compact:
+            await self.agent.agent_io.agent_send("No history to compact.")
+            return
+
+        summary = await compaction_agent.compact(messages_to_compact)
+
+        from pydantic_ai import ModelRequest, UserPromptPart
+
+        new_request = ModelRequest(
+            parts=[UserPromptPart(content=f"Previous conversation summary:\n{summary}")]
+        )
+
+        self.agent.state.message_history = self.agent.state.example_messages + [
+            new_request
+        ]
+
+        await self.agent.agent_io.agent_send(
+            "Conversation history compacted successfully."
+        )
