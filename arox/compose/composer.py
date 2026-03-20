@@ -39,7 +39,9 @@ class Composer:
         self.config = toml_parser.parse_args()
         self.composer_config = getattr(self.config.composer, self.name)
 
-        io_adapter_cls = self._import_class(self.composer_config.io_adapter)
+        io_adapter_cls = self._import_class(
+            self.composer_config.io_adapter, group="arox.io_adapters"
+        )
         self.io_adapter = io_adapter_cls()
 
         self.agents = {}
@@ -47,12 +49,27 @@ class Composer:
 
         self._init_agents()
 
-    def _import_class(self, class_path: str):
+    def _import_class(self, class_path: str, group: str | None = None):
         import importlib
+        import importlib.metadata
 
-        module_name, class_name = class_path.rsplit(".", 1)
-        module = importlib.import_module(module_name)
-        return getattr(module, class_name)
+        if group:
+            try:
+                eps = importlib.metadata.entry_points(group=group)
+                for ep in eps:
+                    if ep.name == class_path:
+                        return ep.load()
+            except Exception as e:
+                logger.debug(
+                    f"Failed to load entrypoint {class_path} in group {group}: {e}"
+                )
+
+        if "." in class_path:
+            module_name, class_name = class_path.rsplit(".", 1)
+            module = importlib.import_module(module_name)
+            return getattr(module, class_name)
+
+        raise ValueError(f"Cannot resolve {class_path} (group: {group})")
 
     def _init_agents(self):
         main_agent_name = self.composer_config.main_agent
@@ -132,7 +149,7 @@ class Composer:
             command_classes = getattr(agent_config, "commands", [])
             coder_commands = []
             for cmd_path in command_classes:
-                cmd_cls = self._import_class(cmd_path)
+                cmd_cls = self._import_class(cmd_path, group="arox.commands")
                 coder_commands.append(cmd_cls(main_agent))
 
             if coder_commands:
@@ -141,12 +158,12 @@ class Composer:
             # Load hooks
             pre_step_hooks = getattr(agent_config, "pre_step_hooks", [])
             for hook_path in pre_step_hooks:
-                hook_func = self._import_class(hook_path)
+                hook_func = self._import_class(hook_path, group="arox.hooks")
                 main_agent.add_pre_step_hook(hook_func)
 
             post_step_hooks = getattr(agent_config, "post_step_hooks", [])
             for hook_path in post_step_hooks:
-                hook_func = self._import_class(hook_path)
+                hook_func = self._import_class(hook_path, group="arox.hooks")
                 main_agent.add_post_step_hook(hook_func)
 
         self.io_adapter.setup(main_agent)

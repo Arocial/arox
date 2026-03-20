@@ -3,7 +3,7 @@
 [composer.coder]
 main_agent = "coder"
 subagents = ["git_commit_agent", "compaction"]
-io_adapter = "arox.ui.text_io.TextIOAdapter"
+io_adapter = "text_io"
 
 [agent.coder]
 type = "chat"
@@ -24,20 +24,20 @@ You are Arox Coder, an AI coding assistant specialized in software development t
 '''
 examples = "examples.yaml"
 commands = [
-    "arox.commands.ProjectCommand",
-    "arox.commands.ModelCommand",
-    "arox.commands.InvokeToolCommand",
-    "arox.commands.ListToolCommand",
-    "arox.commands.ResetCommand",
-    "arox.commands.InfoCommand",
-    "arox.commands.CommitCommand",
-    "arox.commands.CompactionCommand",
+    "project",
+    "model",
+    "invoke_tool",
+    "list_tool",
+    "reset",
+    "info",
+    "commit",
+    "compaction",
 ]
 pre_step_hooks = [
-    "arox.compose.hooks.pre_llm_commit_hook"
+    "pre_llm_commit"
 ]
 post_step_hooks = [
-    "arox.compose.hooks.auto_compaction_hook"
+    "auto_compaction"
 ]
 
 [agent.coder.model_prompt]

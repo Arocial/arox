@@ -34,6 +34,23 @@ Homepage = "https://github.com/Arocial/arox"
 [project.scripts]
 arox-coder = "arox.compose.coder.main:main"
 
+[project.entry-points."arox.io_adapters"]
+text_io = "arox.ui.text_io:TextIOAdapter"
+
+[project.entry-points."arox.commands"]
+project = "arox.commands:ProjectCommand"
+model = "arox.commands:ModelCommand"
+invoke_tool = "arox.commands:InvokeToolCommand"
+list_tool = "arox.commands:ListToolCommand"
+reset = "arox.commands:ResetCommand"
+info = "arox.commands:InfoCommand"
+commit = "arox.commands:CommitCommand"
+compaction = "arox.commands:CompactionCommand"
+
+[project.entry-points."arox.hooks"]
+pre_llm_commit = "arox.compose.hooks:pre_llm_commit_hook"
+auto_compaction = "arox.compose.hooks:auto_compaction_hook"
+
 [tool.setuptools.packages.find]
 where = ["."]
 
