@@ -109,7 +109,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     async def drain_until_need_reply(self):
         try:
             while True:
-                adapter_io, event = await self.event_queue.get()
+                _adapter_io, event = await self.event_queue.get()
                 if isinstance(event, StepDoneEvent):
                     break
         except Exception as e:
@@ -208,7 +208,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     async def output_generator(self):
         try:
             while True:
-                adapter_io, event = await self.event_queue.get()
+                _adapter_io, event = await self.event_queue.get()
                 if isinstance(event, StepDoneEvent):
                     yield "data: [DONE]\n\n"
                     break
@@ -226,7 +226,10 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
         for adapter_io in self.adapter_ios:
             io_channel = cast(IOChannel, adapter_io)
-            if io_channel.chat_input_event and not io_channel.chat_input_event.future.done():
+            if (
+                io_channel.chat_input_event
+                and not io_channel.chat_input_event.future.done()
+            ):
                 io_channel.chat_input_event.set_reply(json.loads(text))
                 break
 

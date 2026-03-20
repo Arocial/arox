@@ -9,7 +9,7 @@ from pydantic_ai.models.test import TestModel
 from arox import agent_patterns
 from arox.agent_patterns.chat import ChatAgent
 from arox.config import TomlConfigParser
-from arox.ui.io import TextIOAdapter
+from arox.ui.text_io import TextIOAdapter
 from arox.utils import user_input_generator
 
 

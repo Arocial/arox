@@ -141,13 +141,13 @@ def main():
     parser = argparse.ArgumentParser()
     _ = parser.add_argument(
         "--ui",
-        choices=["textui", "restapi", "telegram", "feishu"],
-        default="textui",
-        help="UI interface to use (textui, restapi, telegram, or feishu)",
+        choices=["text", "vercel_ai", "telegram", "feishu"],
+        default="text",
+        help="UI interface to use (text, vercel_ai, telegram, or feishu)",
     )
     args, _ = parser.parse_known_args()
 
-    if args.ui == "textui":
+    if args.ui == "text":
         log_dir = Path(".arox")
         log_dir.mkdir(exist_ok=True)
         logging.basicConfig(
@@ -162,23 +162,23 @@ def main():
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
 
-    if args.ui == "textui":
-        from arox.ui.io import TextIOAdapter
+    if args.ui == "text":
+        from arox.ui.text_io import TextIOAdapter
 
         composer = CoderComposer(TextIOAdapter)
         asyncio.run(composer.run())
-    elif args.ui == "restapi":
-        from arox.compose.coder.rest_api import VercelStreamIOAdapter
+    elif args.ui == "vercel_ai":
+        from arox.ui.vercel_ai import VercelStreamIOAdapter
 
         composer = CoderComposer(VercelStreamIOAdapter)
         asyncio.run(composer.run())
     elif args.ui == "telegram":
-        from arox.compose.coder.telegram import TelegramIOAdapter
+        from arox.ui.telegram import TelegramIOAdapter
 
         composer = CoderComposer(TelegramIOAdapter)
         asyncio.run(composer.run())
     elif args.ui == "feishu":
-        from arox.compose.coder.feishu import FeishuIOAdapter
+        from arox.ui.feishu import FeishuIOAdapter
 
         composer = CoderComposer(FeishuIOAdapter)
         asyncio.run(composer.run())

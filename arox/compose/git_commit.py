@@ -1,7 +1,7 @@
 import git
 
 from arox.agent_patterns.llm_base import LLMBaseAgent
-from arox.ui.io import TextIOAdapter
+from arox.ui.text_io import TextIOAdapter
 
 
 class GitCommitAgent(LLMBaseAgent):
