@@ -49,12 +49,13 @@ class SuggestionResponse(BaseModel):
 
 
 class VercelStreamIOAdapter(AbstractIOAdapter):
-    def __init__(self, adapter_io: AdapterIOInterface):
+    def __init__(self, adapter_io: AdapterIOInterface | None = None):
         super().__init__(adapter_io)
         self.tool_ids = {}
         self.current_task = None
         self.read_lock = asyncio.Lock()
         self.coder_agent = None
+        self.event_queue = asyncio.Queue()
 
         self.app = FastAPI()
 
@@ -75,11 +76,26 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         self.coder_agent = agent
 
     async def start(self):
+        import anyio
         import uvicorn
 
-        config = uvicorn.Config(self.app, host="0.0.0.0", port=8000)
-        server = uvicorn.Server(config)
-        await server.serve()
+        async def process_io(adapter_io):
+            try:
+                while True:
+                    event = await adapter_io.adapter_receive()
+                    await self.event_queue.put((adapter_io, event))
+            except EndOfStream:
+                pass
+
+        async def run_server():
+            config = uvicorn.Config(self.app, host="0.0.0.0", port=8000)
+            server = uvicorn.Server(config)
+            await server.serve()
+
+        async with anyio.create_task_group() as tg:
+            for adapter_io in self.adapter_ios:
+                tg.start_soon(process_io, adapter_io)
+            tg.start_soon(run_server)
 
     async def run_cancellable(self, task):
         self.current_task = asyncio.create_task(task)
@@ -93,8 +109,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     async def drain_until_need_reply(self):
         try:
             while True:
-                async with self.read_lock:
-                    event = await self.adapter_io.adapter_receive()
+                adapter_io, event = await self.event_queue.get()
                 if isinstance(event, StepDoneEvent):
                     break
         except Exception as e:
@@ -193,8 +208,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     async def output_generator(self):
         try:
             while True:
-                async with self.read_lock:
-                    event = await self.adapter_io.adapter_receive()
+                adapter_io, event = await self.event_queue.get()
                 if isinstance(event, StepDoneEvent):
                     yield "data: [DONE]\n\n"
                     break
@@ -210,9 +224,11 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
         from arox.ui.io import IOChannel
 
-        io_channel = cast(IOChannel, self.adapter_io)
-        if io_channel.chat_input_event:
-            io_channel.chat_input_event.set_reply(json.loads(text))
+        for adapter_io in self.adapter_ios:
+            io_channel = cast(IOChannel, adapter_io)
+            if io_channel.chat_input_event and not io_channel.chat_input_event.future.done():
+                io_channel.chat_input_event.set_reply(json.loads(text))
+                break
 
     async def chat(self, request: ChatRequest):
         messages = request.messages

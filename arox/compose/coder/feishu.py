@@ -19,7 +19,7 @@ class FeishuIOAdapter(BotIOAdapter):
     _adapters = []
     _shared_input_queue = asyncio.Queue()
 
-    def __init__(self, adapter_io: AdapterIOInterface):
+    def __init__(self, adapter_io: AdapterIOInterface | None = None):
         super().__init__(adapter_io)
         self.app_id = os.environ.get("FEISHU_APP_ID")
         self.app_secret = os.environ.get("FEISHU_APP_SECRET")

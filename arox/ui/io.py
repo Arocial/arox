@@ -226,8 +226,13 @@ class ChatInputEvent:
 
 
 class AbstractIOAdapter(ABC):
-    def __init__(self, adapter_io: AdapterIOInterface):
-        self.adapter_io = adapter_io
+    def __init__(self, adapter_io: AdapterIOInterface | None = None):
+        self.adapter_ios: list[AdapterIOInterface] = []
+        if adapter_io:
+            self.add_adapter_io(adapter_io)
+
+    def add_adapter_io(self, adapter_io: AdapterIOInterface):
+        self.adapter_ios.append(adapter_io)
         adapter_io.set_adapter(self)
 
     def setup(self, agent):
@@ -330,10 +335,17 @@ class TextIOAdapter(AbstractIOAdapter):
 
     @override
     async def start(self):
-        async with self.adapter_io:
-            try:
-                while True:
-                    event = await self.adapter_io.adapter_receive()
-                    await self._handle_output(event)
-            except EndOfStream:
-                pass
+        import anyio
+
+        async def process_io(adapter_io):
+            async with adapter_io:
+                try:
+                    while True:
+                        event = await adapter_io.adapter_receive()
+                        await self._handle_output(event)
+                except EndOfStream:
+                    pass
+
+        async with anyio.create_task_group() as tg:
+            for adapter_io in self.adapter_ios:
+                tg.start_soon(process_io, adapter_io)

@@ -44,7 +44,11 @@ class CoderComposer:
         agent_patterns.init(toml_parser)
 
         self.git_io_channel = IOChannel()
-        self.git_adapter = io_adapter_func(self.git_io_channel)
+        self.coder_io_channel = IOChannel()
+
+        self.io_adapter = io_adapter_func()
+        self.io_adapter.add_adapter_io(self.git_io_channel)
+        self.io_adapter.add_adapter_io(self.coder_io_channel)
 
         git_commit_agent = GitCommitAgent(
             "git_commit_agent",
@@ -52,8 +56,6 @@ class CoderComposer:
             agent_io=self.git_io_channel,
         )
         self.commit_agent = git_commit_agent
-
-        self.coder_io_channel = IOChannel()
 
         from arox.agent_patterns.compaction import CompactionAgent
 
@@ -90,8 +92,7 @@ class CoderComposer:
         ]
         coder_agent.register_commands(coder_commands)
 
-        self.coder_adapter = io_adapter_func(self.coder_io_channel)
-        self.coder_adapter.setup(coder_agent)
+        self.io_adapter.setup(coder_agent)
 
         self.coder_agent = coder_agent
 
@@ -129,8 +130,7 @@ class CoderComposer:
             await stack.enter_async_context(self.commit_agent)
             await stack.enter_async_context(self.compaction_agent)
 
-            asyncio.create_task(self.git_adapter.start())
-            asyncio.create_task(self.coder_adapter.start())
+            asyncio.create_task(self.io_adapter.start())
 
             await self.commit_agent.show_agent_info()
             await self.coder_agent.show_agent_info()

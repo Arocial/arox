@@ -23,7 +23,7 @@ class TelegramIOAdapter(BotIOAdapter):
     _adapters = []
     _shared_input_queue = asyncio.Queue()
 
-    def __init__(self, adapter_io: AdapterIOInterface):
+    def __init__(self, adapter_io: AdapterIOInterface | None = None):
         super().__init__(adapter_io)
         self.token = os.environ.get("TELEGRAM_BOT_TOKEN")
         self.allowed_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
