@@ -238,7 +238,9 @@ class LLMBaseAgent:
         with capture_run_messages() as messages:
             try:
                 result = await self.pydantic_agent.run(
-                    input_content,
+                    input_content + "\n"
+                    if isinstance(input_content, str)
+                    else input_content,
                     event_stream_handler=self.state.handle_event,
                     model_settings=ModelSettings(**self.model_params),
                     instructions=f"{self.system_prompt}\n{self.additional_prompt}",
