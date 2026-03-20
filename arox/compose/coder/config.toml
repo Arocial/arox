@@ -1,10 +1,11 @@
 [DEFAULT]
 
-[agent.coder.model_prompt]
-claude = ''
-claude_pattern = ".*claude-sonnet.*"
+[composer.coder]
+main_agent = "coder"
+subagents = ["git_commit_agent", "compaction"]
 
 [agent.coder]
+type = "chat"
 system_prompt = '''
 You are Arox Coder, an AI coding assistant specialized in software development tasks.
 
@@ -22,11 +23,24 @@ You are Arox Coder, an AI coding assistant specialized in software development t
 '''
 examples = "examples.yaml"
 
+[agent.coder.model_prompt]
+claude = ''
+claude_pattern = ".*claude-sonnet.*"
 
 [agent.coder.model_params]
 temperature = 0
 
+[agent.git_commit_agent]
+type = "git_commit"
+
+[agent.compaction]
+type = "compaction"
+system_prompt = """
+You are an expert at summarizing technical conversations.
+"""
+
 [agent.smart-diff]
+type = "chat"
 system_prompt = """
 You are a senior software engineer that applies code changes to a file. Given the <original-content>, the <diff>, apply the changes to the content.
 
@@ -34,9 +48,4 @@ You are a senior software engineer that applies code changes to a file. Given th
 - You must maintain the layout of the file especially in languages/formats where it matters
 
 Respond ONLY with the whole updated content (no code block tags, no other formatting, no explanations).
-"""
-
-[agent.compaction]
-system_prompt = """
-You are an expert at summarizing technical conversations.
 """
