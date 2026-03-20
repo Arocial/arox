@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-from contextlib import asynccontextmanager
 
 from anyio import EndOfStream
 from fastapi import FastAPI
@@ -24,7 +23,6 @@ from pydantic_ai import (
 )
 from pydantic_ai.ui.vercel_ai import request_types as vercel_ui_types
 
-from arox.compose.coder.main import CoderComposer
 from arox.ui.io import (
     AbstractIOAdapter,
     AdapterIOInterface,
@@ -35,15 +33,53 @@ from arox.ui.io import (
 logger = logging.getLogger(__name__)
 
 
+class ChatRequest(BaseModel):
+    messages: list[dict]
+
+
+class SuggestionItem(BaseModel):
+    id: str
+    value: str
+    label: str
+    description: str | None = None
+
+
+class SuggestionResponse(BaseModel):
+    items: list[SuggestionItem]
+
+
 class VercelStreamIOAdapter(AbstractIOAdapter):
     def __init__(self, adapter_io: AdapterIOInterface):
         super().__init__(adapter_io)
         self.tool_ids = {}
         self.current_task = None
         self.read_lock = asyncio.Lock()
+        self.coder_agent = None
+
+        self.app = FastAPI()
+
+        self.app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+        self.app.post("/api/chat")(self.chat)
+        self.app.get("/api/suggestions", response_model=SuggestionResponse)(
+            self.suggestions
+        )
+
+    def setup(self, agent):
+        self.coder_agent = agent
 
     async def start(self):
-        pass
+        import uvicorn
+
+        config = uvicorn.Config(self.app, host="0.0.0.0", port=8000)
+        server = uvicorn.Server(config)
+        await server.serve()
 
     async def run_cancellable(self, task):
         self.current_task = asyncio.create_task(task)
@@ -178,49 +214,6 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         if io_channel.chat_input_event:
             io_channel.chat_input_event.set_reply(json.loads(text))
 
-
-class ChatRequest(BaseModel):
-    messages: list[dict]
-
-
-class SuggestionItem(BaseModel):
-    id: str
-    value: str
-    label: str
-    description: str | None = None
-
-
-class SuggestionResponse(BaseModel):
-    items: list[SuggestionItem]
-
-
-class CoderRestUI:
-    def __init__(self):
-        self.composer = CoderComposer(VercelStreamIOAdapter)
-        self.io_adapter = self.composer.coder_adapter
-        self.app = FastAPI(lifespan=self.lifespan)
-
-        self.app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-
-        self.app.post("/api/chat")(self.chat)
-        self.app.get("/api/suggestions", response_model=SuggestionResponse)(
-            self.suggestions
-        )
-
-    @asynccontextmanager
-    async def lifespan(self, app: FastAPI):
-        asyncio.create_task(self.composer.run())
-        try:
-            yield
-        finally:
-            pass
-
     async def chat(self, request: ChatRequest):
         messages = request.messages
         if messages:
@@ -230,7 +223,7 @@ class CoderRestUI:
                 if isinstance(part, vercel_ui_types.TextUIPart):
                     content = part.text
                     logger.info(f"Got user input: {content}")
-                    await self.io_adapter.submit_user_input(content)
+                    await self.submit_user_input(content)
                 else:
                     logger.warning("Unsupported input type.")
 
@@ -240,20 +233,23 @@ class CoderRestUI:
 
     async def response_generator(self):
         try:
-            async for chunk in self.io_adapter.output_generator():
+            async for chunk in self.output_generator():
                 logger.info(chunk)
                 yield chunk
                 if "data: [DONE]\n\n" == chunk:
                     break
         except asyncio.CancelledError:
             logger.info("Client disconnected, cancelling current task")
-            if self.io_adapter.current_task:
-                self.io_adapter.current_task.cancel()
-            asyncio.create_task(self.io_adapter.drain_until_need_reply())
+            if self.current_task:
+                self.current_task.cancel()
+            asyncio.create_task(self.drain_until_need_reply())
             raise
 
     async def suggestions(self, command: str | None = None, q: str | None = None):
-        command_manager = self.composer.coder_agent.command_manager
+        if not self.coder_agent:
+            return SuggestionResponse(items=[])
+
+        command_manager = self.coder_agent.command_manager
         items = []
 
         if not command:
@@ -288,8 +284,3 @@ class CoderRestUI:
                     )
 
         return SuggestionResponse(items=items)
-
-    def run(self):
-        import uvicorn
-
-        uvicorn.run(self.app, host="0.0.0.0", port=8000)

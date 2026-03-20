@@ -168,10 +168,10 @@ def main():
         composer = CoderComposer(TextIOAdapter)
         asyncio.run(composer.run())
     elif args.ui == "restapi":
-        from arox.compose.coder.rest_api import CoderRestUI
+        from arox.compose.coder.rest_api import VercelStreamIOAdapter
 
-        app = CoderRestUI()
-        app.run()
+        composer = CoderComposer(VercelStreamIOAdapter)
+        asyncio.run(composer.run())
     elif args.ui == "telegram":
         from arox.compose.coder.telegram import TelegramIOAdapter
 
