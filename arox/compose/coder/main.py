@@ -25,6 +25,22 @@ def main():
         default="",
     )
     args, unknown_args = parser.parse_known_args()
+
+    if args.ui == "text":
+        unknown_args.append("composer.coder.io_adapter=arox.ui.text_io.TextIOAdapter")
+    elif args.ui == "vercel_ai":
+        unknown_args.append(
+            "composer.coder.io_adapter=arox.ui.vercel_ai.VercelStreamIOAdapter"
+        )
+    elif args.ui == "telegram":
+        unknown_args.append(
+            "composer.coder.io_adapter=arox.ui.telegram.TelegramIOAdapter"
+        )
+    elif args.ui == "feishu":
+        unknown_args.append("composer.coder.io_adapter=arox.ui.feishu.FeishuIOAdapter")
+    else:
+        raise ValueError(f"Unknown UI: {args.ui}")
+
     cli_configs = config.parse_dot_config(unknown_args)
 
     if args.ui == "text":
@@ -49,26 +65,7 @@ def main():
 
     agent_patterns.init(toml_parser)
 
-    if args.ui == "text":
-        from arox.ui.text_io import TextIOAdapter
-
-        io_adapter_func = TextIOAdapter
-    elif args.ui == "vercel_ai":
-        from arox.ui.vercel_ai import VercelStreamIOAdapter
-
-        io_adapter_func = VercelStreamIOAdapter
-    elif args.ui == "telegram":
-        from arox.ui.telegram import TelegramIOAdapter
-
-        io_adapter_func = TelegramIOAdapter
-    elif args.ui == "feishu":
-        from arox.ui.feishu import FeishuIOAdapter
-
-        io_adapter_func = FeishuIOAdapter
-    else:
-        raise ValueError(f"Unknown UI: {args.ui}")
-
-    composer = Composer("coder", toml_parser, io_adapter_func)
+    composer = Composer("coder", toml_parser)
 
     if args.dump_default_config:
         logger.debug(f"Dumping default config to {args.dump_default_config}")

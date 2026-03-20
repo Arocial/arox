@@ -3,6 +3,7 @@
 [composer.coder]
 main_agent = "coder"
 subagents = ["git_commit_agent", "compaction"]
+io_adapter = "arox.ui.text_io.TextIOAdapter"
 
 [agent.coder]
 type = "chat"
@@ -22,6 +23,22 @@ You are Arox Coder, an AI coding assistant specialized in software development t
   - Add `Co-authored-by: arox-coder/{{ config.model_ref }}` to commit message.
 '''
 examples = "examples.yaml"
+commands = [
+    "arox.commands.ProjectCommand",
+    "arox.commands.ModelCommand",
+    "arox.commands.InvokeToolCommand",
+    "arox.commands.ListToolCommand",
+    "arox.commands.ResetCommand",
+    "arox.commands.InfoCommand",
+    "arox.commands.CommitCommand",
+    "arox.commands.CompactionCommand",
+]
+pre_step_hooks = [
+    "arox.compose.hooks.pre_llm_commit_hook"
+]
+post_step_hooks = [
+    "arox.compose.hooks.auto_compaction_hook"
+]
 
 [agent.coder.model_prompt]
 claude = ''

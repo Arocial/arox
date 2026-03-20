@@ -4,7 +4,6 @@ import logging
 
 from pydantic_ai import FunctionToolset
 
-from arox import commands
 from arox.agent_patterns.chat import ChatAgent
 from arox.agent_patterns.compaction import CompactionAgent
 from arox.agent_patterns.llm_base import AgentDeps
@@ -24,7 +23,7 @@ AGENT_TYPES = {
 
 
 class Composer:
-    def __init__(self, name: str, toml_parser: TomlConfigParser, io_adapter_func):
+    def __init__(self, name: str, toml_parser: TomlConfigParser):
         self.name = name
         self.toml_parser = toml_parser
 
@@ -33,16 +32,27 @@ class Composer:
         )
         composer_group.add_argument("main_agent", required=True)
         composer_group.add_argument("subagents", default=[])
+        composer_group.add_argument(
+            "io_adapter", default="arox.ui.text_io.TextIOAdapter"
+        )
 
         self.config = toml_parser.parse_args()
         self.composer_config = getattr(self.config.composer, self.name)
 
-        self.io_adapter = io_adapter_func()
+        io_adapter_cls = self._import_class(self.composer_config.io_adapter)
+        self.io_adapter = io_adapter_cls()
 
         self.agents = {}
         self.io_channels = {}
 
         self._init_agents()
+
+    def _import_class(self, class_path: str):
+        import importlib
+
+        module_name, class_name = class_path.rsplit(".", 1)
+        module = importlib.import_module(module_name)
+        return getattr(module, class_name)
 
     def _init_agents(self):
         main_agent_name = self.composer_config.main_agent
@@ -116,35 +126,28 @@ class Composer:
             shell_tool.register_tool(main_agent)
             main_agent.add_local_tool(ask_human)
 
-            coder_commands = [
-                commands.ProjectCommand(main_agent),
-                commands.ModelCommand(main_agent),
-                commands.InvokeToolCommand(main_agent),
-                commands.ListToolCommand(main_agent),
-                commands.ResetCommand(main_agent),
-                commands.InfoCommand(main_agent),
-                commands.CommitCommand(main_agent),
-                commands.CompactionCommand(main_agent),
-            ]
-            main_agent.register_commands(coder_commands)
+            agent_config = agent_configs[main_agent_name]
 
-            # Add hooks
-            async def pre_step_hook(agent, input_content: str):
-                logger.info("Running pre-LLM commit hook")
+            # Load commands
+            command_classes = getattr(agent_config, "commands", [])
+            coder_commands = []
+            for cmd_path in command_classes:
+                cmd_cls = self._import_class(cmd_path)
+                coder_commands.append(cmd_cls(main_agent))
 
-            main_agent.add_pre_step_hook(pre_step_hook)
+            if coder_commands:
+                main_agent.register_commands(coder_commands)
 
-            async def post_step_hook(agent, input_content: str, result):
-                if not result:
-                    return
-                usage = result.usage()
-                if usage and usage.request_tokens and usage.request_tokens > 100000:
-                    logger.info(
-                        f"Context size ({usage.request_tokens} tokens) exceeds threshold. Triggering automatic compaction."
-                    )
-                    await commands.CompactionCommand(agent).execute("compact", "")
+            # Load hooks
+            pre_step_hooks = getattr(agent_config, "pre_step_hooks", [])
+            for hook_path in pre_step_hooks:
+                hook_func = self._import_class(hook_path)
+                main_agent.add_pre_step_hook(hook_func)
 
-            main_agent.add_post_step_hook(post_step_hook)
+            post_step_hooks = getattr(agent_config, "post_step_hooks", [])
+            for hook_path in post_step_hooks:
+                hook_func = self._import_class(hook_path)
+                main_agent.add_post_step_hook(hook_func)
 
         self.io_adapter.setup(main_agent)
 
