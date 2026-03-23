@@ -33,9 +33,6 @@ commands = [
     "commit",
     "compaction",
 ]
-pre_step_hooks = [
-    "pre_llm_commit"
-]
 post_step_hooks = [
     "auto_compaction"
 ]

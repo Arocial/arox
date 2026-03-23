@@ -5,7 +5,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 import fastmcp
 from httpx import AsyncClient, HTTPStatusError, Timeout, TransportError
@@ -84,6 +84,19 @@ def infer_provider(provider: str) -> Provider[Any]:
 @dataclass
 class AgentDeps:
     agent_io: AgentIOInterface
+
+
+class PreStepHook(Protocol):
+    async def __call__(self, agent: "LLMBaseAgent", input_content: str | None) -> None: ...
+
+
+class PostStepHook(Protocol):
+    async def __call__(
+        self,
+        agent: "LLMBaseAgent",
+        input_content: str | None,
+        result: AgentRunResult[DeferredToolRequests | str] | None,
+    ) -> None: ...
 
 
 class LLMBaseAgent:
@@ -258,12 +271,12 @@ class LLMBaseAgent:
     def reset(self):
         return self.state.reset()
 
-    def add_pre_step_hook(self, hook):
+    def add_pre_step_hook(self, hook: PreStepHook):
         if not hasattr(self, "pre_step_hooks"):
-            self.pre_step_hooks = []
+            self.pre_step_hooks: list[PreStepHook] = []
         self.pre_step_hooks.append(hook)
 
-    def add_post_step_hook(self, hook):
+    def add_post_step_hook(self, hook: PostStepHook):
         if not hasattr(self, "post_step_hooks"):
-            self.post_step_hooks = []
+            self.post_step_hooks: list[PostStepHook] = []
         self.post_step_hooks.append(hook)

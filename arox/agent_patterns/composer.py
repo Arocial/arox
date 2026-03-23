@@ -63,6 +63,17 @@ class Composer:
 
         raise ValueError(f"Cannot resolve {class_path} (group: {group})")
 
+    def _load_agent_hooks(self, agent, agent_config):
+        pre_step_hooks = getattr(agent_config, "pre_step_hooks", [])
+        for hook_path in pre_step_hooks:
+            hook_func = self._import_class(hook_path, group="arox.hooks")
+            agent.add_pre_step_hook(hook_func)
+
+        post_step_hooks = getattr(agent_config, "post_step_hooks", [])
+        for hook_path in post_step_hooks:
+            hook_func = self._import_class(hook_path, group="arox.hooks")
+            agent.add_post_step_hook(hook_func)
+
     def _init_agents(self):
         main_agent_name = self.composer_config.main_agent
         subagent_names = self.composer_config.subagents
@@ -98,6 +109,7 @@ class Composer:
                 self.toml_parser,
                 agent_io=self.io_channels[agent_name],
             )
+            self._load_agent_hooks(agent, agent_configs[agent_name])
             self.agents[agent_name] = agent
 
         # Third pass: instantiate main agent with context of subagents
@@ -128,6 +140,7 @@ class Composer:
             context=context,
             agent_io=self.io_channels[main_agent_name],
         )
+        self._load_agent_hooks(main_agent, agent_configs[main_agent_name])
         self.agents[main_agent_name] = main_agent
         self.main_agent = main_agent
 
@@ -148,17 +161,6 @@ class Composer:
 
             if coder_commands:
                 main_agent.register_commands(coder_commands)
-
-            # Load hooks
-            pre_step_hooks = getattr(agent_config, "pre_step_hooks", [])
-            for hook_path in pre_step_hooks:
-                hook_func = self._import_class(hook_path, group="arox.hooks")
-                main_agent.add_pre_step_hook(hook_func)
-
-            post_step_hooks = getattr(agent_config, "post_step_hooks", [])
-            for hook_path in post_step_hooks:
-                hook_func = self._import_class(hook_path, group="arox.hooks")
-                main_agent.add_post_step_hook(hook_func)
 
         self.io_adapter.setup(main_agent)
 
