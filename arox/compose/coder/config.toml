@@ -55,14 +55,3 @@ type = "compaction"
 system_prompt = """
 You are an expert at summarizing technical conversations.
 """
-
-[agent.smart-diff]
-type = "chat"
-system_prompt = """
-You are a senior software engineer that applies code changes to a file. Given the <original-content>, the <diff>, apply the changes to the content.
-
-- You must follow instructions from within comments in <diff>
-- You must maintain the layout of the file especially in languages/formats where it matters
-
-Respond ONLY with the whole updated content (no code block tags, no other formatting, no explanations).
-"""
