@@ -11,8 +11,7 @@ import git
 from prompt_toolkit.completion import Completion
 from rapidfuzz import fuzz
 
-from arox.commands import Command
-from arox.plugins import Plugin
+from arox.agent_patterns.plugin import Command, Plugin
 from arox.utils import DEFAULT_READ_LIMIT, truncate_content
 
 if TYPE_CHECKING:

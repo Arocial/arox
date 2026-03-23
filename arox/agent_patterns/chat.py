@@ -3,10 +3,9 @@ import logging
 from pydantic_ai import DeferredToolResults
 from pydantic_ai.tools import DeferredToolRequests
 
-from arox import commands
 from arox.agent_patterns.llm_base import LLMBaseAgent
+from arox.agent_patterns.plugin import Command, CommandManager
 from arox.agent_patterns.state import SimpleState
-from arox.commands.manager import CommandManager
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +51,7 @@ class ChatAgent(LLMBaseAgent):
                 func = tool_def.pop("func")
                 self.add_local_tool(func, **tool_def)
 
-    def register_commands(self, cmds: list[commands.Command]):
+    def register_commands(self, cmds: list[Command]):
         self.command_manager.register_commands(cmds)
 
     async def start(self):

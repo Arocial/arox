@@ -18,7 +18,7 @@ from pydantic_ai import (
     ToolCallPartDelta,
 )
 
-from arox.commands import CommandCompleter
+from arox.agent_patterns.plugin import CommandCompleter
 from arox.ui.io import AbstractIOAdapter, ChatInputEvent, StepDoneEvent
 from arox.utils import user_input_generator
 

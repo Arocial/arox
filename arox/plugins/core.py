@@ -8,8 +8,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.exceptions import CallDeferred
 
 from arox.agent_patterns.llm_base import AgentDeps
-from arox.commands import Command
-from arox.plugins import Plugin
+from arox.agent_patterns.plugin import Command, Plugin
 
 logger = logging.getLogger(__name__)
 
