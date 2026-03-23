@@ -4,7 +4,7 @@ from pydantic_ai import DeferredToolResults
 from pydantic_ai.tools import DeferredToolRequests
 
 from arox.agent_patterns.llm_base import LLMBaseAgent
-from arox.agent_patterns.plugin import Command, CommandManager
+from arox.agent_patterns.plugin import CommandManager
 from arox.agent_patterns.state import SimpleState
 
 logger = logging.getLogger(__name__)

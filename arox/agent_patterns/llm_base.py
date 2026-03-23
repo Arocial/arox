@@ -102,6 +102,7 @@ class LLMBaseAgent:
         self.uuid = str(uuid.uuid4())
         self.name = name
         self.context = context
+        self._dependencies = {}
         self.model_ref = None
         self.additional_prompt = ""
 
@@ -146,8 +147,24 @@ class LLMBaseAgent:
             # Register tools
             tools = plugin.tools()
             for tool_def in tools:
-                func = tool_def.pop("func")
-                self.add_local_tool(func, **tool_def)
+                if isinstance(tool_def, dict):
+                    func = tool_def.pop("func")
+                    self.add_local_tool(func, **tool_def)
+                else:
+                    self.add_local_tool(tool_def.func, **tool_def.kwargs)
+
+    def register_dependency(self, key: Any, value: Any):
+        self._dependencies[key] = value
+
+    def get_dependency(self, key: Any) -> Any:
+        return self._dependencies.get(key)
+
+    async def handle_task(self, task: str, main_agent: "LLMBaseAgent", **kwargs) -> Any:
+        """Handle a task delegated from the main agent."""
+        result = await self.step(task)
+        if result and isinstance(result.output, str):
+            return result.output
+        return None
 
     async def __aenter__(self):
         await self._stack.enter_async_context(self.agent_io)

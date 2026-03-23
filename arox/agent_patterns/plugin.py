@@ -1,10 +1,18 @@
 import inspect
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from prompt_toolkit.completion import Completer, Completion
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ToolDef:
+    func: Callable
+    kwargs: dict[str, Any] = field(default_factory=dict)
 
 
 def parse_cmdline(cmdline):
@@ -111,6 +119,6 @@ class Plugin:
         """Return a list of Command instances."""
         return []
 
-    def tools(self) -> list[dict[str, Any]]:
-        """Return a list of dicts containing 'func' and other kwargs for add_local_tool."""
+    def tools(self) -> list[ToolDef]:
+        """Return a list of ToolDef instances."""
         return []

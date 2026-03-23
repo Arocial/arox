@@ -31,6 +31,27 @@ Provide a detailed prompt for continuing our conversation above. Focus on inform
 
 
 class CompactionAgent(LLMBaseAgent):
+    async def handle_task(self, task: str, main_agent: LLMBaseAgent, **kwargs) -> str:
+        example_len = len(main_agent.state.example_messages)
+        messages_to_compact = main_agent.state.message_history[example_len:]
+
+        if not messages_to_compact:
+            return "No history to compact."
+
+        summary = await self.compact(messages_to_compact)
+
+        from pydantic_ai import ModelRequest, UserPromptPart
+
+        new_request = ModelRequest(
+            parts=[UserPromptPart(content=f"Previous conversation summary:\n{summary}")]
+        )
+
+        main_agent.state.message_history = main_agent.state.example_messages + [
+            new_request
+        ]
+
+        return "Conversation history compacted successfully."
+
     async def compact(self, messages: list[ModelMessage]) -> str:
         logger.info("Starting context compaction...")
         await self.agent_io.agent_send(
@@ -61,6 +82,6 @@ async def auto_compaction_hook(
         logger.info(
             f"Context size ({usage.request_tokens} tokens) exceeds threshold. Triggering automatic compaction."
         )
-        from arox.plugins.core import CompactionCommand
-
-        await CompactionCommand(agent).execute("compact", "")
+        compaction_agent = agent.get_dependency("compaction")
+        if compaction_agent:
+            await compaction_agent.handle_task("", main_agent=agent)

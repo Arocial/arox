@@ -1,14 +1,13 @@
 import json
 import logging
 import uuid
-from typing import Any
 
 import yaml
 from pydantic_ai import RunContext
 from pydantic_ai.exceptions import CallDeferred
 
 from arox.agent_patterns.llm_base import AgentDeps
-from arox.agent_patterns.plugin import Command, Plugin
+from arox.agent_patterns.plugin import Command, Plugin, ToolDef
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +109,8 @@ class InfoCommand(Command):
         await self.agent.agent_io.agent_send(f"Current model: {current_model}")
 
         # Show chat files
-        session_files = self.agent.state.project_manager.session_files
+        project_manager = self.agent.get_dependency("project_manager")
+        session_files = project_manager.session_files
         if session_files:
             await self.agent.agent_io.agent_send(
                 f"\nChat files ({len(session_files)}):"
@@ -130,50 +130,34 @@ class ResetCommand(Command):
         await self.agent.agent_io.agent_send("Reset complete.")
 
 
-class CommitCommand(Command):
-    command = "commit"
-    description = "Auto-commit changes using GitCommitAgent - /commit"
+class AgentCommand(Command):
+    command = "agent"
+    description = "Call a subagent - /agent <name> [task]"
 
     async def execute(self, name: str, arg: str):
-        commit_agent = self.agent.context.get("commit_agent")
-        if not commit_agent:
-            await self.agent.agent_io.agent_send("No commit agent, ignoring.")
-        result = await commit_agent.auto_commit_changes()
-        await self.agent.agent_io.agent_send(result)
-
-
-class CompactionCommand(Command):
-    command = "compact"
-    description = "Compact conversation history - /compact"
-
-    async def execute(self, name: str, arg: str):
-        compaction_agent = self.agent.context.get("compaction_agent")
-        if not compaction_agent:
-            await self.agent.agent_io.agent_send("No compaction agent configured.")
+        parts = arg.split(maxsplit=1)
+        if not parts:
+            await self.agent.agent_io.agent_send("Usage: /agent <name> [task]")
             return
 
-        example_len = len(self.agent.state.example_messages)
-        messages_to_compact = self.agent.state.message_history[example_len:]
+        subagent_name = parts[0]
+        task = parts[1] if len(parts) > 1 else ""
 
-        if not messages_to_compact:
-            await self.agent.agent_io.agent_send("No history to compact.")
+        subagent = self.agent.get_dependency(subagent_name)
+        if not subagent:
+            await self.agent.agent_io.agent_send(
+                f"Subagent '{subagent_name}' not found."
+            )
             return
 
-        summary = await compaction_agent.compact(messages_to_compact)
-
-        from pydantic_ai import ModelRequest, UserPromptPart
-
-        new_request = ModelRequest(
-            parts=[UserPromptPart(content=f"Previous conversation summary:\n{summary}")]
-        )
-
-        self.agent.state.message_history = self.agent.state.example_messages + [
-            new_request
-        ]
-
-        await self.agent.agent_io.agent_send(
-            "Conversation history compacted successfully."
-        )
+        if hasattr(subagent, "handle_task"):
+            result = await subagent.handle_task(task, main_agent=self.agent)
+            if result:
+                await self.agent.agent_io.agent_send(result)
+        else:
+            await self.agent.agent_io.agent_send(
+                f"Subagent '{subagent_name}' does not support tasks."
+            )
 
 
 async def ask_human(ctx: RunContext["AgentDeps"], question: str) -> str:
@@ -205,10 +189,9 @@ class CorePlugin(Plugin):
             ListToolCommand(self.agent),
             InfoCommand(self.agent),
             ResetCommand(self.agent),
-            CommitCommand(self.agent),
-            CompactionCommand(self.agent),
+            AgentCommand(self.agent),
         ]
 
     def tools(self):
-        tools: list[dict[str, Any]] = [{"func": ask_human}]
+        tools: list[ToolDef] = [ToolDef(func=ask_human)]
         return tools

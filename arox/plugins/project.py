@@ -11,7 +11,7 @@ import git
 from prompt_toolkit.completion import Completion
 from rapidfuzz import fuzz
 
-from arox.agent_patterns.plugin import Command, Plugin
+from arox.agent_patterns.plugin import Command, Plugin, ToolDef
 from arox.utils import DEFAULT_READ_LIMIT, truncate_content
 
 if TYPE_CHECKING:
@@ -27,7 +27,7 @@ class ProjectCommand(Command):
         return ["add", "add_file_list"]
 
     async def execute(self, name: str, arg: str):
-        project_manager = self.agent.state.project_manager
+        project_manager = self.agent.get_dependency("project_manager")
         if name == "add":
             files = arg.split() if arg else []
             if not files:
@@ -49,7 +49,8 @@ class ProjectCommand(Command):
                 current_word = parts[-1] if parts else ""
 
         if name == "add":
-            candidates = self.agent.state.project_manager.candidates()
+            project_manager = self.agent.get_dependency("project_manager")
+            candidates = project_manager.candidates()
         else:
             candidates = []
 
@@ -606,8 +607,7 @@ class ProjectPlugin(Plugin):
     def __init__(self, agent):
         super().__init__(agent)
         self.project_manager = ProjectManager(agent)
-        if hasattr(agent, "state"):
-            agent.state.project_manager = self.project_manager
+        agent.register_dependency("project_manager", self.project_manager)
         self.file_edit = FileEdit()
         self.shell_tool = Shell(self.agent.workspace.absolute())
 
@@ -616,10 +616,10 @@ class ProjectPlugin(Plugin):
 
     def tools(self):
         tools = [
-            {"func": self.project_manager.read},
-            {"func": self.file_edit.replace_in_file, "sequential": True},
-            {"func": self.file_edit.write_to_file, "sequential": True},
+            ToolDef(func=self.project_manager.read),
+            ToolDef(func=self.file_edit.replace_in_file, kwargs={"sequential": True}),
+            ToolDef(func=self.file_edit.write_to_file, kwargs={"sequential": True}),
         ]
         if not self.shell_tool.disabled:
-            tools.append({"func": self.shell_tool.shell})
+            tools.append(ToolDef(func=self.shell_tool.shell))
         return tools

@@ -9,6 +9,9 @@ class GitCommitAgent(LLMBaseAgent):
     An agent that generates commit messages based on git diff output.
     """
 
+    async def handle_task(self, task: str, main_agent: LLMBaseAgent, **kwargs) -> str:
+        return await self.auto_commit_changes()
+
     async def generate_commit_message(self, diff: str | None = None) -> str:
         """
         Generate a commit message based on the provided git diff or the current changes.

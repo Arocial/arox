@@ -2,7 +2,7 @@ import logging
 import mimetypes
 from collections.abc import AsyncIterable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic_ai import (
     AgentStreamEvent,
@@ -40,20 +40,20 @@ class SimpleState:
                     self.example_messages = parse_example_yaml(f.read())
 
         self.workspace = self.agent.workspace
-        self.project_manager: Any = None
         self.reset()
 
     async def process_history(self, messages: list[ModelMessage]) -> list[ModelMessage]:
         if messages and isinstance(messages[-1], ModelRequest):
-            if not self.project_manager:
+            project_manager = self.agent.get_dependency("project_manager")
+            if not project_manager:
                 return messages
             pending_text_files, pending_binary, pending_project_file_list = (
-                self.project_manager.consume_pending()
+                project_manager.consume_pending()
             )
 
             extra_content = []
             if pending_project_file_list:
-                file_list = "\n".join(self.project_manager._get_tracked_files())
+                file_list = "\n".join(project_manager._get_tracked_files())
                 if file_list:
                     extra_content.append(
                         f"\nFiles tracked in VC of current project:\n{file_list}\n"

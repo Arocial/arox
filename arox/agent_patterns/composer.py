@@ -102,13 +102,6 @@ class Composer:
         # Build context from subagents
         context = {name: agent for name, agent in self.agents.items()}
 
-        # For backward compatibility with commands that expect specific names in context
-        for agent in self.agents.values():
-            if agent.__class__.__name__ == "GitCommitAgent":
-                context["commit_agent"] = agent
-            elif agent.__class__.__name__ == "CompactionAgent":
-                context["compaction_agent"] = agent
-
         main_agent = main_agent_cls(
             main_agent_name,
             self.toml_parser,
@@ -116,6 +109,11 @@ class Composer:
             context=context,
             agent_io=self.io_channels[main_agent_name],
         )
+
+        for name, agent in self.agents.items():
+            if name != main_agent_name:
+                main_agent.register_dependency(name, agent)
+
         self._load_agent_hooks(main_agent, agent_configs[main_agent_name])
         self.agents[main_agent_name] = main_agent
         self.main_agent = main_agent
