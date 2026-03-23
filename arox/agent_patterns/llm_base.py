@@ -133,7 +133,21 @@ class LLMBaseAgent:
 
         self.agent_io = agent_io
 
+        self.load_plugins()
+
         self._stack = contextlib.AsyncExitStack()
+
+    def load_plugins(self):
+        plugin_classes = getattr(self.agent_config, "plugins", [])
+        for plugin_path in plugin_classes:
+            plugin_cls = utils.import_class(plugin_path, group="arox.plugins")
+            plugin = plugin_cls(self)
+
+            # Register tools
+            tools = plugin.tools()
+            for tool_def in tools:
+                func = tool_def.pop("func")
+                self.add_local_tool(func, **tool_def)
 
     async def __aenter__(self):
         await self._stack.enter_async_context(self.agent_io)

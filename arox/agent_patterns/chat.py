@@ -23,6 +23,7 @@ class ChatAgent(LLMBaseAgent):
     ):
         if context is None:
             context = {}
+        self.command_manager = CommandManager(self)
         super().__init__(
             name,
             config_parser,
@@ -32,7 +33,24 @@ class ChatAgent(LLMBaseAgent):
             context=context,
         )
 
-        self.command_manager = CommandManager(self)
+    def load_plugins(self):
+        from arox import utils
+
+        plugin_classes = getattr(self.agent_config, "plugins", [])
+        for plugin_path in plugin_classes:
+            plugin_cls = utils.import_class(plugin_path, group="arox.plugins")
+            plugin = plugin_cls(self)
+
+            # Register commands
+            cmds = plugin.commands()
+            if cmds:
+                self.register_commands(cmds)
+
+            # Register tools
+            tools = plugin.tools()
+            for tool_def in tools:
+                func = tool_def.pop("func")
+                self.add_local_tool(func, **tool_def)
 
     def register_commands(self, cmds: list[commands.Command]):
         self.command_manager.register_commands(cmds)

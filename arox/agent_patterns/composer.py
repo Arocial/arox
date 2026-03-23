@@ -4,10 +4,10 @@ import logging
 
 from pydantic_ai import FunctionToolset
 
-from arox.agent_patterns.chat import ChatAgent
 from arox.agent_patterns.llm_base import AgentDeps
 from arox.config import TomlConfigParser
 from arox.ui.io import IOChannel
+from arox.utils import import_class
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ class Composer:
         self.config = toml_parser.parse_args()
         self.composer_config = getattr(self.config.composer, self.name)
 
-        io_adapter_cls = self._import_class(
+        io_adapter_cls = import_class(
             self.composer_config.io_adapter, group="arox.io_adapters"
         )
         self.io_adapter = io_adapter_cls()
@@ -39,37 +39,15 @@ class Composer:
 
         self._init_agents()
 
-    def _import_class(self, class_path: str, group: str | None = None):
-        import importlib
-        import importlib.metadata
-
-        if group:
-            try:
-                eps = importlib.metadata.entry_points(group=group)
-                for ep in eps:
-                    if ep.name == class_path:
-                        return ep.load()
-            except Exception as e:
-                logger.debug(
-                    f"Failed to load entrypoint {class_path} in group {group}: {e}"
-                )
-
-        if "." in class_path:
-            module_name, class_name = class_path.rsplit(".", 1)
-            module = importlib.import_module(module_name)
-            return getattr(module, class_name)
-
-        raise ValueError(f"Cannot resolve {class_path} (group: {group})")
-
     def _load_agent_hooks(self, agent, agent_config):
         pre_step_hooks = getattr(agent_config, "pre_step_hooks", [])
         for hook_path in pre_step_hooks:
-            hook_func = self._import_class(hook_path, group="arox.hooks")
+            hook_func = import_class(hook_path, group="arox.hooks")
             agent.add_pre_step_hook(hook_func)
 
         post_step_hooks = getattr(agent_config, "post_step_hooks", [])
         for hook_path in post_step_hooks:
-            hook_func = self._import_class(hook_path, group="arox.hooks")
+            hook_func = import_class(hook_path, group="arox.hooks")
             agent.add_post_step_hook(hook_func)
 
     def _init_agents(self):
@@ -96,7 +74,7 @@ class Composer:
         for agent_name in subagent_names:
             agent_type = agent_configs[agent_name].type
             try:
-                agent_cls = self._import_class(agent_type, group="arox.agents")
+                agent_cls = import_class(agent_type, group="arox.agents")
             except ValueError:
                 raise ValueError(
                     f"Unknown agent type: {agent_type} for agent {agent_name}"
@@ -113,7 +91,7 @@ class Composer:
         # Third pass: instantiate main agent with context of subagents
         main_agent_type = agent_configs[main_agent_name].type
         try:
-            main_agent_cls = self._import_class(main_agent_type, group="arox.agents")
+            main_agent_cls = import_class(main_agent_type, group="arox.agents")
         except ValueError:
             raise ValueError(
                 f"Unknown agent type: {main_agent_type} for main agent {main_agent_name}"
@@ -141,27 +119,6 @@ class Composer:
         self._load_agent_hooks(main_agent, agent_configs[main_agent_name])
         self.agents[main_agent_name] = main_agent
         self.main_agent = main_agent
-
-        # Setup tools and commands for main agent if it's a ChatAgent
-        if isinstance(main_agent, ChatAgent):
-            agent_config = agent_configs[main_agent_name]
-
-            # Load plugins
-            plugin_classes = getattr(agent_config, "plugins", [])
-            for plugin_path in plugin_classes:
-                plugin_cls = self._import_class(plugin_path, group="arox.plugins")
-                plugin = plugin_cls(main_agent)
-
-                # Register commands
-                cmds = plugin.commands()
-                if cmds:
-                    main_agent.register_commands(cmds)
-
-                # Register tools
-                tools = plugin.tools()
-                for tool_def in tools:
-                    func = tool_def.pop("func")
-                    main_agent.add_local_tool(func, **tool_def)
 
         self.io_adapter.setup(main_agent)
 

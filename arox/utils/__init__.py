@@ -11,6 +11,32 @@ MAX_LINE_LENGTH = 2000
 MAX_BYTES = 50 * 1024
 
 
+def import_class(class_path: str, group: str | None = None):
+    import importlib
+    import importlib.metadata
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    if group:
+        try:
+            eps = importlib.metadata.entry_points(group=group)
+            for ep in eps:
+                if ep.name == class_path:
+                    return ep.load()
+        except Exception as e:
+            logger.debug(
+                f"Failed to load entrypoint {class_path} in group {group}: {e}"
+            )
+
+    if "." in class_path:
+        module_name, class_name = class_path.rsplit(".", 1)
+        module = importlib.import_module(module_name)
+        return getattr(module, class_name)
+
+    raise ValueError(f"Cannot resolve {class_path} (group: {group})")
+
+
 def deep_merge(source, overrides):
     """Deep merge two dictionaries, with overrides taking precedence"""
     for key, value in overrides.items():
