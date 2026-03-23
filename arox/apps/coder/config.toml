@@ -33,9 +33,7 @@ commands = [
     "commit",
     "compaction",
 ]
-post_step_hooks = [
-    "auto_compaction"
-]
+post_step_hooks = []
 
 [agent.coder.model_prompt]
 claude = ''
