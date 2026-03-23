@@ -126,8 +126,9 @@ class Shell:
         Run arbitrary shell commands in system's shell and return its output.
 
         Rules
-            1. For searching code, use `rg` or `ast-grep`
+            1. For searching code, use `rg` or `ast-grep`.
             2. Interactive commands that require user input are not supported and will fail.
+            3. The command will be invoked by `bash -c`, mind the syntax.
 
         Examples
             command: "ls -la | rg staff"
