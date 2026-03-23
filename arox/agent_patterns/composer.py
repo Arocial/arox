@@ -99,14 +99,10 @@ class Composer:
 
         local_toolset = FunctionToolset[AgentDeps]()
 
-        # Build context from subagents
-        context = {name: agent for name, agent in self.agents.items()}
-
         main_agent = main_agent_cls(
             main_agent_name,
             self.toml_parser,
             local_toolset=local_toolset,
-            context=context,
             agent_io=self.io_channels[main_agent_name],
         )
 

@@ -18,10 +18,7 @@ class ChatAgent(LLMBaseAgent):
         agent_io,
         local_toolset=None,
         state_cls=SimpleState,
-        context=None,
     ):
-        if context is None:
-            context = {}
         self.command_manager = CommandManager(self)
         super().__init__(
             name,
@@ -29,7 +26,6 @@ class ChatAgent(LLMBaseAgent):
             agent_io,
             local_toolset,
             state_cls,
-            context=context,
         )
 
     def load_plugins(self):

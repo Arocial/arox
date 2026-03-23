@@ -95,13 +95,9 @@ class LLMBaseAgent:
         agent_io: AgentIOInterface,
         local_toolset: FunctionToolset[AgentDeps] | None = None,
         state_cls=SimpleState,
-        context=None,
     ):
-        if context is None:
-            context = {}
         self.uuid = str(uuid.uuid4())
         self.name = name
-        self.context = context
         self._dependencies = {}
         self.model_ref = None
         self.additional_prompt = ""
