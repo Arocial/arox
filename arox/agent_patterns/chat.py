@@ -33,6 +33,7 @@ class ChatAgent(LLMBaseAgent):
         )
 
     def load_plugins(self):
+        super().load_plugins()
         from arox import utils
 
         plugin_classes = getattr(self.agent_config, "plugins", [])
@@ -43,16 +44,7 @@ class ChatAgent(LLMBaseAgent):
             # Register commands
             cmds = plugin.commands()
             if cmds:
-                self.register_commands(cmds)
-
-            # Register tools
-            tools = plugin.tools()
-            for tool_def in tools:
-                func = tool_def.pop("func")
-                self.add_local_tool(func, **tool_def)
-
-    def register_commands(self, cmds: list[Command]):
-        self.command_manager.register_commands(cmds)
+                self.command_manager.register_commands(cmds)
 
     async def start(self):
         """Start the agent with optional input generator"""
