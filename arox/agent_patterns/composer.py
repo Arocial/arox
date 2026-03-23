@@ -5,21 +5,13 @@ import logging
 from pydantic_ai import FunctionToolset
 
 from arox.agent_patterns.chat import ChatAgent
-from arox.agent_patterns.compaction import CompactionAgent
 from arox.agent_patterns.llm_base import AgentDeps
-from arox.compose.git_commit import GitCommitAgent
 from arox.config import TomlConfigParser
 from arox.tools import ask_human
 from arox.tools.shell import Shell
 from arox.ui.io import IOChannel
 
 logger = logging.getLogger(__name__)
-
-AGENT_TYPES = {
-    "chat": ChatAgent,
-    "git_commit": GitCommitAgent,
-    "compaction": CompactionAgent,
-}
 
 
 class Composer:
@@ -94,8 +86,9 @@ class Composer:
         # Second pass: instantiate subagents
         for agent_name in subagent_names:
             agent_type = agent_configs[agent_name].type
-            agent_cls = AGENT_TYPES.get(agent_type)
-            if not agent_cls:
+            try:
+                agent_cls = self._import_class(agent_type, group="arox.agents")
+            except ValueError:
                 raise ValueError(
                     f"Unknown agent type: {agent_type} for agent {agent_name}"
                 )
@@ -109,8 +102,9 @@ class Composer:
 
         # Third pass: instantiate main agent with context of subagents
         main_agent_type = agent_configs[main_agent_name].type
-        main_agent_cls = AGENT_TYPES.get(main_agent_type)
-        if not main_agent_cls:
+        try:
+            main_agent_cls = self._import_class(main_agent_type, group="arox.agents")
+        except ValueError:
             raise ValueError(
                 f"Unknown agent type: {main_agent_type} for main agent {main_agent_name}"
             )
@@ -122,9 +116,9 @@ class Composer:
 
         # For backward compatibility with commands that expect specific names in context
         for agent in self.agents.values():
-            if isinstance(agent, GitCommitAgent):
+            if agent.__class__.__name__ == "GitCommitAgent":
                 context["commit_agent"] = agent
-            elif isinstance(agent, CompactionAgent):
+            elif agent.__class__.__name__ == "CompactionAgent":
                 context["compaction_agent"] = agent
 
         main_agent = main_agent_cls(

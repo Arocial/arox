@@ -32,7 +32,12 @@ dependencies = [
 Homepage = "https://github.com/Arocial/arox"
 
 [project.scripts]
-arox-coder = "arox.compose.coder.main:main"
+arox-coder = "arox.apps.coder.main:main"
+
+[project.entry-points."arox.agents"]
+chat = "arox.agent_patterns.chat:ChatAgent"
+git_commit = "arox.apps.git_commit:GitCommitAgent"
+compaction = "arox.apps.compaction:CompactionAgent"
 
 [project.entry-points."arox.io_adapters"]
 text_io = "arox.ui.text_io:TextIOAdapter"
@@ -48,8 +53,8 @@ commit = "arox.commands:CommitCommand"
 compaction = "arox.commands:CompactionCommand"
 
 [project.entry-points."arox.hooks"]
-pre_llm_commit = "arox.compose.hooks:pre_llm_commit_hook"
-auto_compaction = "arox.compose.hooks:auto_compaction_hook"
+pre_llm_commit = "arox.apps.hooks:pre_llm_commit_hook"
+auto_compaction = "arox.apps.hooks:auto_compaction_hook"
 
 [tool.setuptools.packages.find]
 where = ["."]

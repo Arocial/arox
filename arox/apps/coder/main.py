@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 from arox import agent_patterns, config
-from arox.compose.composer import Composer
+from arox.agent_patterns.composer import Composer
 from arox.config import TomlConfigParser
 
 logger = logging.getLogger(__name__)
