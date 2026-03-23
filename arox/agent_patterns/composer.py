@@ -34,7 +34,8 @@ class Composer:
         )
         self.io_adapter = io_adapter_cls()
 
-        self.agents = {}
+        self.main_agent = None
+        self.subagents = {}
         self.io_channels = {}
 
         self._init_agents()
@@ -86,7 +87,7 @@ class Composer:
                 agent_io=self.io_channels[agent_name],
             )
             self._load_agent_hooks(agent, agent_configs[agent_name])
-            self.agents[agent_name] = agent
+            self.subagents[agent_name] = agent
 
         # Third pass: instantiate main agent with context of subagents
         main_agent_type = agent_configs[main_agent_name].type
@@ -106,29 +107,30 @@ class Composer:
             agent_io=self.io_channels[main_agent_name],
         )
 
-        for name, agent in self.agents.items():
-            if name != main_agent_name:
-                main_agent.register_dependency(name, agent)
+        for name, agent in self.subagents.items():
+            main_agent.register_dependency(name, agent)
 
         self._load_agent_hooks(main_agent, agent_configs[main_agent_name])
-        self.agents[main_agent_name] = main_agent
         self.main_agent = main_agent
 
         self.io_adapter.setup(main_agent)
 
     async def run(self):
+        if self.main_agent is None:
+            raise RuntimeError("Main agent is not initialized")
+
         async with contextlib.AsyncExitStack() as stack:
             for io_channel in self.io_channels.values():
                 await stack.enter_async_context(io_channel)
 
-            for agent in self.agents.values():
+            for agent in self.subagents.values():
                 await stack.enter_async_context(agent)
+            await stack.enter_async_context(self.main_agent)
 
             asyncio.create_task(self.io_adapter.start())
 
-            for agent in self.agents.values():
-                if agent != self.main_agent:
-                    await agent.show_agent_info()
+            for agent in self.subagents.values():
+                await agent.show_agent_info()
             await self.main_agent.show_agent_info()
 
             if hasattr(self.main_agent, "start"):
