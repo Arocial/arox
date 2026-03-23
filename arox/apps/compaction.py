@@ -61,6 +61,6 @@ async def auto_compaction_hook(
         logger.info(
             f"Context size ({usage.request_tokens} tokens) exceeds threshold. Triggering automatic compaction."
         )
-        from arox import commands
+        from arox.plugins.core import CompactionCommand
 
-        await commands.CompactionCommand(agent).execute("compact", "")
+        await CompactionCommand(agent).execute("compact", "")

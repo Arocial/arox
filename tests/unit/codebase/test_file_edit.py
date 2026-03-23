@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from arox.codebase.file_edit import FileEdit
+from arox.plugins.project import FileEdit
 
 original_content = """import yaml
 import os
