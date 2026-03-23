@@ -6,7 +6,6 @@ import git
 
 if TYPE_CHECKING:
     from arox.agent_patterns.llm_base import LLMBaseAgent
-from arox.codebase.file_edit import FileEdit
 from arox.utils import (
     DEFAULT_READ_LIMIT,
     truncate_content,
@@ -22,10 +21,6 @@ class ProjectManager:
         self._pending_text_files: dict[str, str] = {}
         self._pending_binary_files: dict[str, bytes] = {}
         self.session_files = []
-        self.agent.add_local_tool(self.read)
-        edit_tool = FileEdit()
-        self.agent.add_local_tool(edit_tool.replace_in_file, sequential=True)
-        self.agent.add_local_tool(edit_tool.write_to_file, sequential=True)
 
         self._pending_project_file_list = False
 

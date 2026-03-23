@@ -7,8 +7,6 @@ from pydantic_ai import FunctionToolset
 from arox.agent_patterns.chat import ChatAgent
 from arox.agent_patterns.llm_base import AgentDeps
 from arox.config import TomlConfigParser
-from arox.tools import ask_human
-from arox.tools.shell import Shell
 from arox.ui.io import IOChannel
 
 logger = logging.getLogger(__name__)
@@ -146,21 +144,24 @@ class Composer:
 
         # Setup tools and commands for main agent if it's a ChatAgent
         if isinstance(main_agent, ChatAgent):
-            shell_tool = Shell(main_agent.workspace.absolute())
-            shell_tool.register_tool(main_agent)
-            main_agent.add_local_tool(ask_human)
-
             agent_config = agent_configs[main_agent_name]
 
-            # Load commands
-            command_classes = getattr(agent_config, "commands", [])
-            coder_commands = []
-            for cmd_path in command_classes:
-                cmd_cls = self._import_class(cmd_path, group="arox.commands")
-                coder_commands.append(cmd_cls(main_agent))
+            # Load plugins
+            plugin_classes = getattr(agent_config, "plugins", [])
+            for plugin_path in plugin_classes:
+                plugin_cls = self._import_class(plugin_path, group="arox.plugins")
+                plugin = plugin_cls(main_agent)
 
-            if coder_commands:
-                main_agent.register_commands(coder_commands)
+                # Register commands
+                cmds = plugin.commands()
+                if cmds:
+                    main_agent.register_commands(cmds)
+
+                # Register tools
+                tools = plugin.tools()
+                for tool_def in tools:
+                    func = tool_def.pop("func")
+                    main_agent.add_local_tool(func, **tool_def)
 
         self.io_adapter.setup(main_agent)
 

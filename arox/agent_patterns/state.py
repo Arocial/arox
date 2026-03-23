@@ -2,7 +2,7 @@ import logging
 import mimetypes
 from collections.abc import AsyncIterable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import (
     AgentStreamEvent,
@@ -16,7 +16,6 @@ from pydantic_ai import (
 from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 
 from arox.agent_patterns.example_parser import parse_example_yaml
-from arox.codebase import project
 
 if TYPE_CHECKING:
     from arox.agent_patterns.llm_base import AgentDeps
@@ -41,11 +40,13 @@ class SimpleState:
                     self.example_messages = parse_example_yaml(f.read())
 
         self.workspace = self.agent.workspace
-        self.project_manager = project.ProjectManager(agent)
+        self.project_manager: Any = None
         self.reset()
 
     async def process_history(self, messages: list[ModelMessage]) -> list[ModelMessage]:
         if messages and isinstance(messages[-1], ModelRequest):
+            if not self.project_manager:
+                return messages
             pending_text_files, pending_binary, pending_project_file_list = (
                 self.project_manager.consume_pending()
             )

@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "arox"
 version = "0.0.1"
@@ -42,15 +46,9 @@ compaction = "arox.apps.compaction:CompactionAgent"
 [project.entry-points."arox.io_adapters"]
 text_io = "arox.ui.text_io:TextIOAdapter"
 
-[project.entry-points."arox.commands"]
-project = "arox.commands:ProjectCommand"
-model = "arox.commands:ModelCommand"
-invoke_tool = "arox.commands:InvokeToolCommand"
-list_tool = "arox.commands:ListToolCommand"
-reset = "arox.commands:ResetCommand"
-info = "arox.commands:InfoCommand"
-commit = "arox.commands:CommitCommand"
-compaction = "arox.commands:CompactionCommand"
+[project.entry-points."arox.plugins"]
+core = "arox.plugins.core:CorePlugin"
+project = "arox.plugins.project:ProjectPlugin"
 
 [project.entry-points."arox.hooks"]
 auto_compaction = "arox.apps.compaction:auto_compaction_hook"

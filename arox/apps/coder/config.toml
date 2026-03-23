@@ -23,15 +23,9 @@ You are Arox Coder, an AI coding assistant specialized in software development t
   - Add `Co-authored-by: arox-coder/{{ config.model_ref }}` to commit message.
 '''
 examples = "examples.yaml"
-commands = [
+plugins = [
+    "core",
     "project",
-    "model",
-    "invoke_tool",
-    "list_tool",
-    "reset",
-    "info",
-    "commit",
-    "compaction",
 ]
 post_step_hooks = []
 
