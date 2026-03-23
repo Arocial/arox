@@ -1,6 +1,7 @@
 import logging
 
-from pydantic_ai import ModelMessage
+from pydantic_ai import AgentRunResult, ModelMessage
+from pydantic_ai.tools import DeferredToolRequests
 
 from arox.agent_patterns.llm_base import LLMBaseAgent
 
@@ -46,3 +47,20 @@ class CompactionAgent(LLMBaseAgent):
 
         logger.info("Context compaction completed.")
         return str(result.output)
+
+
+async def auto_compaction_hook(
+    agent: LLMBaseAgent,
+    input_content: str | None,
+    result: AgentRunResult[DeferredToolRequests | str] | None,
+) -> None:
+    if not result:
+        return
+    usage = result.usage()
+    if usage and usage.request_tokens and usage.request_tokens > 100000:
+        logger.info(
+            f"Context size ({usage.request_tokens} tokens) exceeds threshold. Triggering automatic compaction."
+        )
+        from arox import commands
+
+        await commands.CompactionCommand(agent).execute("compact", "")

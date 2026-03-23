@@ -53,7 +53,7 @@ commit = "arox.commands:CommitCommand"
 compaction = "arox.commands:CompactionCommand"
 
 [project.entry-points."arox.hooks"]
-auto_compaction = "arox.apps.hooks:auto_compaction_hook"
+auto_compaction = "arox.apps.compaction:auto_compaction_hook"
 
 [tool.setuptools.packages.find]
 where = ["."]

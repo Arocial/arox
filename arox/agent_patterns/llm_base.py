@@ -5,7 +5,7 @@ import re
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any
 
 import fastmcp
 from httpx import AsyncClient, HTTPStatusError, Timeout, TransportError
@@ -30,6 +30,7 @@ from tenacity import (
 )
 
 from arox import utils
+from arox.agent_patterns.hooks import PostStepHook, PreStepHook
 from arox.agent_patterns.state import SimpleState
 from arox.skills import build_skill_catalog, discover_skills
 from arox.ui.io import AgentIOInterface
@@ -84,19 +85,6 @@ def infer_provider(provider: str) -> Provider[Any]:
 @dataclass
 class AgentDeps:
     agent_io: AgentIOInterface
-
-
-class PreStepHook(Protocol):
-    async def __call__(self, agent: "LLMBaseAgent", input_content: str | None) -> None: ...
-
-
-class PostStepHook(Protocol):
-    async def __call__(
-        self,
-        agent: "LLMBaseAgent",
-        input_content: str | None,
-        result: AgentRunResult[DeferredToolRequests | str] | None,
-    ) -> None: ...
 
 
 class LLMBaseAgent:
