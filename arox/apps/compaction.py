@@ -32,8 +32,8 @@ Provide a detailed prompt for continuing our conversation above. Focus on inform
 
 class CompactionAgent(LLMBaseAgent):
     async def handle_task(self, task: str, main_agent: LLMBaseAgent, **kwargs) -> str:
-        example_len = len(main_agent.state.example_messages)
-        messages_to_compact = main_agent.state.message_history[example_len:]
+        example_len = len(main_agent.example_messages)
+        messages_to_compact = main_agent.message_history[example_len:]
 
         if not messages_to_compact:
             return "No history to compact."
@@ -46,9 +46,7 @@ class CompactionAgent(LLMBaseAgent):
             parts=[UserPromptPart(content=f"Previous conversation summary:\n{summary}")]
         )
 
-        main_agent.state.message_history = main_agent.state.example_messages + [
-            new_request
-        ]
+        main_agent.message_history = main_agent.example_messages + [new_request]
 
         return "Conversation history compacted successfully."
 

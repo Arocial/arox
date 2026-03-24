@@ -1,8 +1,10 @@
 import asyncio
 import contextlib
 import logging
+import mimetypes
 import re
 import uuid
+from collections.abc import AsyncIterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -13,10 +15,18 @@ from pydantic_ai import (
     AbstractToolset,
     Agent,
     AgentRunResult,
+    AgentStreamEvent,
+    BinaryContent,
     FunctionToolset,
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
     ModelSettings,
+    RunContext,
+    UserPromptPart,
     capture_run_messages,
 )
+from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from pydantic_ai.models import infer_model
 from pydantic_ai.providers import Provider, gateway, google, infer_provider_class
 from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
@@ -30,8 +40,8 @@ from tenacity import (
 )
 
 from arox import utils
+from arox.agent_patterns.example_parser import parse_example_yaml
 from arox.agent_patterns.hooks import PostStepHook, PreStepHook
-from arox.agent_patterns.state import SimpleState
 from arox.skills import build_skill_catalog, discover_skills
 from arox.ui.io import AgentIOInterface
 
@@ -94,7 +104,6 @@ class LLMBaseAgent:
         config_parser,
         agent_io: AgentIOInterface,
         local_toolset: FunctionToolset[AgentDeps] | None = None,
-        state_cls=SimpleState,
     ):
         self.uuid = str(uuid.uuid4())
         self.name = name
@@ -118,11 +127,10 @@ class LLMBaseAgent:
             mcp_toolset = FastMCPToolset[AgentDeps](self.mcp_client)
             toolsets.append(mcp_toolset)
 
-        self.state = state_cls(self)
         self.model = infer_model(self.provider_model, provider_factory=infer_provider)
         self.pydantic_agent = Agent[AgentDeps, DeferredToolRequests | str](
             self.model,
-            history_processors=[self.state.process_history],
+            history_processors=[self.process_history],
             toolsets=toolsets,
             deps_type=AgentDeps,
             output_type=(DeferredToolRequests, str),
@@ -133,6 +141,77 @@ class LLMBaseAgent:
         self.load_plugins()
 
         self._stack = contextlib.AsyncExitStack()
+        self.reset()
+
+    async def process_history(self, messages: list[ModelMessage]) -> list[ModelMessage]:
+        if messages and isinstance(messages[-1], ModelRequest):
+            project_manager = self.get_dependency("project_manager")
+            if not project_manager:
+                return messages
+            pending_text_files, pending_binary, pending_project_file_list = (
+                project_manager.consume_pending()
+            )
+
+            extra_content = []
+            if pending_project_file_list:
+                file_list = "\n".join(project_manager._get_tracked_files())
+                if file_list:
+                    extra_content.append(
+                        f"\nFiles tracked in VC of current project:\n{file_list}\n"
+                    )
+
+            for path, data in pending_binary.items():
+                mime_type, _ = mimetypes.guess_type(path)
+                if not mime_type:
+                    mime_type = "application/octet-stream"
+                extra_content.append(BinaryContent(data=data, media_type=mime_type))  # type: ignore
+
+            if extra_content:
+                new_part = UserPromptPart(content=extra_content)
+                last_request = messages[-1]
+                parts = list(last_request.parts)
+                parts.append(new_part)
+                last_request.parts = parts
+
+            if pending_text_files:
+                import uuid
+
+                tool_call_parts = []
+                tool_return_parts = []
+
+                for path, content in pending_text_files.items():
+                    tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
+                    tool_call_parts.append(
+                        ToolCallPart(
+                            tool_name="read",
+                            args={"path": path},
+                            tool_call_id=tool_call_id,
+                        )
+                    )
+
+                    tool_return_value = {
+                        "file_name": path,
+                        "content": f"<file path={path}>\n{content}\n</file>\n",
+                    }
+
+                    tool_return_parts.append(
+                        ToolReturnPart(
+                            tool_name="read",
+                            content=tool_return_value,
+                            tool_call_id=tool_call_id,
+                        )
+                    )
+
+                if tool_call_parts and tool_return_parts:
+                    messages.append(ModelResponse(parts=tool_call_parts))
+                    messages.append(ModelRequest(parts=tool_return_parts))
+        return messages
+
+    async def handle_event(
+        self, ctx: RunContext["AgentDeps"], events: AsyncIterable[AgentStreamEvent]
+    ):
+        async for event in events:
+            await ctx.deps.agent_io.agent_send(event)
 
     def load_plugins(self):
         plugin_classes = getattr(self.agent_config, "plugins", [])
@@ -231,6 +310,14 @@ class LLMBaseAgent:
             catalog = build_skill_catalog(skills)
             self.system_prompt += f"\n\n{catalog}"
 
+        self.example_messages = []
+        examples_file = getattr(self.agent_config, "examples", None)
+        if examples_file:
+            examples_path = self.config_parser.find_config(Path(examples_file))
+            if examples_path:
+                with open(examples_path, "r") as f:
+                    self.example_messages = parse_example_yaml(f.read())
+
         self.model_ref = group_config.model_ref or config.model_ref
         self.agent_model_params = group_config.model_params
         self.model_aware_prompts = []
@@ -269,22 +356,22 @@ class LLMBaseAgent:
                     input_content + "\n"
                     if isinstance(input_content, str)
                     else input_content,
-                    event_stream_handler=self.state.handle_event,
+                    event_stream_handler=self.handle_event,
                     model_settings=ModelSettings(**self.model_params),
                     instructions=f"{self.system_prompt}\n{self.additional_prompt}",
-                    message_history=self.state.message_history,
+                    message_history=self.message_history,
                     deps=AgentDeps(agent_io=self.agent_io),
                     deferred_tool_results=deferred_tool_results,
                 )
-                self.state.message_history = result.all_messages()
+                self.message_history = result.all_messages()
                 await self._run_post_step_hooks(input_content, result)
                 return result
             except (asyncio.CancelledError, Exception):
-                self.state.message_history = messages
+                self.message_history = messages
                 raise
 
     def reset(self):
-        return self.state.reset()
+        self.message_history = self.example_messages
 
     def add_pre_step_hook(self, hook: PreStepHook):
         if not hasattr(self, "pre_step_hooks"):

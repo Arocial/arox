@@ -70,7 +70,7 @@ system_prompt = "Hi there."
                 await agent.start()
 
         # Verify that the tool was called
-        messages = agent.state.message_history
+        messages = agent.message_history
         tool_calls = [
             part.tool_name
             for msg in messages

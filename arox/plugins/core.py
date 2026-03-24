@@ -109,7 +109,7 @@ class CorePlugin(Plugin):
 
     @command("reset", "Reset chat history and chat files - /reset")
     async def reset_command(self, name: str, arg: str):
-        self.agent.state.reset()
+        self.agent.reset()
         await self.agent.agent_io.agent_send("Reset complete.")
 
     @command("agent", "Call a subagent - /agent <name> [task]")
