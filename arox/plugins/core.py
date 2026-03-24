@@ -6,6 +6,7 @@ import yaml
 from pydantic_ai.exceptions import CallDeferred
 
 from arox.agent_patterns.plugin import Plugin, command, tool
+from arox.plugins.capabilities import AGENT_INFO, AGENT_RESET, SUBAGENT
 
 logger = logging.getLogger(__name__)
 
@@ -95,15 +96,18 @@ class CorePlugin(Plugin):
         current_model = getattr(self.agent, "provider_model", "Unknown")
         await self.agent.agent_io.agent_send(f"Current model: {current_model}")
 
-        for plugin in self.agent.plugins:
-            if hasattr(plugin, "get_info"):
-                info = await plugin.get_info()
+        for capability, provider in self.agent._capabilities.items():
+            if capability == AGENT_INFO:
+                info = await provider()
                 if info:
                     await self.agent.agent_io.agent_send(info)
 
     @command("reset", "Reset chat history and chat files - /reset")
     async def reset_command(self, name: str, arg: str):
         self.agent.reset()
+        for capability, provider in self.agent._capabilities.items():
+            if capability == AGENT_RESET:
+                provider()
         await self.agent.agent_io.agent_send("Reset complete.")
 
     @command("agent", "Call a subagent - /agent <name> [task]")
@@ -116,7 +120,12 @@ class CorePlugin(Plugin):
         subagent_name = parts[0]
         task = parts[1] if len(parts) > 1 else ""
 
-        subagent = self.agent.get_dependency(subagent_name)
+        get_subagent_func = self.agent.get_capability(SUBAGENT)
+        if not get_subagent_func:
+            await self.agent.agent_io.agent_send("Subagent capability not provided.")
+            return
+
+        subagent = get_subagent_func(subagent_name)
         if not subagent:
             await self.agent.agent_io.agent_send(
                 f"Subagent '{subagent_name}' not found."

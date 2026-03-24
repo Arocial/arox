@@ -107,8 +107,12 @@ class Composer:
             agent_io=self.io_channels[main_agent_name],
         )
 
-        for name, agent in self.subagents.items():
-            main_agent.register_dependency(name, agent)
+        from arox.plugins.capabilities import SUBAGENT
+
+        def get_subagent(name: str):
+            return self.subagents.get(name)
+
+        main_agent.provide_capability(SUBAGENT, get_subagent)
 
         self._load_agent_hooks(main_agent, agent_configs[main_agent_name])
         self.main_agent = main_agent

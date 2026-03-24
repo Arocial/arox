@@ -20,6 +20,13 @@ class MockAgent:
     def __init__(self, workspace):
         self.workspace = workspace
         self.agent_io = None
+        self._capabilities = {}
+
+    def provide_capability(self, capability, provider):
+        self._capabilities[capability] = provider
+
+    def get_capability(self, capability, default=None):
+        return self._capabilities.get(capability, default)
 
 
 class TestFileEdit:

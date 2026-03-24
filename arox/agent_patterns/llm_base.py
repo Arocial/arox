@@ -100,8 +100,7 @@ class LLMBaseAgent:
     ):
         self.uuid = str(uuid.uuid4())
         self.name = name
-        self._dependencies = {}
-        self._providers: dict[str, Any] = {}
+        self._capabilities: dict[Any, Any] = {}
         self.model_ref = None
         self.additional_prompt = ""
 
@@ -162,20 +161,26 @@ class LLMBaseAgent:
                     self.add_local_tool(tool_def.func, **tool_def.kwargs)
         return plugins
 
-    def register_dependency(self, key: Any, value: Any):
-        self._dependencies[key] = value
+    def provide_capability(self, capability: Any, provider: Any):
+        """Register a provider for a specific capability."""
+        self._capabilities[capability] = provider
 
-    def get_dependency(self, key: Any) -> Any:
-        return self._dependencies.get(key)
+    def require_capability(self, capability: Any) -> Any:
+        """
+        Get the provider for a capability.
+        Raises an error if the capability is not provided.
+        """
+        if capability not in self._capabilities:
+            raise ValueError(
+                f"Capability '{capability.name}' is required but not provided."
+            )
+        return self._capabilities[capability]
 
-    def register_provider(self, key: str, provider_func: Any):
-        self._providers[key] = provider_func
-
-    def get_provided_data(self, key: str, *args, **kwargs) -> Any:
-        provider_func = self._providers.get(key)
-        if provider_func:
-            return provider_func(*args, **kwargs)
-        return None
+    def get_capability(self, capability: Any, default: Any = None) -> Any:
+        """
+        Get the provider for a capability, returning a default if not found.
+        """
+        return self._capabilities.get(capability, default)
 
     async def handle_task(self, task: str, main_agent: "LLMBaseAgent", **kwargs) -> Any:
         """Handle a task delegated from the main agent."""

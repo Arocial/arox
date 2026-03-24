@@ -80,6 +80,10 @@ async def auto_compaction_hook(
         logger.info(
             f"Context size ({usage.request_tokens} tokens) exceeds threshold. Triggering automatic compaction."
         )
-        compaction_agent = agent.get_dependency("compaction")
-        if compaction_agent:
-            await compaction_agent.handle_task("", main_agent=agent)
+        from arox.plugins.capabilities import SUBAGENT
+
+        get_subagent_func = agent.get_capability(SUBAGENT)
+        if get_subagent_func:
+            compaction_agent = get_subagent_func("compaction")
+            if compaction_agent:
+                await compaction_agent.handle_task("", main_agent=agent)

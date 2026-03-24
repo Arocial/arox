@@ -15,6 +15,7 @@ from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from rapidfuzz import fuzz
 
 from arox.agent_patterns.plugin import Plugin, command, tool
+from arox.plugins.capabilities import AGENT_INFO, AGENT_RESET, PROJECT_FILES
 from arox.utils import DEFAULT_READ_LIMIT, truncate_content
 
 if TYPE_CHECKING:
@@ -33,6 +34,9 @@ class FilePlugin(Plugin):
         self._pending_binary_files: dict[str, bytes] = {}
         self.session_files = []
 
+        self.agent.provide_capability(AGENT_INFO, self.get_info)
+        self.agent.provide_capability(AGENT_RESET, self.reset)
+
         # Auto read agents.md or agent.md if present (case-insensitive)
         for item in self.workspace.iterdir():
             if item.is_file() and item.name.lower() in ("agents.md", "agent.md"):
@@ -46,9 +50,11 @@ class FilePlugin(Plugin):
                     pass
 
     def candidates(self):
-        provided_files = self.agent.get_provided_data("project_files")
-        if provided_files is not None:
-            return provided_files
+        get_files_func = self.agent.get_capability(PROJECT_FILES)
+        if get_files_func:
+            provided_files = get_files_func()
+            if provided_files is not None:
+                return provided_files
 
         # Fallback
         return [
@@ -385,6 +391,11 @@ class FilePlugin(Plugin):
             return info
         else:
             return "\nNo chat files currently loaded."
+
+    def reset(self):
+        self._pending_text_files = {}
+        self._pending_binary_files = {}
+        self.session_files = []
 
     async def history_processor(
         self, messages: list[ModelMessage]
