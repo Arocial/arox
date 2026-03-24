@@ -194,7 +194,7 @@ class ChatInputEvent:
             "deferred_tools": {k: t.question for k, t in self.deferred_tools.items()},
             "normal_input": {"request": self.normal_input.request},
             "exception_input": {
-                "exception": str(self.exception_input.exception)
+                "exception": f"Exception: {self.exception_input.exception}"
                 if self.exception_input.exception
                 else None
             },
