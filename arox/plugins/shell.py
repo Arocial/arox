@@ -12,12 +12,16 @@ logger = logging.getLogger(__name__)
 
 
 def get_shell_context():
+    import os
     import platform
+
+    shell_path = os.environ.get("SHELL", "/bin/bash")
+    shell_name = os.path.basename(shell_path)
 
     return {
         "os_info": platform.system(),
         "os_release": platform.release(),
-        "shell_type": "bash",
+        "shell_type": shell_name,
     }
 
 
@@ -116,7 +120,7 @@ class ShellPlugin(Plugin):
             if os.path.exists(path):
                 bwrap_args.extend(["--ro-bind", path, path])
 
-        bwrap_args.extend(["--", "/bin/bash", "-c", command])
+        bwrap_args.extend(["--", os.environ.get("SHELL", "/bin/bash"), "-c", command])
         return bwrap_args
 
     @tool(dynamic_context=get_shell_context)
@@ -131,7 +135,7 @@ class ShellPlugin(Plugin):
         Rules
             1. For searching code, use `rg` or `ast-grep`.
             2. Interactive commands that require user input are not supported and will fail.
-            3. The command will be invoked by `bash -c`, mind the syntax. e.g.:
+            3. The command will be invoked by `{{ shell_type }} -c`, mind the syntax. e.g.:
                - use single quote to avoid substution
 
         Examples
