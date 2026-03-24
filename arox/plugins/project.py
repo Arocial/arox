@@ -5,17 +5,17 @@ from typing import TYPE_CHECKING
 
 import git
 from prompt_toolkit.completion import Completion
-from rapidfuzz import fuzz
-
 from pydantic_ai import (
+    BinaryContent,
     ModelMessage,
     ModelRequest,
     ModelResponse,
     UserPromptPart,
-    BinaryContent,
 )
 from pydantic_ai.messages import ToolCallPart, ToolReturnPart
-from arox.agent_patterns.plugin import Plugin, ToolDef, command, tool
+from rapidfuzz import fuzz
+
+from arox.agent_patterns.plugin import Plugin, command, tool
 from arox.utils import DEFAULT_READ_LIMIT, truncate_content
 
 if TYPE_CHECKING:
@@ -23,11 +23,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_alnum_regex = re.compile(r"(?ui)\W")
 
-class ProjectManager:
+
+class ProjectPlugin(Plugin):
     def __init__(self, agent: "LLMBaseAgent"):
+        super().__init__(agent)
         self.workspace = agent.workspace
-        self.agent = agent
         self._pending_text_files: dict[str, str] = {}
         self._pending_binary_files: dict[str, bytes] = {}
         self.session_files = []
@@ -130,7 +132,6 @@ class ProjectManager:
 
         return text_files, binary_files, project_file_list
 
-    # https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/read.ts
     @tool()
     def read(
         self,
@@ -240,11 +241,6 @@ class ProjectManager:
             # If we can't read it or stat it, treat it as binary/unreadable
             return True
 
-
-_alnum_regex = re.compile(r"(?ui)\W")
-
-
-class FileEdit:
     @tool(sequential=True)
     async def write_to_file(self, path: str, content: str) -> str:
         """Create or overwrite a file.
@@ -389,28 +385,19 @@ class FileEdit:
 
         return None
 
-
-class ProjectPlugin(Plugin):
-    def __init__(self, agent):
-        super().__init__(agent)
-        self.project_manager = ProjectManager(agent)
-        agent.register_dependency("project_manager", self.project_manager)
-        self.file_edit = FileEdit()
-
     @command(
         ["add", "add_file_list"],
         "Add files to context - /add <file1> [file2...] /add_file_list",
     )
     async def project_command(self, name: str, arg: str):
-        project_manager = self.project_manager
         if name == "add":
             files = arg.split() if arg else []
             if not files:
                 await self.agent.agent_io.agent_send("Please specify files.")
                 return
-            await project_manager.read_by_user(files)
+            await self.read_by_user(files)
         elif name == "add_file_list":
-            project_manager.add_project_files()
+            self.add_project_files()
 
     def get_completions(self, name, args):
         # Parse the arguments to get the current word being completed
@@ -424,8 +411,7 @@ class ProjectPlugin(Plugin):
                 current_word = parts[-1] if parts else ""
 
         if name == "add":
-            project_manager = self.project_manager
-            candidates = project_manager.candidates()
+            candidates = self.candidates()
         else:
             candidates = []
 
@@ -436,30 +422,8 @@ class ProjectPlugin(Plugin):
                     candidate, start_position=-len(current_word), display=candidate
                 )
 
-    def tools(self):
-        tools = super().tools()
-        tools.extend(
-            [
-                ToolDef(
-                    func=self.project_manager.read,
-                    kwargs=getattr(self.project_manager.read, "__tool_kwargs__", {}),
-                ),
-                ToolDef(
-                    func=self.file_edit.replace_in_file,
-                    kwargs=getattr(
-                        self.file_edit.replace_in_file, "__tool_kwargs__", {}
-                    ),
-                ),
-                ToolDef(
-                    func=self.file_edit.write_to_file,
-                    kwargs=getattr(self.file_edit.write_to_file, "__tool_kwargs__", {}),
-                ),
-            ]
-        )
-        return tools
-
     async def get_info(self) -> str:
-        session_files = self.project_manager.session_files
+        session_files = self.session_files
         if session_files:
             info = f"\nChat files ({len(session_files)}):"
             for file_path in session_files:
@@ -472,16 +436,13 @@ class ProjectPlugin(Plugin):
         self, messages: list[ModelMessage]
     ) -> list[ModelMessage]:
         if messages and isinstance(messages[-1], ModelRequest):
-            project_manager = self.project_manager
-            if not project_manager:
-                return messages
             pending_text_files, pending_binary, pending_project_file_list = (
-                project_manager.consume_pending()
+                self.consume_pending()
             )
 
             extra_content = []
             if pending_project_file_list:
-                file_list = "\n".join(project_manager._get_tracked_files())
+                file_list = "\n".join(self._get_tracked_files())
                 if file_list:
                     extra_content.append(
                         f"\nFiles tracked in VC of current project:\n{file_list}\n"

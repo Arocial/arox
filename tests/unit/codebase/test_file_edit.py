@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from arox.plugins.project import FileEdit
+from arox.plugins.project import ProjectPlugin
 
 original_content = """import yaml
 import os
@@ -16,10 +16,23 @@ def test():
     pass"""
 
 
+class MockAgent:
+    def __init__(self, workspace):
+        self.workspace = workspace
+        self.agent_io = None
+
+
 class TestFileEdit:
     @classmethod
     def setup_class(cls):
-        cls.tool = FileEdit()
+        cls.temp_dir = tempfile.TemporaryDirectory()
+        cls.workspace = Path(cls.temp_dir.name)
+        cls.agent = MockAgent(cls.workspace)
+        cls.tool = ProjectPlugin(cls.agent)  # type: ignore
+
+    @classmethod
+    def teardown_class(cls):
+        cls.temp_dir.cleanup()
 
     @pytest.mark.asyncio
     async def test_write_to_file_new_file(self):
