@@ -193,3 +193,7 @@ class Plugin:
     async def history_processor(self, messages: list[Any]) -> list[Any]:
         """Process message history before sending to the model."""
         return messages
+
+    async def get_info(self) -> str:
+        """Return information to be displayed by the /info command."""
+        return ""

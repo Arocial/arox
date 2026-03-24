@@ -95,17 +95,11 @@ class CorePlugin(Plugin):
         current_model = getattr(self.agent, "provider_model", "Unknown")
         await self.agent.agent_io.agent_send(f"Current model: {current_model}")
 
-        # Show chat files
-        project_manager = self.agent.get_dependency("project_manager")
-        session_files = project_manager.session_files
-        if session_files:
-            await self.agent.agent_io.agent_send(
-                f"\nChat files ({len(session_files)}):"
-            )
-            for file_path in session_files:
-                await self.agent.agent_io.agent_send(f"  - {file_path}")
-        else:
-            await self.agent.agent_io.agent_send("\nNo chat files currently loaded.")
+        for plugin in self.agent.plugins:
+            if hasattr(plugin, "get_info"):
+                info = await plugin.get_info()
+                if info:
+                    await self.agent.agent_io.agent_send(info)
 
     @command("reset", "Reset chat history and chat files - /reset")
     async def reset_command(self, name: str, arg: str):

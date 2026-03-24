@@ -458,6 +458,16 @@ class ProjectPlugin(Plugin):
         )
         return tools
 
+    async def get_info(self) -> str:
+        session_files = self.project_manager.session_files
+        if session_files:
+            info = f"\nChat files ({len(session_files)}):"
+            for file_path in session_files:
+                info += f"\n  - {file_path}"
+            return info
+        else:
+            return "\nNo chat files currently loaded."
+
     async def history_processor(
         self, messages: list[ModelMessage]
     ) -> list[ModelMessage]:
