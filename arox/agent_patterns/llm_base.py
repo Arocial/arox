@@ -1,7 +1,6 @@
 import asyncio
 import contextlib
 import logging
-import mimetypes
 import re
 import uuid
 from collections.abc import AsyncIterable
@@ -16,17 +15,11 @@ from pydantic_ai import (
     Agent,
     AgentRunResult,
     AgentStreamEvent,
-    BinaryContent,
     FunctionToolset,
-    ModelMessage,
-    ModelRequest,
-    ModelResponse,
     ModelSettings,
     RunContext,
-    UserPromptPart,
     capture_run_messages,
 )
-from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from pydantic_ai.models import infer_model
 from pydantic_ai.providers import Provider, gateway, google, infer_provider_class
 from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
@@ -128,9 +121,12 @@ class LLMBaseAgent:
             toolsets.append(mcp_toolset)
 
         self.model = infer_model(self.provider_model, provider_factory=infer_provider)
+        self.plugins = self.load_plugins()
+        history_processors = [plugin.history_processor for plugin in self.plugins]
+
         self.pydantic_agent = Agent[AgentDeps, DeferredToolRequests | str](
             self.model,
-            history_processors=[self.process_history],
+            history_processors=history_processors,
             toolsets=toolsets,
             deps_type=AgentDeps,
             output_type=(DeferredToolRequests, str),
@@ -138,74 +134,8 @@ class LLMBaseAgent:
 
         self.agent_io = agent_io
 
-        self.load_plugins()
-
         self._stack = contextlib.AsyncExitStack()
         self.reset()
-
-    async def process_history(self, messages: list[ModelMessage]) -> list[ModelMessage]:
-        if messages and isinstance(messages[-1], ModelRequest):
-            project_manager = self.get_dependency("project_manager")
-            if not project_manager:
-                return messages
-            pending_text_files, pending_binary, pending_project_file_list = (
-                project_manager.consume_pending()
-            )
-
-            extra_content = []
-            if pending_project_file_list:
-                file_list = "\n".join(project_manager._get_tracked_files())
-                if file_list:
-                    extra_content.append(
-                        f"\nFiles tracked in VC of current project:\n{file_list}\n"
-                    )
-
-            for path, data in pending_binary.items():
-                mime_type, _ = mimetypes.guess_type(path)
-                if not mime_type:
-                    mime_type = "application/octet-stream"
-                extra_content.append(BinaryContent(data=data, media_type=mime_type))  # type: ignore
-
-            if extra_content:
-                new_part = UserPromptPart(content=extra_content)
-                last_request = messages[-1]
-                parts = list(last_request.parts)
-                parts.append(new_part)
-                last_request.parts = parts
-
-            if pending_text_files:
-                import uuid
-
-                tool_call_parts = []
-                tool_return_parts = []
-
-                for path, content in pending_text_files.items():
-                    tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
-                    tool_call_parts.append(
-                        ToolCallPart(
-                            tool_name="read",
-                            args={"path": path},
-                            tool_call_id=tool_call_id,
-                        )
-                    )
-
-                    tool_return_value = {
-                        "file_name": path,
-                        "content": f"<file path={path}>\n{content}\n</file>\n",
-                    }
-
-                    tool_return_parts.append(
-                        ToolReturnPart(
-                            tool_name="read",
-                            content=tool_return_value,
-                            tool_call_id=tool_call_id,
-                        )
-                    )
-
-                if tool_call_parts and tool_return_parts:
-                    messages.append(ModelResponse(parts=tool_call_parts))
-                    messages.append(ModelRequest(parts=tool_return_parts))
-        return messages
 
     async def handle_event(
         self, ctx: RunContext["AgentDeps"], events: AsyncIterable[AgentStreamEvent]
@@ -215,9 +145,11 @@ class LLMBaseAgent:
 
     def load_plugins(self):
         plugin_classes = getattr(self.agent_config, "plugins", [])
+        plugins = []
         for plugin_path in plugin_classes:
             plugin_cls = utils.import_class(plugin_path, group="arox.plugins")
             plugin = plugin_cls(self)
+            plugins.append(plugin)
 
             # Register tools
             tools = plugin.tools()
@@ -227,6 +159,7 @@ class LLMBaseAgent:
                     self.add_local_tool(func, **tool_def)
                 else:
                     self.add_local_tool(tool_def.func, **tool_def.kwargs)
+        return plugins
 
     def register_dependency(self, key: Any, value: Any):
         self._dependencies[key] = value

@@ -189,3 +189,7 @@ class Plugin:
                     ToolDef(func=method, kwargs=getattr(method, "__tool_kwargs__", {}))
                 )
         return tls
+
+    async def history_processor(self, messages: list[Any]) -> list[Any]:
+        """Process message history before sending to the model."""
+        return messages

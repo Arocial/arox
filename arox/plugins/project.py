@@ -7,6 +7,14 @@ import git
 from prompt_toolkit.completion import Completion
 from rapidfuzz import fuzz
 
+from pydantic_ai import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    UserPromptPart,
+    BinaryContent,
+)
+from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from arox.agent_patterns.plugin import Plugin, ToolDef, command, tool
 from arox.utils import DEFAULT_READ_LIMIT, truncate_content
 
@@ -394,7 +402,7 @@ class ProjectPlugin(Plugin):
         "Add files to context - /add <file1> [file2...] /add_file_list",
     )
     async def project_command(self, name: str, arg: str):
-        project_manager = self.agent.get_dependency("project_manager")
+        project_manager = self.project_manager
         if name == "add":
             files = arg.split() if arg else []
             if not files:
@@ -416,7 +424,7 @@ class ProjectPlugin(Plugin):
                 current_word = parts[-1] if parts else ""
 
         if name == "add":
-            project_manager = self.agent.get_dependency("project_manager")
+            project_manager = self.project_manager
             candidates = project_manager.candidates()
         else:
             candidates = []
@@ -449,3 +457,71 @@ class ProjectPlugin(Plugin):
             ]
         )
         return tools
+
+    async def history_processor(
+        self, messages: list[ModelMessage]
+    ) -> list[ModelMessage]:
+        if messages and isinstance(messages[-1], ModelRequest):
+            project_manager = self.project_manager
+            if not project_manager:
+                return messages
+            pending_text_files, pending_binary, pending_project_file_list = (
+                project_manager.consume_pending()
+            )
+
+            extra_content = []
+            if pending_project_file_list:
+                file_list = "\n".join(project_manager._get_tracked_files())
+                if file_list:
+                    extra_content.append(
+                        f"\nFiles tracked in VC of current project:\n{file_list}\n"
+                    )
+
+            for path, data in pending_binary.items():
+                import mimetypes
+
+                mime_type, _ = mimetypes.guess_type(path)
+                if not mime_type:
+                    mime_type = "application/octet-stream"
+                extra_content.append(BinaryContent(data=data, media_type=mime_type))  # type: ignore
+
+            if extra_content:
+                new_part = UserPromptPart(content=extra_content)
+                last_request = messages[-1]
+                parts = list(last_request.parts)
+                parts.append(new_part)
+                last_request.parts = parts
+
+            if pending_text_files:
+                import uuid
+
+                tool_call_parts = []
+                tool_return_parts = []
+
+                for path, content in pending_text_files.items():
+                    tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
+                    tool_call_parts.append(
+                        ToolCallPart(
+                            tool_name="read",
+                            args={"path": path},
+                            tool_call_id=tool_call_id,
+                        )
+                    )
+
+                    tool_return_value = {
+                        "file_name": path,
+                        "content": f"<file path={path}>\n{content}\n</file>\n",
+                    }
+
+                    tool_return_parts.append(
+                        ToolReturnPart(
+                            tool_name="read",
+                            content=tool_return_value,
+                            tool_call_id=tool_call_id,
+                        )
+                    )
+
+                if tool_call_parts and tool_return_parts:
+                    messages.append(ModelResponse(parts=tool_call_parts))
+                    messages.append(ModelRequest(parts=tool_return_parts))
+        return messages
