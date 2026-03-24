@@ -18,11 +18,15 @@ Agent Patterns are reusable templates for creating AI agents with specific behav
 ### Composed Agents (Apps)
 Composed Agents (often referred to as Apps) are specialized applications built by combining multiple Agent Patterns and tools via a `Composer`. They are designed to handle complex workflows, such as code generation or repository management. The primary example is the `Coder` app.
 
-### Tools
-Tools are external components provided to the LLM to extend its capabilities. Arox supports both local Python functions and MCP (Model Context Protocol) servers, allowing agents to interact with the outside world, such as reading files, executing shell commands, or querying APIs.
+### Plugins
+Plugins are modular components that extend the capabilities of an agent. They bundle together:
 
-### Commands
-Commands are predefined actions that agents can execute, often triggered by user input (e.g., `/commit`, `/reset`). They provide a way for humans to interact with agents in a structured manner. Commands may use tools as their backend, bridging the gap between human intent and agent execution.
+- **Tools**: External functions provided to the LLM to interact with the outside world (e.g., reading files, executing shell commands). Arox supports both local Python functions and MCP (Model Context Protocol) servers.
+- **Commands**: Predefined actions triggered by user input (e.g., `/commit`, `/reset`), providing a structured way for humans to interact with agents.
+- **History Processors**: Functions that can modify the message history before it is sent to the LLM.
+
+### Capabilities
+Capabilities provide a typed, decoupled way for plugins and agents to declare what they provide or require. This allows different components to interact without tight coupling. For example, a plugin might provide a `FileEditCapability`, which another component can consume to modify files.
 
 ### UI Adapters
 Arox supports multiple user interfaces through IO Adapters, allowing the same agent logic to run in a terminal (`TextIOAdapter`), a web frontend (`VercelStreamIOAdapter`), or as a chat bot (`TelegramIOAdapter`, `FeishuIOAdapter`).

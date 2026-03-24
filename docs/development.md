@@ -24,11 +24,9 @@ This guide provides instructions on how to set up the development environment, r
 ## Project Structure
 
 - `arox/`: The main framework code.
-    - `agent_patterns/`: Core agent logic (`LLMBaseAgent`, `ChatAgent`, `Composer`).
+    - `agent_patterns/`: Core agent logic (`LLMBaseAgent`, `ChatAgent`, `Composer`, `Plugin`, `Capability`).
     - `apps/`: Built-in applications (e.g., `coder`).
-    - `codebase/`: Utilities for interacting with codebases (e.g., file editing).
-    - `commands/`: Built-in commands for agents.
-    - `tools/`: Built-in tools (e.g., `shell`).
+    - `plugins/`: Built-in plugins providing tools and commands (e.g., `shell`, `file`, `repo`).
     - `ui/`: IO Adapters for different platforms (Text, Vercel AI, Telegram, Feishu).
     - `utils/`: Helper functions.
 - `tests/`: Unit and functional tests.

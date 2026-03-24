@@ -23,20 +23,23 @@ A **Composer** is responsible for assembling a complete application by wiring to
 - It manages the lifecycle of all components and sets up the communication channels between them.
 - Example: The `Coder` app uses a Composer to set up a main coding assistant agent alongside subagents like a `GitCommitAgent` and a `CompactionAgent`.
 
-### 3. Tools
+### 3. Plugins
 
-Tools are the hands and eyes of the LLM, allowing it to interact with the external environment. Arox supports two types of tools:
+Plugins are the primary way to extend an agent's capabilities. They bundle together tools, commands, and history processors into a cohesive unit.
 
-- **Local Tools**: Python functions registered directly with the agent (e.g., `Shell` execution, `ask_human`).
-- **MCP (Model Context Protocol) Tools**: Arox natively supports connecting to MCP servers via `fastmcp`, allowing agents to leverage a wide ecosystem of external tools and data sources seamlessly.
+- **Tools**: Functions provided to the LLM to interact with the external environment. Arox supports two types of tools:
+    - **Local Tools**: Python functions registered directly with the agent via plugins (e.g., `Shell` execution, `ask_human`).
+    - **MCP (Model Context Protocol) Tools**: Arox natively supports connecting to MCP servers via `fastmcp`, allowing agents to leverage a wide ecosystem of external tools and data sources seamlessly.
+- **Commands**: Structured actions triggered by human users (e.g., `/commit`, `/reset`, `/model`). They are handled by the `CommandManager` in a `ChatAgent` and can execute local Python code or trigger specific agent behaviors without sending a prompt to the LLM, saving time and tokens.
+- **History Processors**: Functions that can modify the message history before it is sent to the LLM.
 
-### 4. Commands
+### 4. Capabilities
 
-Commands provide a structured way for human users to interact with the agent outside of standard natural language conversation. 
+Capabilities provide a typed, decoupled way for plugins and agents to declare what they provide or require. 
 
-- They are typically prefixed with a slash (e.g., `/commit`, `/reset`, `/model`).
-- Commands are handled by the `CommandManager` in a `ChatAgent`.
-- They can execute local Python code or trigger specific agent behaviors without sending a prompt to the LLM, saving time and tokens.
+- A `Capability` is a typed object representing a specific feature or service (e.g., `FileEditCapability`).
+- Plugins can provide implementations for specific capabilities.
+- Other components can request a capability from the agent, allowing them to use the feature without knowing which specific plugin provides it. This promotes loose coupling and modularity.
 
 ### 5. IO Adapters (UI)
 

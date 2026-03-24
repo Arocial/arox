@@ -17,6 +17,7 @@ Arox is built around several key concepts that work together to create powerful 
 Agent Patterns are reusable templates for creating AI agents with specific behaviors and capabilities. They provide a structured way to define how agents should interact with users, tools, and other agents. 
 
 Examples include:
+
 - `ChatAgent`: For conversational interactions.
 - `LLMBaseAgent`: The foundation for all LLM-driven agent types.
 
@@ -25,15 +26,19 @@ Examples include:
 Composed Agents (often referred to as Apps) are specialized agents built by combining multiple Agent Patterns and tools. They are designed to handle complex workflows, such as code generation or repository management. 
 
 Example:
+
 - `CoderComposer`: An application designed to assist with software development tasks.
 
-### Tools
+### Plugins
+Plugins are modular components that extend the capabilities of an agent. They bundle together:
 
-Tools are external components provided to the LLM to extend its capabilities. They allow agents to interact with the outside world, such as reading files, executing shell commands, or querying APIs.
+- **Tools**: External functions provided to the LLM to interact with the outside world (e.g., reading files, executing shell commands).
+- **Commands**: Predefined actions triggered by user input (e.g., `/commit`, `/reset`), providing a structured way for humans to interact with agents.
+- **History Processors**: Functions that can modify the message history before it is sent to the LLM.
 
-### Commands
+### Capabilities
 
-Commands are predefined actions that agents can execute, often triggered by user input. They provide a way for humans to interact with agents in a structured manner. Commands may use tools as their backend, bridging the gap between human intent and agent execution.
+Capabilities provide a typed, decoupled way for plugins and agents to declare what they provide or require. This allows different components to interact without tight coupling. For example, a plugin might provide a `FileEditCapability`, which another component can consume to modify files.
 
 ## Getting Started
 

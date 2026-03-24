@@ -24,7 +24,7 @@ The Coder app consists of the following components:
   - `/project`: Manage project settings.
   - `/model`: Switch the underlying LLM model.
   - `/invoke_tool`: Manually invoke a specific tool.
-  - `/list_tool`: List all available tools.
+  - `/list_tools`: List all available tools.
   - `/reset`: Reset the conversation history.
   - `/info`: Display information about the current agent and model.
   - `/commit`: Trigger the Git commit agent manually.
