@@ -7,27 +7,24 @@ from pydantic_ai import RunContext
 from pydantic_ai.exceptions import CallDeferred
 
 from arox.agent_patterns.llm_base import AgentDeps
-from arox.agent_patterns.plugin import Command, Plugin, ToolDef
+from arox.agent_patterns.plugin import Plugin, ToolDef, command, tool
 
 logger = logging.getLogger(__name__)
 
 
-class ModelCommand(Command):
-    command = "model"
-    description = "Switch LLM model - /model <model_name>"
-
-    async def execute(self, name: str, arg: str):
+class CorePlugin(Plugin):
+    @command("model", "Switch LLM model - /model <model_name>")
+    async def model_command(self, name: str, arg: str):
         if not arg:
             await self.agent.agent_io.agent_send("Please specify a model name")
             return
         self.agent.set_model(arg)
 
-
-class InvokeToolCommand(Command):
-    command = "invoke-tool"
-    description = "Invoke a registered tool - /invoke-tool <function_name> [json_args]"
-
-    async def execute(self, name: str, arg: str):
+    @command(
+        "invoke-tool",
+        "Invoke a registered tool - /invoke-tool <function_name> [json_args]",
+    )
+    async def invoke_tool_command(self, name: str, arg: str):
         tool_registry = self.agent.tool_registry
 
         parts = arg.split(maxsplit=1)
@@ -38,7 +35,7 @@ class InvokeToolCommand(Command):
             return
 
         function_name = parts[0]
-        args_str = parts[0] if len(parts) > 1 else "{}"
+        args_str = parts[1] if len(parts) > 1 else "{}"
 
         try:
             args = json.loads(args_str)
@@ -83,12 +80,8 @@ class InvokeToolCommand(Command):
             )
             await self.agent.agent_io.agent_send(f"An unexpected error occurred: {e}")
 
-
-class ListToolCommand(Command):
-    command = "list-tools"
-    description = "List all registered tools"
-
-    async def execute(self, name: str, arg: str):
+    @command("list-tools", "List all registered tools")
+    async def list_tools_command(self, name: str, arg: str):
         tool_registry = self.agent.tool_registry
         tool_specs = await tool_registry.get_tools_specs()
         if not tool_specs:
@@ -98,12 +91,8 @@ class ListToolCommand(Command):
         await self.agent.agent_io.agent_send("Registered Tools:")
         await self.agent.agent_io.agent_send(yaml.safe_dump(tool_specs))
 
-
-class InfoCommand(Command):
-    command = "info"
-    description = "Show current chat files and model in use - /info"
-
-    async def execute(self, name: str, arg: str):
+    @command("info", "Show current chat files and model in use - /info")
+    async def info_command(self, name: str, arg: str):
         # Show current model
         current_model = getattr(self.agent, "provider_model", "Unknown")
         await self.agent.agent_io.agent_send(f"Current model: {current_model}")
@@ -120,21 +109,13 @@ class InfoCommand(Command):
         else:
             await self.agent.agent_io.agent_send("\nNo chat files currently loaded.")
 
-
-class ResetCommand(Command):
-    command = "reset"
-    description = "Reset chat history and chat files - /reset"
-
-    async def execute(self, name: str, arg: str):
+    @command("reset", "Reset chat history and chat files - /reset")
+    async def reset_command(self, name: str, arg: str):
         self.agent.state.reset()
         await self.agent.agent_io.agent_send("Reset complete.")
 
-
-class AgentCommand(Command):
-    command = "agent"
-    description = "Call a subagent - /agent <name> [task]"
-
-    async def execute(self, name: str, arg: str):
+    @command("agent", "Call a subagent - /agent <name> [task]")
+    async def agent_command(self, name: str, arg: str):
         parts = arg.split(maxsplit=1)
         if not parts:
             await self.agent.agent_io.agent_send("Usage: /agent <name> [task]")
@@ -159,39 +140,23 @@ class AgentCommand(Command):
                 f"Subagent '{subagent_name}' does not support tasks."
             )
 
+    @tool()
+    async def ask_human(self, question: str) -> str:
+        """
+        Ask human for more information or decisions.
 
-async def ask_human(ctx: RunContext["AgentDeps"], question: str) -> str:
-    """
-    Ask human for more information or decisions.
+        Use this tool when the current task requires more input or information from the user.
+        Scenarios include, but are not limited to:
+        - Multiple viable options are available and user decision is required.
+        - Critical information is missing and needs to be provided by the user.
+        - Confirming destructive or high-risk operations (e.g., deleting databases, overwriting critical files).
+        - Clarifying ambiguous requirements or instructions.
+        - Requesting credentials, API keys, or sensitive data that should not be guessed.
+        """
+        key = str(uuid.uuid4())
+        await self.agent.agent_io.add_tool_input_request(question, key)
 
-    Use this tool when the current task requires more input or information from the user.
-    Scenarios include, but are not limited to:
-    - Multiple viable options are available and user decision is required.
-    - Critical information is missing and needs to be provided by the user.
-    - Confirming destructive or high-risk operations (e.g., deleting databases, overwriting critical files).
-    - Clarifying ambiguous requirements or instructions.
-    - Requesting credentials, API keys, or sensitive data that should not be guessed.
-    """
-    key = str(uuid.uuid4())
-    await ctx.deps.agent_io.add_tool_input_request(question, key)
+        async def callback():
+            return await self.agent.agent_io.get_tool_input_result(key)
 
-    async def callback():
-        return await ctx.deps.agent_io.get_tool_input_result(key)
-
-    raise CallDeferred(metadata={"result_callback": callback})
-
-
-class CorePlugin(Plugin):
-    def commands(self):
-        return [
-            ModelCommand(self.agent),
-            InvokeToolCommand(self.agent),
-            ListToolCommand(self.agent),
-            InfoCommand(self.agent),
-            ResetCommand(self.agent),
-            AgentCommand(self.agent),
-        ]
-
-    def tools(self):
-        tools: list[ToolDef] = [ToolDef(func=ask_human)]
-        return tools
+        raise CallDeferred(metadata={"result_callback": callback})

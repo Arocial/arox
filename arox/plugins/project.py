@@ -11,55 +11,13 @@ import git
 from prompt_toolkit.completion import Completion
 from rapidfuzz import fuzz
 
-from arox.agent_patterns.plugin import Command, Plugin, ToolDef
+from arox.agent_patterns.plugin import Plugin, ToolDef, command, tool
 from arox.utils import DEFAULT_READ_LIMIT, truncate_content
 
 if TYPE_CHECKING:
     from arox.agent_patterns.llm_base import LLMBaseAgent
 
 logger = logging.getLogger(__name__)
-
-
-class ProjectCommand(Command):
-    description = "Add files to context - /add <file1> [file2...] /add_file_list"
-
-    def slashes(self) -> list[str]:
-        return ["add", "add_file_list"]
-
-    async def execute(self, name: str, arg: str):
-        project_manager = self.agent.get_dependency("project_manager")
-        if name == "add":
-            files = arg.split() if arg else []
-            if not files:
-                await self.agent.agent_io.agent_send("Please specify files.")
-                return
-            await project_manager.read_by_user(files)
-        elif name == "add_file_list":
-            project_manager.add_project_files()
-
-    def get_completions(self, name, args):
-        # Parse the arguments to get the current word being completed
-        if not args:
-            current_word = ""
-        else:
-            parts = args.split()
-            if args.endswith(" "):
-                current_word = ""
-            else:
-                current_word = parts[-1] if parts else ""
-
-        if name == "add":
-            project_manager = self.agent.get_dependency("project_manager")
-            candidates = project_manager.candidates()
-        else:
-            candidates = []
-
-        # Filter candidates based on current word
-        for candidate in candidates:
-            if current_word in candidate:
-                yield Completion(
-                    candidate, start_position=-len(current_word), display=candidate
-                )
 
 
 class ProjectManager:
@@ -169,6 +127,7 @@ class ProjectManager:
         return text_files, binary_files, project_file_list
 
     # https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/tool/read.ts
+    @tool()
     def read(
         self,
         path: str,
@@ -282,6 +241,7 @@ _alnum_regex = re.compile(r"(?ui)\W")
 
 
 class FileEdit:
+    @tool(sequential=True)
     async def write_to_file(self, path: str, content: str) -> str:
         """Create or overwrite a file.
 
@@ -300,6 +260,7 @@ class FileEdit:
         except Exception as e:
             return f"Error writing to file: {e!s}"
 
+    @tool(sequential=True)
     async def replace_in_file(self, path: str, old_str: str, new_str: str) -> str:
         """Searches for `old_str` in the file and replaces it with `new_str`.
 
@@ -531,6 +492,7 @@ class Shell:
         bwrap_args.extend(["--", "/bin/bash", "-c", command])
         return bwrap_args
 
+    @tool()
     async def shell(self, command: str, timeout: int | None = 100) -> str:
         """
         Run arbitrary shell commands in system's shell and return its output.
@@ -612,15 +574,70 @@ class ProjectPlugin(Plugin):
         self.file_edit = FileEdit()
         self.shell_tool = Shell(self.agent.workspace.absolute())
 
-    def commands(self):
-        return [ProjectCommand(self.agent)]
+    @command(
+        ["add", "add_file_list"],
+        "Add files to context - /add <file1> [file2...] /add_file_list",
+    )
+    async def project_command(self, name: str, arg: str):
+        project_manager = self.agent.get_dependency("project_manager")
+        if name == "add":
+            files = arg.split() if arg else []
+            if not files:
+                await self.agent.agent_io.agent_send("Please specify files.")
+                return
+            await project_manager.read_by_user(files)
+        elif name == "add_file_list":
+            project_manager.add_project_files()
+
+    def get_completions(self, name, args):
+        # Parse the arguments to get the current word being completed
+        if not args:
+            current_word = ""
+        else:
+            parts = args.split()
+            if args.endswith(" "):
+                current_word = ""
+            else:
+                current_word = parts[-1] if parts else ""
+
+        if name == "add":
+            project_manager = self.agent.get_dependency("project_manager")
+            candidates = project_manager.candidates()
+        else:
+            candidates = []
+
+        # Filter candidates based on current word
+        for candidate in candidates:
+            if current_word in candidate:
+                yield Completion(
+                    candidate, start_position=-len(current_word), display=candidate
+                )
 
     def tools(self):
-        tools = [
-            ToolDef(func=self.project_manager.read),
-            ToolDef(func=self.file_edit.replace_in_file, kwargs={"sequential": True}),
-            ToolDef(func=self.file_edit.write_to_file, kwargs={"sequential": True}),
-        ]
+        tools = super().tools()
+        tools.extend(
+            [
+                ToolDef(
+                    func=self.project_manager.read,
+                    kwargs=getattr(self.project_manager.read, "__tool_kwargs__", {}),
+                ),
+                ToolDef(
+                    func=self.file_edit.replace_in_file,
+                    kwargs=getattr(
+                        self.file_edit.replace_in_file, "__tool_kwargs__", {}
+                    ),
+                ),
+                ToolDef(
+                    func=self.file_edit.write_to_file,
+                    kwargs=getattr(self.file_edit.write_to_file, "__tool_kwargs__", {}),
+                ),
+            ]
+        )
         if not self.shell_tool.disabled:
-            tools.append(ToolDef(func=self.shell_tool.shell))
+            tools.append(
+                ToolDef(
+                    func=self.shell_tool.shell,
+                    kwargs=getattr(self.shell_tool.shell, "__tool_kwargs__", {}),
+                )
+            )
         return tools

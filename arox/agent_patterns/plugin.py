@@ -15,6 +15,29 @@ class ToolDef:
     kwargs: dict[str, Any] = field(default_factory=dict)
 
 
+def tool(**kwargs):
+    """Decorator to register a method as a tool."""
+
+    def decorator(func):
+        func.__is_tool__ = True
+        func.__tool_kwargs__ = kwargs
+        return func
+
+    return decorator
+
+
+def command(name: str | list[str], description: str = ""):
+    """Decorator to register a method as a command."""
+
+    def decorator(func):
+        func.__is_command__ = True
+        func.__command_names__ = [name] if isinstance(name, str) else name
+        func.__command_description__ = description
+        return func
+
+    return decorator
+
+
 def parse_cmdline(cmdline):
     if not cmdline.startswith("/"):
         return None, None
@@ -111,14 +134,58 @@ class CommandManager:
         return self.command_map.keys()
 
 
+class PluginCommandWrapper(Command):
+    def __init__(self, agent, func, names, description):
+        super().__init__(agent)
+        self.func = func
+        self.names = names
+        self.description = description
+
+    def slashes(self) -> list[str]:
+        return self.names
+
+    async def execute(self, name: str, arg: str):
+        if inspect.iscoroutinefunction(self.func):
+            await self.func(name, arg)
+        else:
+            self.func(name, arg)
+
+    def get_completions(self, name, args):
+        # If the wrapped function has a get_completions method, call it
+        # Or if the plugin has a get_completions method, call it
+        if hasattr(self.func, "get_completions"):
+            yield from self.func.get_completions(name, args)
+        elif hasattr(self.func.__self__, "get_completions"):
+            yield from self.func.__self__.get_completions(name, args)
+        else:
+            yield from []
+
+
 class Plugin:
     def __init__(self, agent):
         self.agent = agent
 
-    def commands(self) -> list:
+    def commands(self) -> list[Command]:
         """Return a list of Command instances."""
-        return []
+        cmds = []
+        for name, method in inspect.getmembers(self, predicate=inspect.ismethod):
+            if getattr(method, "__is_command__", False):
+                cmds.append(
+                    PluginCommandWrapper(
+                        self.agent,
+                        method,
+                        getattr(method, "__command_names__", []),
+                        getattr(method, "__command_description__", ""),
+                    )
+                )
+        return cmds
 
     def tools(self) -> list[ToolDef]:
         """Return a list of ToolDef instances."""
-        return []
+        tls = []
+        for name, method in inspect.getmembers(self, predicate=inspect.ismethod):
+            if getattr(method, "__is_tool__", False):
+                tls.append(
+                    ToolDef(func=method, kwargs=getattr(method, "__tool_kwargs__", {}))
+                )
+        return tls
