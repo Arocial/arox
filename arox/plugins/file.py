@@ -37,6 +37,13 @@ class FilePlugin(Plugin):
         self.agent.provide_capability(AGENT_INFO, self.get_info)
         self.agent.provide_capability(AGENT_RESET, self.reset)
 
+        self.reset()
+
+    def reset(self):
+        self._pending_text_files = {}
+        self._pending_binary_files = {}
+        self.session_files = []
+
         # Auto read agents.md or agent.md if present (case-insensitive)
         for item in self.workspace.iterdir():
             if item.is_file() and item.name.lower() in ("agents.md", "agent.md"):
@@ -392,11 +399,6 @@ class FilePlugin(Plugin):
             return info
         else:
             return "\nNo chat files currently loaded."
-
-    def reset(self):
-        self._pending_text_files = {}
-        self._pending_binary_files = {}
-        self.session_files = []
 
     async def history_processor(
         self, messages: list[ModelMessage]
