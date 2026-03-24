@@ -101,6 +101,7 @@ class LLMBaseAgent:
         self.uuid = str(uuid.uuid4())
         self.name = name
         self._dependencies = {}
+        self._providers: dict[str, Any] = {}
         self.model_ref = None
         self.additional_prompt = ""
 
@@ -166,6 +167,15 @@ class LLMBaseAgent:
 
     def get_dependency(self, key: Any) -> Any:
         return self._dependencies.get(key)
+
+    def register_provider(self, key: str, provider_func: Any):
+        self._providers[key] = provider_func
+
+    def get_provided_data(self, key: str, *args, **kwargs) -> Any:
+        provider_func = self._providers.get(key)
+        if provider_func:
+            return provider_func(*args, **kwargs)
+        return None
 
     async def handle_task(self, task: str, main_agent: "LLMBaseAgent", **kwargs) -> Any:
         """Handle a task delegated from the main agent."""

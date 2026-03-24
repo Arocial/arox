@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from arox.plugins.project import ProjectPlugin
+from arox.plugins.file import FilePlugin
 
 original_content = """import yaml
 import os
@@ -28,7 +28,7 @@ class TestFileEdit:
         cls.temp_dir = tempfile.TemporaryDirectory()
         cls.workspace = Path(cls.temp_dir.name)
         cls.agent = MockAgent(cls.workspace)
-        cls.tool = ProjectPlugin(cls.agent)  # type: ignore
+        cls.tool = FilePlugin(cls.agent)  # type: ignore
 
     @classmethod
     def teardown_class(cls):

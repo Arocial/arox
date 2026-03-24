@@ -3,7 +3,6 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import git
 from prompt_toolkit.completion import Completion
 from pydantic_ai import (
     BinaryContent,
@@ -26,15 +25,13 @@ logger = logging.getLogger(__name__)
 _alnum_regex = re.compile(r"(?ui)\W")
 
 
-class ProjectPlugin(Plugin):
+class FilePlugin(Plugin):
     def __init__(self, agent: "LLMBaseAgent"):
         super().__init__(agent)
         self.workspace = agent.workspace
         self._pending_text_files: dict[str, str] = {}
         self._pending_binary_files: dict[str, bytes] = {}
         self.session_files = []
-
-        self._pending_project_file_list = False
 
         # Auto read agents.md or agent.md if present (case-insensitive)
         for item in self.workspace.iterdir():
@@ -48,43 +45,20 @@ class ProjectPlugin(Plugin):
                 except Exception:
                     pass
 
-    def _get_tracked_files(self):
-        try:
-            repo = git.Repo(self.workspace, search_parent_directories=True)
-            if not repo.working_dir:
-                return []
-
-            repo_root = Path(repo.working_dir).resolve()
-            workspace_resolved = self.workspace.resolve()
-
-            files = repo.git.ls_files(str(workspace_resolved)).splitlines()
-
-            if repo_root == workspace_resolved:
-                return sorted(files)
-
-            normalized_files = []
-            for f in files:
-                full_path = repo_root / f
-                try:
-                    rel_path = full_path.relative_to(workspace_resolved)
-                    normalized_files.append(str(rel_path))
-                except ValueError:
-                    continue
-
-            return sorted(normalized_files)
-        except (git.InvalidGitRepositoryError, git.GitCommandError) as e:
-            logger.debug(f"Failed to get git tracked files: {e}")
-            return []
-
-    def add_project_files(self):
-        self._pending_project_file_list = True
-
     def candidates(self):
-        return self._get_tracked_files()
+        provided_files = self.agent.get_provided_data("project_files")
+        if provided_files is not None:
+            return provided_files
+
+        # Fallback
+        return [
+            str(p.relative_to(self.workspace))
+            for p in self.workspace.rglob("*")
+            if p.is_file() and not p.name.startswith(".")
+        ]
 
     def _normalize_path(self, file_path: str) -> Path:
         workspace = self.workspace
-        # normalize file path to relative to workspace if it's subtree of workspace, otherwise absolute.
         p = Path(file_path)
         if not p.is_absolute():
             p = (workspace / p).absolute()
@@ -120,17 +94,14 @@ class ProjectPlugin(Plugin):
                     f"Error reading file {file_path}: {e!s}"
                 )
 
-    def consume_pending(self) -> tuple[dict[str, str], dict[str, bytes], bool]:
+    def consume_pending(self) -> tuple[dict[str, str], dict[str, bytes]]:
         text_files = self._pending_text_files
         self._pending_text_files = {}
-
-        project_file_list = self._pending_project_file_list
-        self._pending_project_file_list = False
 
         binary_files = self._pending_binary_files
         self._pending_binary_files = {}
 
-        return text_files, binary_files, project_file_list
+        return text_files, binary_files
 
     @tool()
     def read(
@@ -221,7 +192,6 @@ class ProjectPlugin(Plugin):
                 return False
 
             with open(path, "rb") as f:
-                # Read first chunk to check for null bytes or high non-printable ratio
                 chunk = f.read(4096)
                 if not chunk:
                     return False
@@ -231,14 +201,11 @@ class ProjectPlugin(Plugin):
 
                 non_printable = 0
                 for b in chunk:
-                    # Non-printable chars: < 9 (TAB), or (between 13 (CR) and 32 (SPACE))
                     if b < 9 or (13 < b < 32):
                         non_printable += 1
 
-                # If >30% non-printable characters, consider it binary
                 return non_printable / len(chunk) > 0.3
         except Exception:
-            # If we can't read it or stat it, treat it as binary/unreadable
             return True
 
     @tool(sequential=True)
@@ -283,7 +250,6 @@ class ProjectPlugin(Plugin):
             orig_content = file_path.read_text()
             content = orig_content
 
-            # Check if search_part contains ...omit lines...
             m, start_pos, end_pos = self._find_with_placeholder(content, old_str)
             if m:
                 content = content[:start_pos] + new_str + content[end_pos:]
@@ -313,10 +279,6 @@ class ProjectPlugin(Plugin):
         )
 
     def _find_with_placeholder(self, content: str, search_pattern: str) -> tuple:
-        """
-        Find content matching a pattern with ...omit lines...
-        Returns (matched_text, start_pos, end_pos) or None if not found.
-        """
         m = self._match_placeholder(search_pattern)
         if not m:
             return None, None, None
@@ -324,14 +286,12 @@ class ProjectPlugin(Plugin):
         before = search_pattern[: m.start() - 1]
         after = search_pattern[m.end() + 1 :]
 
-        # If either part is empty, handle accordingly
         if not before or not after:
             return None, None, None
 
         escaped_before = re.escape(before)
         escaped_after = re.escape(after)
 
-        # Create a pattern that matches before...anything...after
         pattern = escaped_before + r".*?" + escaped_after
         match = re.search(pattern, content, re.DOTALL)
 
@@ -359,8 +319,6 @@ class ProjectPlugin(Plugin):
             curr += len(line)
         line_starts.append(curr)
 
-        # Align start and end of fuzzy matched old str to line boundary,
-        # And try to find one candidate that matches all alnum sequence.
         dest_start, dest_end = align.dest_start, align.dest_end
         start_candidates = [0]
         end_candidates = [len(content)]
@@ -386,21 +344,18 @@ class ProjectPlugin(Plugin):
         return None
 
     @command(
-        ["add", "add_file_list"],
-        "Add files to context - /add <file1> [file2...] /add_file_list",
+        ["add"],
+        "Add files to context - /add <file1> [file2...]",
     )
-    async def project_command(self, name: str, arg: str):
+    async def file_command(self, name: str, arg: str):
         if name == "add":
             files = arg.split() if arg else []
             if not files:
                 await self.agent.agent_io.agent_send("Please specify files.")
                 return
             await self.read_by_user(files)
-        elif name == "add_file_list":
-            self.add_project_files()
 
     def get_completions(self, name, args):
-        # Parse the arguments to get the current word being completed
         if not args:
             current_word = ""
         else:
@@ -415,7 +370,6 @@ class ProjectPlugin(Plugin):
         else:
             candidates = []
 
-        # Filter candidates based on current word
         for candidate in candidates:
             if current_word in candidate:
                 yield Completion(
@@ -436,17 +390,9 @@ class ProjectPlugin(Plugin):
         self, messages: list[ModelMessage]
     ) -> list[ModelMessage]:
         if messages and isinstance(messages[-1], ModelRequest):
-            pending_text_files, pending_binary, pending_project_file_list = (
-                self.consume_pending()
-            )
+            pending_text_files, pending_binary = self.consume_pending()
 
             extra_content = []
-            if pending_project_file_list:
-                file_list = "\n".join(self._get_tracked_files())
-                if file_list:
-                    extra_content.append(
-                        f"\nFiles tracked in VC of current project:\n{file_list}\n"
-                    )
 
             for path, data in pending_binary.items():
                 import mimetypes

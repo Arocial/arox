@@ -48,7 +48,8 @@ text_io = "arox.ui.text_io:TextIOAdapter"
 
 [project.entry-points."arox.plugins"]
 core = "arox.plugins.core:CorePlugin"
-project = "arox.plugins.project:ProjectPlugin"
+file = "arox.plugins.file:FilePlugin"
+repo = "arox.plugins.repo:RepoPlugin"
 shell = "arox.plugins.shell:ShellPlugin"
 
 [project.entry-points."arox.hooks"]

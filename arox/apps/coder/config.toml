@@ -26,7 +26,8 @@ examples = "examples.yaml"
 plugins = [
     "core",
     "shell",
-    "project",
+    "file",
+    "repo",
 ]
 post_step_hooks = []
 
