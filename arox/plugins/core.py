@@ -96,18 +96,16 @@ class CorePlugin(Plugin):
         current_model = getattr(self.agent, "provider_model", "Unknown")
         await self.agent.agent_io.agent_send(f"Current model: {current_model}")
 
-        for capability, provider in self.agent._capabilities.items():
-            if capability == AGENT_INFO:
-                info = await provider()
-                if info:
-                    await self.agent.agent_io.agent_send(info)
+        for provider in self.agent.get_capability(AGENT_INFO):
+            info = await provider()
+            if info:
+                await self.agent.agent_io.agent_send(info)
 
     @command("reset", "Reset chat history and chat files - /reset")
     async def reset_command(self, name: str, arg: str):
         self.agent.reset()
-        for capability, provider in self.agent._capabilities.items():
-            if capability == AGENT_RESET:
-                provider()
+        for provider in self.agent.get_capability(AGENT_RESET):
+            provider()
         await self.agent.agent_io.agent_send("Reset complete.")
 
     @command("agent", "Call a subagent - /agent <name> [task]")
@@ -120,12 +118,12 @@ class CorePlugin(Plugin):
         subagent_name = parts[0]
         task = parts[1] if len(parts) > 1 else ""
 
-        get_subagent_func = self.agent.get_capability(SUBAGENT)
-        if not get_subagent_func:
-            await self.agent.agent_io.agent_send("Subagent capability not provided.")
-            return
+        subagent = None
+        for get_subagent_func in self.agent.get_capability(SUBAGENT):
+            subagent = get_subagent_func(subagent_name)
+            if subagent:
+                break
 
-        subagent = get_subagent_func(subagent_name)
         if not subagent:
             await self.agent.agent_io.agent_send(
                 f"Subagent '{subagent_name}' not found."

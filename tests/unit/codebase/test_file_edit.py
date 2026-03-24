@@ -23,10 +23,12 @@ class MockAgent:
         self._capabilities = {}
 
     def provide_capability(self, capability, provider):
-        self._capabilities[capability] = provider
+        if capability not in self._capabilities:
+            self._capabilities[capability] = []
+        self._capabilities[capability].append(provider)
 
-    def get_capability(self, capability, default=None):
-        return self._capabilities.get(capability, default)
+    def get_capability(self, capability):
+        return self._capabilities.get(capability, [])
 
 
 class TestFileEdit:

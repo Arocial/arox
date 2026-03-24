@@ -163,24 +163,15 @@ class LLMBaseAgent:
 
     def provide_capability(self, capability: Any, provider: Any):
         """Register a provider for a specific capability."""
-        self._capabilities[capability] = provider
-
-    def require_capability(self, capability: Any) -> Any:
-        """
-        Get the provider for a capability.
-        Raises an error if the capability is not provided.
-        """
         if capability not in self._capabilities:
-            raise ValueError(
-                f"Capability '{capability.name}' is required but not provided."
-            )
-        return self._capabilities[capability]
+            self._capabilities[capability] = []
+        self._capabilities[capability].append(provider)
 
-    def get_capability(self, capability: Any, default: Any = None) -> Any:
+    def get_capability(self, capability: Any) -> list[Any]:
         """
-        Get the provider for a capability, returning a default if not found.
+        Get the providers for a capability
         """
-        return self._capabilities.get(capability, default)
+        return self._capabilities.get(capability, [])
 
     async def handle_task(self, task: str, main_agent: "LLMBaseAgent", **kwargs) -> Any:
         """Handle a task delegated from the main agent."""

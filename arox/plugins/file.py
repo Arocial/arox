@@ -50,11 +50,14 @@ class FilePlugin(Plugin):
                     pass
 
     def candidates(self):
-        get_files_func = self.agent.get_capability(PROJECT_FILES)
-        if get_files_func:
-            provided_files = get_files_func()
-            if provided_files is not None:
-                return provided_files
+        provided_files = []
+        for get_files_func in self.agent.get_capability(PROJECT_FILES):
+            files = get_files_func()
+            if files:
+                provided_files.extend(files)
+
+        if provided_files:
+            return provided_files
 
         # Fallback
         return [
