@@ -14,8 +14,8 @@
 - role: user
   tool_results:
     - tool: read
+      path: src/utils/math.py
       content: |
-        <file path=src/utils/math.py>
         """Math utility functions for the application."""
         def is_prime(n):
             """Check if a number is prime."""

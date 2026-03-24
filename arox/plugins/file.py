@@ -136,9 +136,7 @@ class FilePlugin(Plugin):
             last_read_line = truncated["last_read_line"]
 
             if content_lines:
-                result["content"] = (
-                    f"<file path={path}>\n{'\n'.join(content_lines)}\n</file>\n"
-                )
+                result["content"] = "\n".join(content_lines)
 
             if truncated["truncated_by_bytes"]:
                 result["truncated"] = (
@@ -441,7 +439,7 @@ class FilePlugin(Plugin):
 
                     tool_return_value = {
                         "file_name": path,
-                        "content": f"<file path={path}>\n{content}\n</file>\n",
+                        "content": {content},
                     }
 
                     tool_return_parts.append(
