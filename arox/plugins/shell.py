@@ -5,7 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from arox.agent_patterns.plugin import Plugin, ToolDef, tool
+from arox.agent_patterns.plugin import Plugin, tool
 from arox.utils import truncate_content
 
 logger = logging.getLogger(__name__)
@@ -21,16 +21,13 @@ class ShellPlugin(Plugin):
         self.workspace_dir = Path(workspace_dir)
         if not self.workspace_dir.is_absolute():
             raise ValueError(f"workspace_dir must be an absolute path: {workspace_dir}")
-        self.disabled = False
 
         if sys.platform == "linux":
             self.bwrap_path = shutil.which("bwrap")
             if not self.bwrap_path:
-                self.disabled = True
-                logger.error("bwrap not found on linux, `Shell` tool disabled.")
+                raise RuntimeError("bwrap not found on linux, `Shell` tool disabled.")
         else:
-            self.disabled = True
-            logger.error("No sandbox implemented. `Shell` tool disabled.")
+            raise RuntimeError("No sandbox implemented. `Shell` tool disabled.")
 
     def _get_sandboxed_cmd(self, command: str) -> list[str]:
         """Construct the bwrap command arguments."""
