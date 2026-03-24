@@ -1,2 +1,0 @@
-lint-cmd:
-- "python: tools/lint"
