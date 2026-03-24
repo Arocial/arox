@@ -15,12 +15,17 @@ class ToolDef:
     kwargs: dict[str, Any] = field(default_factory=dict)
 
 
-def tool(**kwargs):
+def tool(dynamic_context: Callable[[], dict[str, Any]] | None = None, **kwargs):
     """Decorator to register a method as a tool."""
 
     def decorator(func):
         func.__is_tool__ = True
         func.__tool_kwargs__ = kwargs
+        if dynamic_context:
+            from arox import utils
+
+            context = dynamic_context()
+            func.__doc__ = utils.render_template(func.__doc__, **context)
         return func
 
     return decorator

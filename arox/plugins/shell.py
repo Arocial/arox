@@ -11,6 +11,16 @@ from arox.utils import truncate_content
 logger = logging.getLogger(__name__)
 
 
+def get_shell_context():
+    import platform
+
+    return {
+        "os_info": platform.system(),
+        "os_release": platform.release(),
+        "shell_type": "bash",
+    }
+
+
 class ShellPlugin(Plugin):
     def __init__(self, agent):
         super().__init__(agent)
@@ -109,10 +119,14 @@ class ShellPlugin(Plugin):
         bwrap_args.extend(["--", "/bin/bash", "-c", command])
         return bwrap_args
 
-    @tool()
+    @tool(dynamic_context=get_shell_context)
     async def shell(self, command: str, timeout: int | None = 100) -> str:
         """
         Run arbitrary shell commands in system's shell and return its output.
+
+        Environment Info:
+        - OS: {{ os_info }} {{ os_release }}
+        - Shell: {{ shell_type }}
 
         Rules
             1. For searching code, use `rg` or `ast-grep`.
