@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import fastmcp
-from httpx import AsyncClient, HTTPStatusError, Timeout, TransportError
+from httpx import AsyncClient, HTTPStatusError, TransportError
 from pydantic_ai import (
     AbstractToolset,
     Agent,
@@ -20,6 +20,7 @@ from pydantic_ai import (
     RunContext,
     capture_run_messages,
 )
+from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models import infer_model
 from pydantic_ai.providers import Provider, gateway, google, infer_provider_class
 from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
@@ -46,14 +47,17 @@ def create_retrying_client():
 
     def should_retry_status(response):
         """Raise exceptions for retryable HTTP status codes."""
-        if response.status_code in (429, 502, 503, 504):
+        if response.status_code in (429, 499, 502, 503, 504):
             response.raise_for_status()  # This will raise HTTPStatusError
+
+    async def log_request(request):
+        logger.info(f"Sending request: {request.method} {request.url}")
 
     transport = AsyncTenacityTransport(
         config=RetryConfig(
             # Retry on HTTP errors and connection issues
             retry=retry_if_exception_type(
-                (HTTPStatusError, TransportError, ConnectionError)
+                (HTTPStatusError, TransportError, ConnectionError, ModelHTTPError)
             ),
             # Smart waiting: respects Retry-After headers, falls back to exponential backoff
             wait=wait_retry_after(
@@ -66,7 +70,11 @@ def create_retrying_client():
         ),
         validate_response=should_retry_status,
     )
-    return AsyncClient(transport=transport, timeout=Timeout(timeout=None, read=40.0))
+    return AsyncClient(
+        transport=transport,
+        timeout=30.0,
+        event_hooks={"request": [log_request]},
+    )
 
 
 # Copyied from pydantic_ai.providers.infer_provider and add http_client parameter.
