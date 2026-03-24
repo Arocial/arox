@@ -25,6 +25,7 @@ You are Arox Coder, an AI coding assistant specialized in software development t
 examples = "examples.yaml"
 plugins = [
     "core",
+    "shell",
     "project",
 ]
 post_step_hooks = []

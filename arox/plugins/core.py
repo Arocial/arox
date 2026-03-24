@@ -3,11 +3,9 @@ import logging
 import uuid
 
 import yaml
-from pydantic_ai import RunContext
 from pydantic_ai.exceptions import CallDeferred
 
-from arox.agent_patterns.llm_base import AgentDeps
-from arox.agent_patterns.plugin import Plugin, ToolDef, command, tool
+from arox.agent_patterns.plugin import Plugin, command, tool
 
 logger = logging.getLogger(__name__)
 
