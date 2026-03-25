@@ -1,10 +1,8 @@
 import argparse
 import asyncio
 import logging
-import sys
 from pathlib import Path
 
-from arox import agent_patterns, config
 from arox.agent_patterns.composer import Composer
 
 logger = logging.getLogger(__name__)
@@ -17,11 +15,6 @@ def main():
         choices=["text", "vercel_ai", "telegram", "feishu"],
         default="text",
         help="UI interface to use (text, vercel_ai, telegram, or feishu)",
-    )
-    parser.add_argument(
-        "--dump-default-config",
-        help="Dump default config to specified file and exit.",
-        default="",
     )
     args, unknown_args = parser.parse_known_args()
 
@@ -40,8 +33,6 @@ def main():
     else:
         raise ValueError(f"Unknown UI: {args.ui}")
 
-    cli_configs = config.parse_dot_config(unknown_args)
-
     if args.ui == "text":
         log_dir = Path(".arox")
         log_dir.mkdir(exist_ok=True)
@@ -58,19 +49,10 @@ def main():
         )
 
     default_agent_config = Path(__file__).parent / "config.toml"
-    app_config = config.load_config(
-        config_files=[default_agent_config], cli_overrides=cli_configs
-    )
+    from arox.agent_patterns import app_init
 
-    agent_patterns.init(app_config)
-
+    app_config = app_init(config_files=[default_agent_config], cli_args=unknown_args)
     composer = Composer("coder", app_config)
-
-    if args.dump_default_config:
-        logger.debug(f"Dumping default config to {args.dump_default_config}")
-        with open(args.dump_default_config, "w") as f:
-            f.write(app_config.model_dump_json(indent=2))
-        sys.exit(0)
 
     asyncio.run(composer.run())
 

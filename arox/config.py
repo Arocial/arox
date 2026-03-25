@@ -32,6 +32,7 @@ def parse_dot_config(cli_args: list[str]) -> dict[str, Any]:
     for arg in cli_args:
         if "=" not in arg:
             continue
+        arg = arg.removeprefix("--")
         key_path, value = arg.split("=", 1)
         keys = [k.strip() for k in key_path.split(".")]
         if not keys or not keys[0]:
@@ -94,6 +95,7 @@ class ComposerConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
+    dump_default_config: str = ""
     model_ref: str = "deepseek/deepseek-chat"
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     api_keys: dict[str, str] = Field(default_factory=dict)
@@ -123,7 +125,7 @@ class AppConfig(BaseModel):
 
 def load_config(
     config_files: list[str | Path] | None = None,
-    cli_overrides: dict[str, Any] | None = None,
+    cli_args: list[str] | dict[str, Any] | None = None,
 ) -> AppConfig:
     search_paths: list[Path] = []
     if config_files:
@@ -139,6 +141,14 @@ def load_config(
         if path.exists():
             with open(path, "rb") as f:
                 raw_config = deep_merge(raw_config, tomllib.load(f))
+
+    if cli_args is not None:
+        if isinstance(cli_args, list):
+            cli_overrides = parse_dot_config(cli_args)
+        else:
+            cli_overrides = cli_args
+    else:
+        cli_overrides = {}
 
     if cli_overrides:
         raw_config = deep_merge(raw_config, cli_overrides)

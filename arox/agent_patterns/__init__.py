@@ -1,14 +1,27 @@
 import logging
 import os
+import sys
+from pathlib import Path
+from typing import Any
 
 import logfire
 
-from arox.config import AppConfig
+from arox.config import AppConfig, load_config
 
 logger = logging.getLogger(__name__)
 
 
-def init(config: AppConfig):
+def app_init(
+    config_files: list[str | Path] | None = None,
+    cli_args: list[str] | dict[str, Any] | None = None,
+) -> AppConfig:
+    config = load_config(config_files, cli_args)
+    if config.dump_default_config:
+        logger.debug(f"Dumping default config to {config.dump_default_config}")
+        with open(config.dump_default_config, "w") as f:
+            f.write(config.model_dump_json(indent=2))
+        sys.exit(0)
+
     setup_llm_observability(config)
 
     for provider, api_key in config.api_keys.items():

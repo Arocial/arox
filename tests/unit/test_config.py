@@ -61,7 +61,7 @@ def test_cli_overrides(tmp_path):
     cli_overrides = parse_dot_config(
         ["model_ref=cli-model", "agent.test_agent.type=custom"]
     )
-    config = load_config([config_file], cli_overrides=cli_overrides)
+    config = load_config([config_file], cli_args=cli_overrides)
 
     assert config.model_ref == "cli-model"
     assert config.agent["test_agent"].type == "custom"

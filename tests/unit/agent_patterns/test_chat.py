@@ -6,9 +6,8 @@ from prompt_toolkit.output import DummyOutput
 from pydantic_ai import FunctionToolset, ToolCallPart
 from pydantic_ai.models.test import TestModel
 
-from arox import agent_patterns
+from arox.agent_patterns import app_init
 from arox.agent_patterns.chat import ChatAgent
-from arox.config import load_config
 from arox.ui.text_io import TextIOAdapter
 from arox.utils import user_input_generator
 
@@ -28,11 +27,10 @@ model_ref = "test"
 system_prompt = "Hi there."
 """)
 
-    app_config = load_config(
+    app_config = app_init(
         config_files=[default_agent_config],
-        cli_overrides={"workspace": str(tmp_path)},
+        cli_args={"workspace": str(tmp_path)},
     )
-    agent_patterns.init(app_config)
 
     test_user_msg = [
         "Calculate 1488*2083.\n",

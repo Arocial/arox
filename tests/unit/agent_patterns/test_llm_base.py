@@ -2,9 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from arox import agent_patterns
+from arox.agent_patterns import app_init
 from arox.agent_patterns.llm_base import LLMBaseAgent
-from arox.config import load_config
 from arox.ui.io import IOChannel
 
 
@@ -39,11 +38,10 @@ system_prompt = "Hi there."
 skills = ["skill1"]
 """)
 
-    app_config = load_config(
+    app_config = app_init(
         config_files=[config_file],
-        cli_overrides={"workspace": str(tmp_path)},
+        cli_args={"workspace": str(tmp_path)},
     )
-    agent_patterns.init(app_config)
 
     io_channel = IOChannel()
 
@@ -87,11 +85,10 @@ system_prompt = "Hi there."
 skills = "skill2"
 """)
 
-    app_config = load_config(
+    app_config = app_init(
         config_files=[config_file],
-        cli_overrides={"workspace": str(tmp_path)},
+        cli_args={"workspace": str(tmp_path)},
     )
-    agent_patterns.init(app_config)
 
     io_channel = IOChannel()
 
@@ -134,11 +131,10 @@ model_ref = "test"
 system_prompt = "Hi there."
 """)
 
-    app_config = load_config(
+    app_config = app_init(
         config_files=[config_file],
-        cli_overrides={"workspace": str(tmp_path)},
+        cli_args={"workspace": str(tmp_path)},
     )
-    agent_patterns.init(app_config)
 
     io_channel = IOChannel()
 
