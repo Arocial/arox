@@ -4,7 +4,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from arox.utils import deep_merge
 
@@ -64,20 +64,17 @@ def parse_dot_config(cli_args: list[str]) -> dict[str, Any]:
 
 
 class ObservabilityConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")
     enable: bool = False
     scrubbing: Literal[False] | None = None
     logfire: bool = False
 
 
 class ModelConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")
     provider_model: str = ""
     params: dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")
     type: str = "chat"
     system_prompt: str = ""
     model_ref: str = ""
@@ -91,14 +88,12 @@ class AgentConfig(BaseModel):
 
 
 class ComposerConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")
     main_agent: str
     subagents: list[str] = Field(default_factory=list)
     io_adapter: str = "arox.ui.text_io.TextIOAdapter"
 
 
 class AppConfig(BaseModel):
-    model_config = ConfigDict(extra="allow")
     model_ref: str = "deepseek/deepseek-chat"
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     api_keys: dict[str, str] = Field(default_factory=dict)
@@ -110,10 +105,6 @@ class AppConfig(BaseModel):
     model: dict[str, ModelConfig] = Field(default_factory=dict)
 
     config_dirs: list[Path] = Field(default_factory=list, exclude=True)
-    user_path: Path = Field(default_factory=lambda: Path.home() / ".arox", exclude=True)
-    verbose_out_path: Path = Field(
-        default_factory=lambda: Path.home() / ".arox" / "__verbose_out__", exclude=True
-    )
 
     def find_file(self, fpath: str | Path) -> Path | None:
         fpath = Path(fpath)
