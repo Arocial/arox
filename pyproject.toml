@@ -44,7 +44,10 @@ git_commit = "arox.apps.git_commit:GitCommitAgent"
 compaction = "arox.apps.compaction:CompactionAgent"
 
 [project.entry-points."arox.io_adapters"]
-text_io = "arox.ui.text_io:TextIOAdapter"
+text = "arox.ui.text_io:TextIOAdapter"
+vercel_ai = "arox.ui.vercel_ai:VercelStreamIOAdapter"
+telegram = "arox.ui.telegram:TelegramIOAdapter"
+feishu = "arox.ui.feishu:FeishuIOAdapter"
 
 [project.entry-points."arox.plugins"]
 core = "arox.plugins.core:CorePlugin"

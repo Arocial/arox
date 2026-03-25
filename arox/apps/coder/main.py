@@ -18,20 +18,7 @@ def main():
     )
     args, unknown_args = parser.parse_known_args()
 
-    if args.ui == "text":
-        unknown_args.append("composer.coder.io_adapter=arox.ui.text_io.TextIOAdapter")
-    elif args.ui == "vercel_ai":
-        unknown_args.append(
-            "composer.coder.io_adapter=arox.ui.vercel_ai.VercelStreamIOAdapter"
-        )
-    elif args.ui == "telegram":
-        unknown_args.append(
-            "composer.coder.io_adapter=arox.ui.telegram.TelegramIOAdapter"
-        )
-    elif args.ui == "feishu":
-        unknown_args.append("composer.coder.io_adapter=arox.ui.feishu.FeishuIOAdapter")
-    else:
-        raise ValueError(f"Unknown UI: {args.ui}")
+    unknown_args.append(f"composer.coder.io_adapter={args.ui}")
 
     if args.ui == "text":
         log_dir = Path(".arox")
