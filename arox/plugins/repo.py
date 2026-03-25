@@ -71,7 +71,7 @@ class RepoPlugin(Plugin):
                 file_list = "\n".join(self._get_tracked_files())
                 if file_list:
                     extra_content = [
-                        f"\nFiles tracked in VC of current project:\n{file_list}\n"
+                        f"\nFiles tracked in VC of current project:\n<file_list>{file_list}\n</file_list>\n"
                     ]
                     new_part = UserPromptPart(content=extra_content)
                     last_request = messages[-1]

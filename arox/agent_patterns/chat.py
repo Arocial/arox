@@ -53,20 +53,20 @@ class ChatAgent(LLMBaseAgent):
                         ]()
                 else:
                     deferred_results = None
-                if (
-                    chat_input_event.exception_input.exception
-                    and chat_input_event.exception_input.to_continue
-                ):
-                    user_input = "Please continue."
-                elif chat_input_event.normal_input.request:
+
+                if chat_input_event.normal_input.request:
                     user_input = chat_input_event.normal_input.user_input
                 else:
                     user_input = None
 
-                chat_input_event = self.agent_io.create_chat_input_event()
-
-                if user_input is None and deferred_results is None:
+                if (
+                    user_input is None
+                    and deferred_results is None
+                    and not chat_input_event.exception_input.to_continue
+                ):
                     break
+
+                chat_input_event = self.agent_io.create_chat_input_event()
 
                 try:
                     if user_input is not None:
