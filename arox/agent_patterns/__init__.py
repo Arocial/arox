@@ -16,9 +16,9 @@ def app_init(
     cli_args: list[str] | dict[str, Any] | None = None,
 ) -> AppConfig:
     config = load_config(config_files, cli_args)
-    if config.dump_default_config:
-        logger.debug(f"Dumping default config to {config.dump_default_config}")
-        with open(config.dump_default_config, "w") as f:
+    if config.dump_config:
+        logger.debug(f"Dumping default config to {config.dump_config}")
+        with open(config.dump_config, "w") as f:
             f.write(config.model_dump_json(indent=2))
         sys.exit(0)
 
