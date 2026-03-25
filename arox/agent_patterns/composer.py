@@ -27,7 +27,7 @@ class Composer:
         )
 
         self.config = toml_parser.parse_args()
-        self.composer_config = getattr(self.config.composer, self.name)
+        self.composer_config = self.config.composer[self.name]
 
         io_adapter_cls = import_class(
             self.composer_config.io_adapter, group="arox.io_adapters"
@@ -41,12 +41,12 @@ class Composer:
         self._init_agents()
 
     def _load_agent_hooks(self, agent, agent_config):
-        pre_step_hooks = getattr(agent_config, "pre_step_hooks", [])
+        pre_step_hooks = agent_config.pre_step_hooks
         for hook_path in pre_step_hooks:
             hook_func = import_class(hook_path, group="arox.hooks")
             agent.add_pre_step_hook(hook_func)
 
-        post_step_hooks = getattr(agent_config, "post_step_hooks", [])
+        post_step_hooks = agent_config.post_step_hooks
         for hook_path in post_step_hooks:
             hook_func = import_class(hook_path, group="arox.hooks")
             agent.add_post_step_hook(hook_func)
@@ -64,8 +64,10 @@ class Composer:
                 name=f"agent.{agent_name}", expose_raw=True
             )
             agent_group.add_argument("type", default="chat")
+            agent_group.add_argument("pre_step_hooks", default=[])
+            agent_group.add_argument("post_step_hooks", default=[])
             self.config = self.toml_parser.parse_args()
-            agent_configs[agent_name] = getattr(self.config.agent, agent_name)
+            agent_configs[agent_name] = self.config.agent[agent_name]
 
             io_channel = IOChannel()
             self.io_channels[agent_name] = io_channel

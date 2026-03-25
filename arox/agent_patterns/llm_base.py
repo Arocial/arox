@@ -152,7 +152,7 @@ class LLMBaseAgent:
             await ctx.deps.agent_io.agent_send(event)
 
     def load_plugins(self):
-        plugin_classes = getattr(self.agent_config, "plugins", [])
+        plugin_classes = self.agent_config.plugins
         plugins = []
         for plugin_path in plugin_classes:
             plugin_cls = utils.import_class(plugin_path, group="arox.plugins")
@@ -211,7 +211,7 @@ class LLMBaseAgent:
             name=f"model.'{self.model_ref}'.params", expose_raw=True
         )
         config = config_parser.parse_args()
-        model_config = getattr(config.model, self.model_ref)
+        model_config = config.model[self.model_ref]
 
         model_params = model_config.params
         self.model_params = utils.deep_merge(self.agent_model_params, model_params)
@@ -235,6 +235,9 @@ class LLMBaseAgent:
         )
         agent_group.add_argument("system_prompt", default="")
         agent_group.add_argument("model_ref", default="")
+        agent_group.add_argument("plugins", default=[])
+        agent_group.add_argument("skills", default=None)
+        agent_group.add_argument("examples", default=None)
         config_parser.add_argument_group(
             name=f"agent.{name}.model_params", expose_raw=True
         )
@@ -244,7 +247,7 @@ class LLMBaseAgent:
         config = config_parser.parse_args()
 
         self.workspace = Path.cwd()
-        group_config = getattr(config.agent, name)
+        group_config = config.agent[name]
         self.agent_config = group_config
 
         # Load default metadata using configargparse
@@ -253,7 +256,7 @@ class LLMBaseAgent:
         )
 
         skills = discover_skills(self.workspace)
-        allowed_skills = getattr(self.agent_config, "skills", None)
+        allowed_skills = self.agent_config.skills
         if allowed_skills is not None:
             if isinstance(allowed_skills, str):
                 allowed_skills = [allowed_skills]
@@ -264,7 +267,7 @@ class LLMBaseAgent:
             self.system_prompt += f"\n\n{catalog}"
 
         self.example_messages = []
-        examples_file = getattr(self.agent_config, "examples", None)
+        examples_file = self.agent_config.examples
         if examples_file:
             examples_path = self.config_parser.find_config(Path(examples_file))
             if examples_path:
