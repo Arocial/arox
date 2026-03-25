@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from arox.agent_patterns import app_init
-from arox.agent_patterns.llm_base import LLMBaseAgent
+from arox.core import app_init
+from arox.core.llm_base import LLMBaseAgent
 from arox.ui.io import IOChannel
 
 

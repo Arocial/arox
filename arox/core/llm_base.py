@@ -33,10 +33,10 @@ from tenacity import (
 )
 
 from arox import utils
-from arox.agent_patterns.example_parser import parse_example_yaml
-from arox.agent_patterns.hooks import PostStepHook, PreStepHook
-from arox.agent_patterns.skills import build_skill_catalog, discover_skills
-from arox.config import AgentConfig, AppConfig
+from arox.core.config import AgentConfig, AppConfig
+from arox.core.example_parser import parse_example_yaml
+from arox.core.hooks import PostStepHook, PreStepHook
+from arox.core.skills import build_skill_catalog, discover_skills
 from arox.ui.io import AgentIOInterface
 
 logger = logging.getLogger(__name__)
@@ -216,7 +216,7 @@ class LLMBaseAgent:
         self.model_ref = model_ref
         model_config = self.app_config.model.get(self.model_ref)
         if not model_config:
-            from arox.config import ModelConfig
+            from arox.core.config import ModelConfig
 
             model_config = ModelConfig(provider_model=self.model_ref)
 

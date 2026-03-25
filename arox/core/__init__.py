@@ -6,7 +6,7 @@ from typing import Any
 
 import logfire
 
-from arox.config import AppConfig, load_config
+from arox.core.config import AppConfig, load_config
 
 logger = logging.getLogger(__name__)
 

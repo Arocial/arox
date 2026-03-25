@@ -39,7 +39,7 @@ Homepage = "https://github.com/Arocial/arox"
 arox-coder = "arox.apps.coder.main:main"
 
 [project.entry-points."arox.agents"]
-chat = "arox.agent_patterns.chat:ChatAgent"
+chat = "arox.core.chat:ChatAgent"
 git_commit = "arox.apps.git_commit:GitCommitAgent"
 compaction = "arox.apps.compaction:CompactionAgent"
 

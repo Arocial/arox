@@ -5,11 +5,11 @@ from typing import TYPE_CHECKING
 import git
 from pydantic_ai import ModelMessage, ModelRequest, UserPromptPart
 
-from arox.agent_patterns.plugin import Plugin, command
+from arox.core.plugin import Plugin, command
 from arox.plugins.capabilities import PROJECT_FILES
 
 if TYPE_CHECKING:
-    from arox.agent_patterns.llm_base import LLMBaseAgent
+    from arox.core.llm_base import LLMBaseAgent
 
 logger = logging.getLogger(__name__)
 

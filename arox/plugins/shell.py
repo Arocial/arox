@@ -5,7 +5,7 @@ import shutil
 import sys
 from pathlib import Path
 
-from arox.agent_patterns.plugin import Plugin, tool
+from arox.core.plugin import Plugin, tool
 from arox.utils import truncate_content
 
 logger = logging.getLogger(__name__)

@@ -132,7 +132,7 @@ def load_config(
         search_paths.extend([Path(f) for f in config_files])
 
     search_paths.append(Path.home() / ".config" / "arox" / "config.toml")
-    search_paths.append(Path.cwd() / ".arox.config.toml")
+    search_paths.append(Path.cwd() / ".arox.core.config.toml")
 
     config_dirs = list(dict.fromkeys([f.parent for f in search_paths]))
 

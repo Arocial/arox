@@ -3,7 +3,7 @@ import logging
 from pydantic_ai import AgentRunResult, ModelMessage
 from pydantic_ai.tools import DeferredToolRequests
 
-from arox.agent_patterns.llm_base import LLMBaseAgent
+from arox.core.llm_base import LLMBaseAgent
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +56,7 @@ class CompactionAgent(LLMBaseAgent):
             "Context size is large. Compacting conversation history..."
         )
 
-        from arox.agent_patterns.llm_base import AgentDeps
+        from arox.core.llm_base import AgentDeps
 
         result = await self.pydantic_agent.run(
             COMPACTION_PROMPT,

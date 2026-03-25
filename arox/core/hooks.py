@@ -4,7 +4,7 @@ from pydantic_ai import AgentRunResult
 from pydantic_ai.tools import DeferredToolRequests
 
 if TYPE_CHECKING:
-    from arox.agent_patterns.llm_base import LLMBaseAgent
+    from arox.core.llm_base import LLMBaseAgent
 
 
 class PreStepHook(Protocol):

@@ -5,7 +5,7 @@ import uuid
 import yaml
 from pydantic_ai.exceptions import CallDeferred
 
-from arox.agent_patterns.plugin import Plugin, command, tool
+from arox.core.plugin import Plugin, command, tool
 from arox.plugins.capabilities import AGENT_INFO, AGENT_RESET, SUBAGENT
 
 logger = logging.getLogger(__name__)

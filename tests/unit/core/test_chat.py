@@ -6,8 +6,8 @@ from prompt_toolkit.output import DummyOutput
 from pydantic_ai import FunctionToolset, ToolCallPart
 from pydantic_ai.models.test import TestModel
 
-from arox.agent_patterns import app_init
-from arox.agent_patterns.chat import ChatAgent
+from arox.core import app_init
+from arox.core.chat import ChatAgent
 from arox.ui.text_io import TextIOAdapter
 from arox.utils import user_input_generator
 
@@ -36,7 +36,7 @@ system_prompt = "Hi there."
         "Calculate 1488*2083.\n",
         "\x04",
     ]
-    from arox.agent_patterns.llm_base import AgentDeps
+    from arox.core.llm_base import AgentDeps
 
     local_toolset = FunctionToolset[AgentDeps]()
     local_toolset.add_function(multiply)

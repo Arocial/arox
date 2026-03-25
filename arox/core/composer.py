@@ -4,8 +4,8 @@ import logging
 
 from pydantic_ai import FunctionToolset
 
-from arox.agent_patterns.llm_base import AgentDeps
-from arox.config import AppConfig, ComposerConfig
+from arox.core.config import AppConfig, ComposerConfig
+from arox.core.llm_base import AgentDeps
 from arox.ui.io import IOChannel
 from arox.utils import import_class
 

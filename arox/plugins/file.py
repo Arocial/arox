@@ -14,12 +14,12 @@ from pydantic_ai import (
 from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from rapidfuzz import fuzz
 
-from arox.agent_patterns.plugin import Plugin, command, tool
+from arox.core.plugin import Plugin, command, tool
 from arox.plugins.capabilities import AGENT_INFO, AGENT_RESET, PROJECT_FILES
 from arox.utils import DEFAULT_READ_LIMIT, truncate_content
 
 if TYPE_CHECKING:
-    from arox.agent_patterns.llm_base import LLMBaseAgent
+    from arox.core.llm_base import LLMBaseAgent
 
 logger = logging.getLogger(__name__)
 

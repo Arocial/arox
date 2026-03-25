@@ -1,4 +1,4 @@
-from arox.config import load_config, parse_dot_config
+from arox.core.config import load_config, parse_dot_config
 
 
 def test_config_basic_parsing(tmp_path):

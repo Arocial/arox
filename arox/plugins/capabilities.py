@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from typing import Any
 
-from arox.agent_patterns.capability import Capability
+from arox.core.capability import Capability
 
 # Capability for getting project files
 PROJECT_FILES = Capability[Callable[[], list[str]]](

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from arox.agent_patterns.skills import build_skill_catalog, discover_skills
+from arox.core.skills import build_skill_catalog, discover_skills
 
 
 def test_discover_skills_empty(tmp_path, monkeypatch):
