@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import fastmcp
-from httpx import AsyncClient, HTTPStatusError, TransportError
+from httpx import AsyncClient, HTTPStatusError, Timeout, TransportError
 from pydantic_ai import (
     AbstractToolset,
     Agent,
@@ -20,7 +20,6 @@ from pydantic_ai import (
     RunContext,
     capture_run_messages,
 )
-from pydantic_ai.exceptions import ModelHTTPError
 from pydantic_ai.models import infer_model
 from pydantic_ai.providers import Provider, gateway, google, infer_provider_class
 from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
@@ -42,7 +41,7 @@ from arox.ui.io import AgentIOInterface
 logger = logging.getLogger(__name__)
 
 
-def create_retrying_client():
+def create_retrying_client(**client_args):
     """Create a client with smart retry handling for multiple error types."""
 
     def should_retry_status(response):
@@ -57,13 +56,13 @@ def create_retrying_client():
         config=RetryConfig(
             # Retry on HTTP errors and connection issues
             retry=retry_if_exception_type(
-                (HTTPStatusError, TransportError, ConnectionError, ModelHTTPError)
+                (HTTPStatusError, TransportError, ConnectionError)
             ),
             # Smart waiting: respects Retry-After headers, falls back to exponential backoff
             wait=wait_retry_after(
-                fallback_strategy=wait_exponential(multiplier=2, max=60), max_wait=300
+                fallback_strategy=wait_exponential(multiplier=2, max=30), max_wait=300
             ),
-            stop=stop_after_attempt(7),
+            stop=stop_after_attempt(8),
             # Re-raise the last exception if all retries fail
             reraise=True,
             before_sleep=before_sleep_log(logger, logging.WARNING),
@@ -72,19 +71,27 @@ def create_retrying_client():
     )
     return AsyncClient(
         transport=transport,
-        timeout=30.0,
         event_hooks={"request": [log_request]},
+        **client_args,
     )
 
 
 # Copyied from pydantic_ai.providers.infer_provider and add http_client parameter.
 def infer_provider(provider: str) -> Provider[Any]:
     """Infer the provider from the provider name."""
-    client = create_retrying_client()
+    client = create_retrying_client(
+        timeout=Timeout(timeout=20),
+    )
     if provider.startswith("gateway/"):
         upstream_provider = provider.removeprefix("gateway/")
         return gateway.gateway_provider(upstream_provider)
     elif provider in ("google-vertex", "google-gla"):
+        # The timeout is used by google genai as whole request timeout,
+        # not only used by httpx.
+        # Set to none to use pydantic_ai's default: 600s
+        client = create_retrying_client(
+            timeout=Timeout(timeout=None),
+        )
         return google.GoogleProvider(
             vertexai=provider == "google-vertex", http_client=client
         )
