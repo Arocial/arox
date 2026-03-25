@@ -253,6 +253,12 @@ class LLMBaseAgent:
         )
 
         skills = discover_skills(self.workspace)
+        allowed_skills = getattr(self.agent_config, "skills", None)
+        if allowed_skills is not None:
+            if isinstance(allowed_skills, str):
+                allowed_skills = [allowed_skills]
+            skills = {k: v for k, v in skills.items() if k in allowed_skills}
+
         if skills:
             catalog = build_skill_catalog(skills)
             self.system_prompt += f"\n\n{catalog}"
