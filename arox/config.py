@@ -96,7 +96,7 @@ class ComposerConfig(BaseModel):
 
 class AppConfig(BaseModel):
     dump_config: str = ""
-    model_ref: str = "deepseek/deepseek-chat"
+    model_ref: str = "deepseek:deepseek-chat"
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
     api_keys: dict[str, str] = Field(default_factory=dict)
     env_vars: dict[str, str] = Field(default_factory=dict)
