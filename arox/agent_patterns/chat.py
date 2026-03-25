@@ -13,14 +13,14 @@ class ChatAgent(LLMBaseAgent):
     def __init__(
         self,
         name,
-        config_parser,
+        app_config,
         agent_io,
         local_toolset=None,
     ):
         self.command_manager = CommandManager(self)
         super().__init__(
             name,
-            config_parser,
+            app_config,
             agent_io,
             local_toolset,
         )

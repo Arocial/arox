@@ -4,7 +4,7 @@ import pytest
 
 from arox import agent_patterns
 from arox.agent_patterns.llm_base import LLMBaseAgent
-from arox.config import TomlConfigParser
+from arox.config import load_config
 from arox.ui.io import IOChannel
 
 
@@ -33,26 +33,24 @@ description: Skill 2
     # Create dummy config
     config_file = tmp_path / "config.toml"
     config_file.write_text("""
-[DEFAULT]
 model_ref = "test"
 [agent.test_agent]
 system_prompt = "Hi there."
 skills = ["skill1"]
-[agent.test_agent.model_params]
 """)
 
-    toml_parser = TomlConfigParser(
+    app_config = load_config(
         config_files=[config_file],
-        override_configs={"workspace": str(tmp_path)},
+        cli_overrides={"workspace": str(tmp_path)},
     )
-    agent_patterns.init(toml_parser)
+    agent_patterns.init(app_config)
 
     io_channel = IOChannel()
 
     # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
-    agent = LLMBaseAgent("test_agent", toml_parser, agent_io=io_channel)
+    agent = LLMBaseAgent("test_agent", app_config, agent_io=io_channel)
 
     assert "skill1" in agent.system_prompt
     assert "skill2" not in agent.system_prompt
@@ -83,26 +81,24 @@ description: Skill 2
     # Create dummy config
     config_file = tmp_path / "config.toml"
     config_file.write_text("""
-[DEFAULT]
 model_ref = "test"
 [agent.test_agent]
 system_prompt = "Hi there."
 skills = "skill2"
-[agent.test_agent.model_params]
 """)
 
-    toml_parser = TomlConfigParser(
+    app_config = load_config(
         config_files=[config_file],
-        override_configs={"workspace": str(tmp_path)},
+        cli_overrides={"workspace": str(tmp_path)},
     )
-    agent_patterns.init(toml_parser)
+    agent_patterns.init(app_config)
 
     io_channel = IOChannel()
 
     # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
-    agent = LLMBaseAgent("test_agent", toml_parser, agent_io=io_channel)
+    agent = LLMBaseAgent("test_agent", app_config, agent_io=io_channel)
 
     assert "skill1" not in agent.system_prompt
     assert "skill2" in agent.system_prompt
@@ -133,25 +129,23 @@ description: Skill 2
     # Create dummy config
     config_file = tmp_path / "config.toml"
     config_file.write_text("""
-[DEFAULT]
 model_ref = "test"
 [agent.test_agent]
 system_prompt = "Hi there."
-[agent.test_agent.model_params]
 """)
 
-    toml_parser = TomlConfigParser(
+    app_config = load_config(
         config_files=[config_file],
-        override_configs={"workspace": str(tmp_path)},
+        cli_overrides={"workspace": str(tmp_path)},
     )
-    agent_patterns.init(toml_parser)
+    agent_patterns.init(app_config)
 
     io_channel = IOChannel()
 
     # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
-    agent = LLMBaseAgent("test_agent", toml_parser, agent_io=io_channel)
+    agent = LLMBaseAgent("test_agent", app_config, agent_io=io_channel)
 
     assert "skill1" in agent.system_prompt
     assert "skill2" in agent.system_prompt

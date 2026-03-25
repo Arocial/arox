@@ -5,7 +5,7 @@ import logging
 from pydantic_ai import FunctionToolset
 
 from arox.agent_patterns.llm_base import AgentDeps
-from arox.config import TomlConfigParser
+from arox.config import AppConfig, ComposerConfig
 from arox.ui.io import IOChannel
 from arox.utils import import_class
 
@@ -13,21 +13,14 @@ logger = logging.getLogger(__name__)
 
 
 class Composer:
-    def __init__(self, name: str, toml_parser: TomlConfigParser):
+    def __init__(self, name: str, app_config: AppConfig):
         self.name = name
-        self.toml_parser = toml_parser
+        self.app_config = app_config
 
-        composer_group = toml_parser.add_argument_group(
-            name=f"composer.{self.name}", expose_raw=True
-        )
-        composer_group.add_argument("main_agent", required=True)
-        composer_group.add_argument("subagents", default=[])
-        composer_group.add_argument(
-            "io_adapter", default="arox.ui.text_io.TextIOAdapter"
-        )
-
-        self.config = toml_parser.parse_args()
-        self.composer_config = self.config.composer[self.name]
+        composer_config = app_config.composer.get(name)
+        if not composer_config:
+            raise ValueError(f"Composer config for '{name}' not found")
+        self.composer_config: ComposerConfig = composer_config
 
         io_adapter_cls = import_class(
             self.composer_config.io_adapter, group="arox.io_adapters"
@@ -60,14 +53,10 @@ class Composer:
         # First pass: create IO channels and parse agent configs to get their types
         agent_configs = {}
         for agent_name in all_agent_names:
-            agent_group = self.toml_parser.add_argument_group(
-                name=f"agent.{agent_name}", expose_raw=True
-            )
-            agent_group.add_argument("type", default="chat")
-            agent_group.add_argument("pre_step_hooks", default=[])
-            agent_group.add_argument("post_step_hooks", default=[])
-            self.config = self.toml_parser.parse_args()
-            agent_configs[agent_name] = self.config.agent[agent_name]
+            agent_config = self.app_config.agent.get(agent_name)
+            if not agent_config:
+                raise ValueError(f"Agent config for '{agent_name}' not found")
+            agent_configs[agent_name] = agent_config
 
             io_channel = IOChannel()
             self.io_channels[agent_name] = io_channel
@@ -85,7 +74,7 @@ class Composer:
 
             agent = agent_cls(
                 agent_name,
-                self.toml_parser,
+                self.app_config,
                 agent_io=self.io_channels[agent_name],
             )
             self._load_agent_hooks(agent, agent_configs[agent_name])
@@ -104,7 +93,7 @@ class Composer:
 
         main_agent = main_agent_cls(
             main_agent_name,
-            self.toml_parser,
+            self.app_config,
             local_toolset=local_toolset,
             agent_io=self.io_channels[main_agent_name],
         )

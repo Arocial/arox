@@ -1,5 +1,3 @@
-[DEFAULT]
-
 [composer.coder]
 main_agent = "coder"
 subagents = ["git_commit_agent", "compaction"]

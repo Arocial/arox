@@ -8,7 +8,7 @@ from pydantic_ai.models.test import TestModel
 
 from arox import agent_patterns
 from arox.agent_patterns.chat import ChatAgent
-from arox.config import TomlConfigParser
+from arox.config import load_config
 from arox.ui.text_io import TextIOAdapter
 from arox.utils import user_input_generator
 
@@ -23,18 +23,16 @@ async def test_chat_agent(tmp_path):
     # Create dummy config
     default_agent_config = tmp_path / "dummy_chat.toml"
     default_agent_config.write_text("""
-[DEFAULT]
 model_ref = "test"
 [agent.dummy_chat]
 system_prompt = "Hi there."
-[agent.dummy_chat.model_params]
 """)
 
-    toml_parser = TomlConfigParser(
+    app_config = load_config(
         config_files=[default_agent_config],
-        override_configs={"workspace": str(tmp_path)},
+        cli_overrides={"workspace": str(tmp_path)},
     )
-    agent_patterns.init(toml_parser)
+    agent_patterns.init(app_config)
 
     test_user_msg = [
         "Calculate 1488*2083.\n",
@@ -55,7 +53,7 @@ system_prompt = "Hi there."
         io_channel = IOChannel()
         io_adapter = TextIOAdapter(io_channel)
         agent = ChatAgent(
-            "dummy_chat", toml_parser, agent_io=io_channel, local_toolset=local_toolset
+            "dummy_chat", app_config, agent_io=io_channel, local_toolset=local_toolset
         )
         io_adapter.user_input = user_input
 

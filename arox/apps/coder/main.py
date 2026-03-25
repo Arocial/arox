@@ -6,7 +6,6 @@ from pathlib import Path
 
 from arox import agent_patterns, config
 from arox.agent_patterns.composer import Composer
-from arox.config import TomlConfigParser
 
 logger = logging.getLogger(__name__)
 
@@ -59,18 +58,18 @@ def main():
         )
 
     default_agent_config = Path(__file__).parent / "config.toml"
-    toml_parser = TomlConfigParser(
-        config_files=[default_agent_config], override_configs=cli_configs
+    app_config = config.load_config(
+        config_files=[default_agent_config], cli_overrides=cli_configs
     )
 
-    agent_patterns.init(toml_parser)
+    agent_patterns.init(app_config)
 
-    composer = Composer("coder", toml_parser)
+    composer = Composer("coder", app_config)
 
     if args.dump_default_config:
         logger.debug(f"Dumping default config to {args.dump_default_config}")
         with open(args.dump_default_config, "w") as f:
-            toml_parser.dump_default_config(f)
+            f.write(app_config.model_dump_json(indent=2))
         sys.exit(0)
 
     asyncio.run(composer.run())

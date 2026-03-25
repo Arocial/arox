@@ -36,6 +36,7 @@ from arox import utils
 from arox.agent_patterns.example_parser import parse_example_yaml
 from arox.agent_patterns.hooks import PostStepHook, PreStepHook
 from arox.agent_patterns.skills import build_skill_catalog, discover_skills
+from arox.config import AgentConfig, AppConfig
 from arox.ui.io import AgentIOInterface
 
 logger = logging.getLogger(__name__)
@@ -60,7 +61,7 @@ def create_retrying_client(**client_args):
             ),
             # Smart waiting: respects Retry-After headers, falls back to exponential backoff
             wait=wait_retry_after(
-                fallback_strategy=wait_exponential(multiplier=2, max=30), max_wait=300
+                fallback_strategy=wait_exponential(multiplier=2, max=60), max_wait=300
             ),
             stop=stop_after_attempt(8),
             # Re-raise the last exception if all retries fail
@@ -108,8 +109,8 @@ class AgentDeps:
 class LLMBaseAgent:
     def __init__(
         self,
-        name,
-        config_parser,
+        name: str,
+        app_config: AppConfig,
         agent_io: AgentIOInterface,
         local_toolset: FunctionToolset[AgentDeps] | None = None,
     ):
@@ -119,8 +120,8 @@ class LLMBaseAgent:
         self.model_ref = None
         self.additional_prompt = ""
 
-        self.config_parser = config_parser
-        self.config = self.parse_configs()
+        self.app_config = app_config
+        self.agent_config: AgentConfig = app_config.agent.get(name) or AgentConfig()
 
         # Manage tools
         self.local_toolset = local_toolset
@@ -128,12 +129,14 @@ class LLMBaseAgent:
             [local_toolset] if local_toolset else []
         )
 
-        mcp_server_configs = self.config.mcp_servers
+        mcp_server_configs = self.app_config.mcp_servers
         self.mcp_client = None
         if mcp_server_configs:
             self.mcp_client = fastmcp.Client({"mcpServers": mcp_server_configs})
             mcp_toolset = FastMCPToolset[AgentDeps](self.mcp_client)
             toolsets.append(mcp_toolset)
+
+        self.parse_configs()
 
         self.model = infer_model(self.provider_model, provider_factory=infer_provider)
         self.plugins = self.load_plugins()
@@ -211,14 +214,11 @@ class LLMBaseAgent:
 
     def set_model(self, model_ref: str):
         self.model_ref = model_ref
-        config_parser = self.config_parser
-        model_group = config_parser.add_argument_group(name=f"model.'{self.model_ref}'")
-        model_group.add_argument("provider_model", default=self.model_ref)
-        config_parser.add_argument_group(
-            name=f"model.'{self.model_ref}'.params", expose_raw=True
-        )
-        config = config_parser.parse_args()
-        model_config = config.model[self.model_ref]
+        model_config = self.app_config.model.get(self.model_ref)
+        if not model_config:
+            from arox.config import ModelConfig
+
+            model_config = ModelConfig(provider_model=self.model_ref)
 
         model_params = model_config.params
         self.model_params = utils.deep_merge(self.agent_model_params, model_params)
@@ -227,39 +227,17 @@ class LLMBaseAgent:
             if re.search(model_prompt["pattern"], self.model_ref):
                 self.additional_prompt = model_prompt["prompt"]
 
-        return config
-
     async def show_agent_info(self):
         await self.agent_io.agent_send(
             f"Using model {self.provider_model} for {self.name}"
         )
 
     def parse_configs(self):
-        config_parser = self.config_parser
-        name = self.name
-        agent_group = config_parser.add_argument_group(
-            name=f"agent.{name}", expose_raw=True
-        )
-        agent_group.add_argument("system_prompt", default="")
-        agent_group.add_argument("model_ref", default="")
-        agent_group.add_argument("plugins", default=[])
-        agent_group.add_argument("skills", default=None)
-        agent_group.add_argument("examples", default=None)
-        config_parser.add_argument_group(
-            name=f"agent.{name}.model_params", expose_raw=True
-        )
-        config_parser.add_argument_group(
-            name=f"agent.{name}.model_prompt", expose_raw=True
-        )
-        config = config_parser.parse_args()
-
         self.workspace = Path.cwd()
-        group_config = config.agent[name]
-        self.agent_config = group_config
 
         # Load default metadata using configargparse
         self.system_prompt = utils.render_template(
-            group_config.system_prompt, config=config
+            self.agent_config.system_prompt, config=self.app_config
         )
 
         skills = discover_skills(self.workspace)
@@ -276,15 +254,15 @@ class LLMBaseAgent:
         self.example_messages = []
         examples_file = self.agent_config.examples
         if examples_file:
-            examples_path = self.config_parser.find_config(Path(examples_file))
+            examples_path = self.app_config.find_file(Path(examples_file))
             if examples_path:
                 with open(examples_path, "r") as f:
                     self.example_messages = parse_example_yaml(f.read())
 
-        self.model_ref = group_config.model_ref or config.model_ref
-        self.agent_model_params = group_config.model_params
+        self.model_ref = self.agent_config.model_ref or self.app_config.model_ref
+        self.agent_model_params = self.agent_config.model_params
         self.model_aware_prompts = []
-        mp = group_config.model_prompt
+        mp = self.agent_config.model_prompt
         for k, v in mp.items():
             if not k.endswith("_pattern"):
                 pattern = mp.get(f"{k}_pattern", "")
@@ -295,7 +273,7 @@ class LLMBaseAgent:
                     }
                 )
 
-        return self.set_model(self.model_ref)
+        self.set_model(self.model_ref)
 
     async def _run_pre_step_hooks(self, input_content: str | None):
         if hasattr(self, "pre_step_hooks"):

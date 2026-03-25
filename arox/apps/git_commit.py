@@ -113,16 +113,16 @@ if __name__ == "__main__":
     import asyncio
 
     from arox import agent_patterns
-    from arox.config import TomlConfigParser
+    from arox.config import load_config
 
-    toml_parser = TomlConfigParser()
-    agent_patterns.init(toml_parser)
+    app_config = load_config()
+    agent_patterns.init(app_config)
 
     from arox.ui.io import IOChannel
 
     io_channel = IOChannel()
     adapter = TextIOAdapter(io_channel)
-    agent = GitCommitAgent("git_commit_agent", toml_parser, agent_io=io_channel)
+    agent = GitCommitAgent("git_commit_agent", app_config, agent_io=io_channel)
 
     async def wrapper():
         async with agent:
