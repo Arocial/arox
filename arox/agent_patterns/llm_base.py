@@ -36,7 +36,7 @@ from tenacity import (
 from arox import utils
 from arox.agent_patterns.example_parser import parse_example_yaml
 from arox.agent_patterns.hooks import PostStepHook, PreStepHook
-from arox.skills import build_skill_catalog, discover_skills
+from arox.agent_patterns.skills import build_skill_catalog, discover_skills
 from arox.ui.io import AgentIOInterface
 
 logger = logging.getLogger(__name__)
