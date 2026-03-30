@@ -78,7 +78,7 @@ def create_retrying_client(**client_args):
 
 
 # Copyied from pydantic_ai.providers.infer_provider and add http_client parameter.
-def infer_provider(provider: str) -> Provider[Any]:
+def infer_provider(provider: str, base_url: str = "") -> Provider[Any]:
     """Infer the provider from the provider name."""
     client = create_retrying_client(
         timeout=Timeout(timeout=20),
@@ -98,7 +98,10 @@ def infer_provider(provider: str) -> Provider[Any]:
         )
     else:
         provider_class = infer_provider_class(provider)
-        return provider_class(http_client=client)  # type: ignore
+        kwargs: dict[str, Any] = {"http_client": client}
+        if base_url:
+            kwargs["base_url"] = base_url
+        return provider_class(**kwargs)  # type: ignore
 
 
 @dataclass
@@ -138,7 +141,10 @@ class LLMBaseAgent:
 
         self.parse_configs()
 
-        self.model = infer_model(self.provider_model, provider_factory=infer_provider)
+        self.model = infer_model(
+            self.provider_model,
+            provider_factory=lambda p: infer_provider(p, base_url=self.base_url),
+        )
         self.plugins = self.load_plugins()
         history_processors = [plugin.history_processor for plugin in self.plugins]
 
@@ -223,6 +229,7 @@ class LLMBaseAgent:
         model_params = model_config.params
         self.model_params = utils.deep_merge(self.agent_model_params, model_params)
         self.provider_model = model_config.provider_model
+        self.base_url = model_config.base_url
         for model_prompt in self.model_aware_prompts:
             if re.search(model_prompt["pattern"], self.model_ref):
                 self.additional_prompt = model_prompt["prompt"]
