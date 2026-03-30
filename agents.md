@@ -1,4 +1,1 @@
-- By default, use English for comments and prompt messages in the code unless otherwise specified.
-- Use `uv` for package management.
-- Python version: >=3.12.
-- Run `tools/lint` and `uv run pytest` before commit your changes.
+CLAUDE.md
