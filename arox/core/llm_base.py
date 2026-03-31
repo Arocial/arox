@@ -42,7 +42,7 @@ from arox.ui.io import AgentIOInterface
 logger = logging.getLogger(__name__)
 
 
-def create_retrying_client(**client_args):
+def create_retrying_client(extra_request_hooks=None, **client_args):
     """Create a client with smart retry handling for multiple error types."""
 
     def should_retry_status(response):
@@ -70,9 +70,10 @@ def create_retrying_client(**client_args):
         ),
         validate_response=should_retry_status,
     )
+    request_hooks = [log_request] + (extra_request_hooks or [])
     return AsyncClient(
         transport=transport,
-        event_hooks={"request": [log_request]},
+        event_hooks={"request": request_hooks},
         **client_args,
     )
 
@@ -87,11 +88,22 @@ def infer_provider(provider: str, base_url: str = "") -> Provider[Any]:
         upstream_provider = provider.removeprefix("gateway/")
         return gateway.gateway_provider(upstream_provider)
     elif provider in ("google-vertex", "google-gla"):
-        # The timeout is used by google genai as whole request timeout,
-        # not only used by httpx.
-        # Set to none to use pydantic_ai's default: 600s
+        # Google GenAI SDK uses HttpOptions.timeout for both the httpx
+        # per-request timeout AND the X-Server-Timeout header sent to the
+        # server. pydantic_ai reads the httpx client's timeout and forwards
+        # it to HttpOptions.timeout, so they are always coupled.
+        #
+        # To decouple them we:
+        # 1. Set timeout to 20, which is set for both client and server timeout by genai sdk.
+        # 2. Then use an httpx request event hook to remove the X-Server-Timeout
+        #    header before the request is sent, so the server is not
+        #    constrained by that deadline.
+        async def _remove_server_timeout(request):
+            request.headers.pop("X-Server-Timeout", None)
+
         client = create_retrying_client(
-            timeout=Timeout(timeout=None),
+            timeout=20,
+            extra_request_hooks=[_remove_server_timeout],
         )
         return google.GoogleProvider(
             vertexai=provider == "google-vertex", http_client=client
