@@ -112,9 +112,9 @@ class GitCommitAgent(LLMBaseAgent):
 if __name__ == "__main__":
     import asyncio
 
-    from arox.core import app_init
+    from arox.core.app import app_setup
 
-    parsed_config = app_init()
+    parsed_config = app_setup()
 
     from arox.ui.io import IOChannel
 

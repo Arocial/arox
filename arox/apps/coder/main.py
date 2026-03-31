@@ -41,9 +41,9 @@ def main():
         )
 
     default_agent_config = Path(__file__).parent / "config.toml"
-    from arox.core import app_init
+    from arox.core.app import app_setup
 
-    app_init(config_files=[default_agent_config], cli_args=unknown_args)
+    app_setup(config_files=[default_agent_config], cli_args=unknown_args)
     composer = Composer(
         "coder",
         session_id=args.session,

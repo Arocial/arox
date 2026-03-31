@@ -6,7 +6,7 @@ from prompt_toolkit.output import DummyOutput
 from pydantic_ai import FunctionToolset, ToolCallPart
 from pydantic_ai.models.test import TestModel
 
-from arox.core import app_init
+from arox.core.app import app_setup
 from arox.core.chat import ChatAgent
 from arox.ui.text_io import TextIOAdapter
 from arox.utils import user_input_generator
@@ -27,7 +27,7 @@ model_ref = "test"
 system_prompt = "Hi there."
 """)
 
-    parsed_config = app_init(
+    parsed_config = app_setup(
         config_files=[default_agent_config],
         cli_args={"workspace": str(tmp_path)},
     )

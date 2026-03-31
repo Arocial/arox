@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from arox.core import app_init
+from arox.core.app import app_setup
 from arox.core.llm_base import LLMBaseAgent
 from arox.ui.io import IOChannel
 
@@ -38,7 +38,7 @@ system_prompt = "Hi there."
 skills = ["skill1"]
 """)
 
-    parsed_config = app_init(
+    parsed_config = app_setup(
         config_files=[config_file],
         cli_args={"workspace": str(tmp_path)},
     )
@@ -85,7 +85,7 @@ system_prompt = "Hi there."
 skills = "skill2"
 """)
 
-    parsed_config = app_init(
+    parsed_config = app_setup(
         config_files=[config_file],
         cli_args={"workspace": str(tmp_path)},
     )
@@ -131,7 +131,7 @@ model_ref = "test"
 system_prompt = "Hi there."
 """)
 
-    parsed_config = app_init(
+    parsed_config = app_setup(
         config_files=[config_file],
         cli_args={"workspace": str(tmp_path)},
     )
