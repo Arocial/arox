@@ -29,7 +29,7 @@ class Composer:
         self.name = name
         self.app_config = app_config
         self.session_store: SessionStore = session_store or FileSessionStore()
-        self.session: AppSession | None = None
+        self.session = AppSession.create(self.name)
 
         composer_config = app_config.composer.get(name)
         if not composer_config:
@@ -41,7 +41,6 @@ class Composer:
         )
         self.io_adapter = io_adapter_cls()
 
-        self.main_agent = None
         self.subagents = {}
         self.io_channels = {}
 
@@ -131,25 +130,23 @@ class Composer:
         return agents
 
     async def _init_session(self, session_id: str | None = None):
+        restored = False
         if session_id:
-            self.session = await self.session_store.load_session(session_id)
-            if self.session:
-                for name, agent in self._all_agents().items():
-                    agent_session = self.session.agent_sessions.get(name)
-                    if agent_session:
-                        agent.restore_session(agent_session)
+            loaded = await self.session_store.load_session(session_id)
+            if loaded:
+                self.session = loaded
+                restored = True
+                await self.main_agent.agent_io.agent_send(
+                    f"Session restored: {self.session.id}"
+                )
 
-        if not self.session:
+        if not restored:
             self.session = AppSession.create(self.name)
 
         for name, agent in self._all_agents().items():
-            agent.agent_session = self.session.get_agent_session(name)
+            agent.restore_session(self.session.get_agent_session(name))
 
     async def _save_session(self):
-        if not self.session:
-            return
-        for name, agent in self._all_agents().items():
-            self.session.agent_sessions[name] = agent.get_agent_session()
         await self.session_store.save_session(self.session)
 
     async def run(self, session_id: str | None = None):
@@ -167,10 +164,6 @@ class Composer:
             asyncio.create_task(self.io_adapter.start())
 
             await self._init_session(session_id)
-            if session_id and self.session:
-                await self.main_agent.agent_io.agent_send(
-                    f"Session restored: {self.session.id}"
-                )
 
             for agent in self.subagents.values():
                 await agent.show_agent_info()

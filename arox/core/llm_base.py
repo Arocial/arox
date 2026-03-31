@@ -132,7 +132,7 @@ class LLMBaseAgent:
     ):
         self.uuid = str(uuid.uuid4())
         self.name = name
-        self.agent_session: AgentSession | None = None
+        self.agent_session: AgentSession = AgentSession(agent_name=name)
         self._capabilities: dict[Any, Any] = {}
         self.model_ref = None
         self.additional_prompt = ""
@@ -213,11 +213,10 @@ class LLMBaseAgent:
 
     async def handle_task(self, task: str, main_agent: "LLMBaseAgent", **kwargs) -> Any:
         """Handle a task delegated from the main agent."""
-        if main_agent.agent_session:
-            main_agent.agent_session.add_event(
-                "subagent_call",
-                {"subagent": self.name, "task": task},
-            )
+        main_agent.agent_session.add_event(
+            "subagent_call",
+            {"subagent": self.name, "task": task},
+        )
         result = await self.step(task)
         if result and isinstance(result.output, str):
             return result.output
@@ -343,8 +342,6 @@ class LLMBaseAgent:
         input_content: str | None,
         result: AgentRunResult[Any],
     ):
-        if not self.agent_session:
-            return
         new_messages = result.new_messages()
         usage = result.usage()
         self.agent_session.add_event(
@@ -356,11 +353,6 @@ class LLMBaseAgent:
                 "response_tokens": usage.output_tokens if usage else None,
             },
         )
-
-    def get_agent_session(self) -> AgentSession:
-        if self.agent_session:
-            return self.agent_session
-        return AgentSession(agent_name=self.name)
 
     def restore_session(self, agent_session: AgentSession):
         self.agent_session = agent_session
