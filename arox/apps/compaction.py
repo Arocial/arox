@@ -32,12 +32,19 @@ Provide a detailed prompt for continuing our conversation above. Focus on inform
 
 class CompactionAgent(LLMBaseAgent):
     async def handle_task(self, task: str, main_agent: LLMBaseAgent, **kwargs) -> str:
+        if main_agent.agent_session:
+            main_agent.agent_session.add_event(
+                "subagent_call",
+                {"subagent": self.name, "task": task},
+            )
+
         example_len = len(main_agent.example_messages)
         messages_to_compact = main_agent.message_history[example_len:]
 
         if not messages_to_compact:
             return "No history to compact."
 
+        messages_before = len(main_agent.message_history)
         summary = await self.compact(messages_to_compact)
 
         from pydantic_ai import ModelRequest, UserPromptPart
@@ -46,7 +53,20 @@ class CompactionAgent(LLMBaseAgent):
             parts=[UserPromptPart(content=f"Previous conversation summary:\n{summary}")]
         )
 
-        main_agent.message_history = main_agent.example_messages + [new_request]
+        compacted_messages = [new_request]
+        main_agent.message_history = main_agent.example_messages + compacted_messages
+
+        if main_agent.agent_session:
+            from arox.core.session import _serialize_messages
+
+            main_agent.agent_session.add_event(
+                "compaction",
+                {
+                    "messages_before": messages_before,
+                    "messages_after": len(main_agent.message_history),
+                    "compacted_messages": _serialize_messages(compacted_messages),
+                },
+            )
 
         return "Conversation history compacted successfully."
 

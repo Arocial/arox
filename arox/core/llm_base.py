@@ -36,6 +36,7 @@ from arox import utils
 from arox.core.config import AgentConfig, AppConfig
 from arox.core.example_parser import parse_example_yaml
 from arox.core.hooks import PostStepHook, PreStepHook
+from arox.core.session import AgentSession, _serialize_messages
 from arox.core.skills import build_skill_catalog, discover_skills
 from arox.ui.io import AgentIOInterface
 
@@ -131,6 +132,7 @@ class LLMBaseAgent:
     ):
         self.uuid = str(uuid.uuid4())
         self.name = name
+        self.agent_session: AgentSession | None = None
         self._capabilities: dict[Any, Any] = {}
         self.model_ref = None
         self.additional_prompt = ""
@@ -211,6 +213,11 @@ class LLMBaseAgent:
 
     async def handle_task(self, task: str, main_agent: "LLMBaseAgent", **kwargs) -> Any:
         """Handle a task delegated from the main agent."""
+        if main_agent.agent_session:
+            main_agent.agent_session.add_event(
+                "subagent_call",
+                {"subagent": self.name, "task": task},
+            )
         result = await self.step(task)
         if result and isinstance(result.output, str):
             return result.output
@@ -324,11 +331,42 @@ class LLMBaseAgent:
                     deferred_tool_results=deferred_tool_results,
                 )
                 self.message_history = result.all_messages()
+                self._record_step_event(input_content, result)
                 await self._run_post_step_hooks(input_content, result)
                 return result
             except (asyncio.CancelledError, Exception):
                 self.message_history = messages
                 raise
+
+    def _record_step_event(
+        self,
+        input_content: str | None,
+        result: AgentRunResult[Any],
+    ):
+        if not self.agent_session:
+            return
+        new_messages = result.new_messages()
+        usage = result.usage()
+        self.agent_session.add_event(
+            "agent_step",
+            {
+                "input": input_content,
+                "new_messages": _serialize_messages(new_messages),
+                "request_tokens": usage.input_tokens if usage else None,
+                "response_tokens": usage.output_tokens if usage else None,
+            },
+        )
+
+    def get_agent_session(self) -> AgentSession:
+        if self.agent_session:
+            return self.agent_session
+        return AgentSession(agent_name=self.name)
+
+    def restore_session(self, agent_session: AgentSession):
+        self.agent_session = agent_session
+        self.message_history = agent_session.rebuild_message_history(
+            self.example_messages
+        )
 
     def reset(self):
         self.message_history = self.example_messages

@@ -70,6 +70,10 @@ class ChatAgent(LLMBaseAgent):
 
                 try:
                     if user_input is not None:
+                        if self.agent_session:
+                            self.agent_session.add_event(
+                                "user_input", {"text": user_input}
+                            )
                         if not user_input.strip():
                             chat_input_event.normal_input.request = True
                             continue
@@ -77,6 +81,10 @@ class ChatAgent(LLMBaseAgent):
                             user_input
                         )
                         if is_command:
+                            if self.agent_session:
+                                self.agent_session.add_event(
+                                    "command", {"command": user_input}
+                                )
                             chat_input_event.normal_input.request = True
                             continue
 
@@ -91,4 +99,6 @@ class ChatAgent(LLMBaseAgent):
 
                 except Exception as e:
                     logger.exception("An error occurred.")
+                    if self.agent_session:
+                        self.agent_session.add_event("error", {"error": str(e)})
                     chat_input_event.exception_input.exception = e

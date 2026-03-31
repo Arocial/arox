@@ -16,6 +16,11 @@ def main():
         default="text",
         help="UI interface to use (text, vercel_ai, telegram, or feishu)",
     )
+    parser.add_argument(
+        "--session",
+        default=None,
+        help="Session ID to restore a previous session",
+    )
     args, unknown_args = parser.parse_known_args()
 
     unknown_args.append(f"composer.coder.io_adapter={args.ui}")
@@ -41,7 +46,7 @@ def main():
     app_config = app_init(config_files=[default_agent_config], cli_args=unknown_args)
     composer = Composer("coder", app_config)
 
-    asyncio.run(composer.run())
+    asyncio.run(composer.run(session_id=args.session))
 
 
 if __name__ == "__main__":

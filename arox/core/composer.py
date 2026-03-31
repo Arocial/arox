@@ -1,21 +1,35 @@
+from __future__ import annotations
+
 import asyncio
 import contextlib
 import logging
+from typing import TYPE_CHECKING
 
 from pydantic_ai import FunctionToolset
 
 from arox.core.config import AppConfig, ComposerConfig
 from arox.core.llm_base import AgentDeps
+from arox.core.session import AppSession, FileSessionStore, SessionStore
 from arox.ui.io import IOChannel
 from arox.utils import import_class
+
+if TYPE_CHECKING:
+    from arox.core.llm_base import LLMBaseAgent
 
 logger = logging.getLogger(__name__)
 
 
 class Composer:
-    def __init__(self, name: str, app_config: AppConfig):
+    def __init__(
+        self,
+        name: str,
+        app_config: AppConfig,
+        session_store: SessionStore | None = None,
+    ):
         self.name = name
         self.app_config = app_config
+        self.session_store: SessionStore = session_store or FileSessionStore()
+        self.session: AppSession | None = None
 
         composer_config = app_config.composer.get(name)
         if not composer_config:
@@ -110,7 +124,35 @@ class Composer:
 
         self.io_adapter.setup(main_agent)
 
-    async def run(self):
+    def _all_agents(self) -> dict[str, LLMBaseAgent]:
+        agents = dict(self.subagents)
+        if self.main_agent:
+            agents[self.main_agent.name] = self.main_agent
+        return agents
+
+    async def _init_session(self, session_id: str | None = None):
+        if session_id:
+            self.session = await self.session_store.load_session(session_id)
+            if self.session:
+                for name, agent in self._all_agents().items():
+                    agent_session = self.session.agent_sessions.get(name)
+                    if agent_session:
+                        agent.restore_session(agent_session)
+
+        if not self.session:
+            self.session = AppSession.create(self.name)
+
+        for name, agent in self._all_agents().items():
+            agent.agent_session = self.session.get_agent_session(name)
+
+    async def _save_session(self):
+        if not self.session:
+            return
+        for name, agent in self._all_agents().items():
+            self.session.agent_sessions[name] = agent.get_agent_session()
+        await self.session_store.save_session(self.session)
+
+    async def run(self, session_id: str | None = None):
         if self.main_agent is None:
             raise RuntimeError("Main agent is not initialized")
 
@@ -124,11 +166,20 @@ class Composer:
 
             asyncio.create_task(self.io_adapter.start())
 
+            await self._init_session(session_id)
+            if session_id and self.session:
+                await self.main_agent.agent_io.agent_send(
+                    f"Session restored: {self.session.id}"
+                )
+
             for agent in self.subagents.values():
                 await agent.show_agent_info()
             await self.main_agent.show_agent_info()
 
-            if hasattr(self.main_agent, "start"):
-                await self.main_agent.start()
-            else:
-                logger.error("Main agent does not have a start method")
+            try:
+                if hasattr(self.main_agent, "start"):
+                    await self.main_agent.start()
+                else:
+                    logger.error("Main agent does not have a start method")
+            finally:
+                await self._save_session()
