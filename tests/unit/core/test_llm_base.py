@@ -38,7 +38,7 @@ system_prompt = "Hi there."
 skills = ["skill1"]
 """)
 
-    app_config = app_init(
+    parsed_config = app_init(
         config_files=[config_file],
         cli_args={"workspace": str(tmp_path)},
     )
@@ -48,7 +48,7 @@ skills = ["skill1"]
     # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
-    agent = LLMBaseAgent("test_agent", app_config, agent_io=io_channel)
+    agent = LLMBaseAgent("test_agent", parsed_config, agent_io=io_channel)
 
     assert "skill1" in agent.system_prompt
     assert "skill2" not in agent.system_prompt
@@ -85,7 +85,7 @@ system_prompt = "Hi there."
 skills = "skill2"
 """)
 
-    app_config = app_init(
+    parsed_config = app_init(
         config_files=[config_file],
         cli_args={"workspace": str(tmp_path)},
     )
@@ -95,7 +95,7 @@ skills = "skill2"
     # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
-    agent = LLMBaseAgent("test_agent", app_config, agent_io=io_channel)
+    agent = LLMBaseAgent("test_agent", parsed_config, agent_io=io_channel)
 
     assert "skill1" not in agent.system_prompt
     assert "skill2" in agent.system_prompt
@@ -131,7 +131,7 @@ model_ref = "test"
 system_prompt = "Hi there."
 """)
 
-    app_config = app_init(
+    parsed_config = app_init(
         config_files=[config_file],
         cli_args={"workspace": str(tmp_path)},
     )
@@ -141,7 +141,7 @@ system_prompt = "Hi there."
     # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
-    agent = LLMBaseAgent("test_agent", app_config, agent_io=io_channel)
+    agent = LLMBaseAgent("test_agent", parsed_config, agent_io=io_channel)
 
     assert "skill1" in agent.system_prompt
     assert "skill2" in agent.system_prompt

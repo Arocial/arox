@@ -27,7 +27,7 @@ model_ref = "test"
 system_prompt = "Hi there."
 """)
 
-    app_config = app_init(
+    parsed_config = app_init(
         config_files=[default_agent_config],
         cli_args={"workspace": str(tmp_path)},
     )
@@ -51,7 +51,10 @@ system_prompt = "Hi there."
         io_channel = IOChannel()
         io_adapter = TextIOAdapter(io_channel)
         agent = ChatAgent(
-            "dummy_chat", app_config, agent_io=io_channel, local_toolset=local_toolset
+            "dummy_chat",
+            parsed_config,
+            agent_io=io_channel,
+            local_toolset=local_toolset,
         )
         io_adapter.user_input = user_input
 

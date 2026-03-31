@@ -33,7 +33,7 @@ from tenacity import (
 )
 
 from arox import utils
-from arox.core.config import AgentConfig, AppConfig
+from arox.core.config import AgentConfig, Config
 from arox.core.example_parser import parse_example_yaml
 from arox.core.hooks import PostStepHook, PreStepHook
 from arox.core.session import AgentSession, _serialize_messages
@@ -126,19 +126,23 @@ class LLMBaseAgent:
     def __init__(
         self,
         name: str,
-        app_config: AppConfig,
+        parsed_config: Config,
         agent_io: AgentIOInterface,
         local_toolset: FunctionToolset[AgentDeps] | None = None,
+        workspace: Path | str | None = None,
+        config_dirs: list[Path] | None = None,
     ):
         self.uuid = str(uuid.uuid4())
         self.name = name
+        self.workspace = Path(workspace) if workspace else Path.cwd()
+        self.config_dirs = config_dirs or []
         self.agent_session: AgentSession = AgentSession(agent_name=name)
         self._capabilities: dict[Any, Any] = {}
         self.model_ref = None
         self.additional_prompt = ""
 
-        self.app_config = app_config
-        self.agent_config: AgentConfig = app_config.agent.get(name) or AgentConfig()
+        self.parsed_config = parsed_config
+        self.agent_config: AgentConfig = parsed_config.agent.get(name) or AgentConfig()
 
         # Manage tools
         self.local_toolset = local_toolset
@@ -146,7 +150,7 @@ class LLMBaseAgent:
             [local_toolset] if local_toolset else []
         )
 
-        mcp_server_configs = self.app_config.mcp_servers
+        mcp_server_configs = self.parsed_config.mcp_servers
         self.mcp_client = None
         if mcp_server_configs:
             self.mcp_client = fastmcp.Client({"mcpServers": mcp_server_configs})
@@ -238,7 +242,7 @@ class LLMBaseAgent:
 
     def set_model(self, model_ref: str):
         self.model_ref = model_ref
-        model_config = self.app_config.model.get(self.model_ref)
+        model_config = self.parsed_config.model.get(self.model_ref)
         if not model_config:
             from arox.core.config import ModelConfig
 
@@ -257,12 +261,24 @@ class LLMBaseAgent:
             f"Using model {self.provider_model} for {self.name}"
         )
 
-    def parse_configs(self):
-        self.workspace = Path.cwd()
+    def find_file(self, fpath: str | Path) -> Path | None:
+        fpath = Path(fpath)
+        if fpath.is_absolute():
+            return fpath if fpath.exists() else None
 
+        if fpath.exists():
+            return fpath.absolute()
+
+        for directory in self.config_dirs:
+            full_path = directory / fpath
+            if full_path.exists():
+                return full_path.absolute()
+        return None
+
+    def parse_configs(self):
         # Load default metadata using configargparse
         self.system_prompt = utils.render_template(
-            self.agent_config.system_prompt, config=self.app_config
+            self.agent_config.system_prompt, config=self.parsed_config
         )
 
         skills = discover_skills(self.workspace)
@@ -279,12 +295,12 @@ class LLMBaseAgent:
         self.example_messages = []
         examples_file = self.agent_config.examples
         if examples_file:
-            examples_path = self.app_config.find_file(Path(examples_file))
+            examples_path = self.find_file(Path(examples_file))
             if examples_path:
                 with open(examples_path, "r") as f:
                     self.example_messages = parse_example_yaml(f.read())
 
-        self.model_ref = self.agent_config.model_ref or self.app_config.model_ref
+        self.model_ref = self.agent_config.model_ref or self.parsed_config.model_ref
         self.agent_model_params = self.agent_config.model_params
         self.model_aware_prompts = []
         mp = self.agent_config.model_prompt

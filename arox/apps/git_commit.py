@@ -114,13 +114,13 @@ if __name__ == "__main__":
 
     from arox.core import app_init
 
-    app_config = app_init()
+    parsed_config = app_init()
 
     from arox.ui.io import IOChannel
 
     io_channel = IOChannel()
     adapter = TextIOAdapter(io_channel)
-    agent = GitCommitAgent("git_commit_agent", app_config, agent_io=io_channel)
+    agent = GitCommitAgent("git_commit_agent", parsed_config, agent_io=io_channel)
 
     async def wrapper():
         async with agent:

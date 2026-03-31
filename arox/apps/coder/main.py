@@ -43,10 +43,15 @@ def main():
     default_agent_config = Path(__file__).parent / "config.toml"
     from arox.core import app_init
 
-    app_config = app_init(config_files=[default_agent_config], cli_args=unknown_args)
-    composer = Composer("coder", app_config)
+    app_init(config_files=[default_agent_config], cli_args=unknown_args)
+    composer = Composer(
+        "coder",
+        session_id=args.session,
+        config_files=[default_agent_config],
+        cli_args=unknown_args,
+    )
 
-    asyncio.run(composer.run(session_id=args.session))
+    asyncio.run(composer.run())
 
 
 if __name__ == "__main__":

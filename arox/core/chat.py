@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 
 from pydantic_ai import DeferredToolResults
 from pydantic_ai.tools import DeferredToolRequests
@@ -13,16 +14,18 @@ class ChatAgent(LLMBaseAgent):
     def __init__(
         self,
         name,
-        app_config,
+        parsed_config,
         agent_io,
         local_toolset=None,
+        workspace: Path | str | None = None,
     ):
         self.command_manager = CommandManager(self)
         super().__init__(
             name,
-            app_config,
+            parsed_config,
             agent_io,
             local_toolset,
+            workspace,
         )
 
     def load_plugins(self):

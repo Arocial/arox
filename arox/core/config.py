@@ -96,44 +96,33 @@ class ComposerConfig(BaseModel):
 
 
 class AppConfig(BaseModel):
-    dump_config: str = ""
-    model_ref: str = "deepseek:deepseek-chat"
-    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
-    api_keys: dict[str, str] = Field(default_factory=dict)
     env_vars: dict[str, str] = Field(default_factory=dict)
-    mcp_servers: dict[str, Any] = Field(default_factory=dict)
+    api_keys: dict[str, str] = Field(default_factory=dict)
+    observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
 
+
+class Config(BaseModel):
+    model_ref: str = "deepseek:deepseek-chat"
+    app: AppConfig = Field(default_factory=AppConfig)
+    mcp_servers: dict[str, Any] = Field(default_factory=dict)
     composer: dict[str, ComposerConfig] = Field(default_factory=dict)
     agent: dict[str, AgentConfig] = Field(default_factory=dict)
     model: dict[str, ModelConfig] = Field(default_factory=dict)
-
-    config_dirs: list[Path] = Field(default_factory=list, exclude=True)
-
-    def find_file(self, fpath: str | Path) -> Path | None:
-        fpath = Path(fpath)
-        if fpath.is_absolute():
-            return fpath if fpath.exists() else None
-
-        if fpath.exists():
-            return fpath.absolute()
-
-        for directory in self.config_dirs:
-            full_path = directory / fpath
-            if full_path.exists():
-                return full_path.absolute()
-        return None
 
 
 def load_config(
     config_files: list[str | Path] | None = None,
     cli_args: list[str] | dict[str, Any] | None = None,
-) -> AppConfig:
+    workspace: Path | None = None,
+) -> tuple[Config, list[Path]]:
     search_paths: list[Path] = []
     if config_files:
         search_paths.extend([Path(f) for f in config_files])
 
     search_paths.append(Path.home() / ".config" / "arox" / "config.toml")
-    search_paths.append(Path.cwd() / ".arox.core.config.toml")
+
+    workspace = workspace if workspace else Path.cwd()
+    search_paths.append(workspace / ".arox.config.toml")
 
     config_dirs = list(dict.fromkeys([f.parent for f in search_paths]))
 
@@ -154,6 +143,5 @@ def load_config(
     if cli_overrides:
         raw_config = deep_merge(raw_config, cli_overrides)
 
-    app_config = AppConfig(**raw_config)
-    app_config.config_dirs = config_dirs
-    return app_config
+    parsed_config = Config(**raw_config)
+    return parsed_config, config_dirs
