@@ -14,7 +14,7 @@ def app_init(
     config_files: list[str | Path] | None = None,
     cli_args: list[str] | dict[str, Any] | None = None,
 ) -> Config:
-    config, _ = load_config(config_files, cli_args)
+    config = load_config(config_files, cli_args)
     setup_llm_observability(config.app.observability)
 
     for provider, api_key in config.app.api_keys.items():

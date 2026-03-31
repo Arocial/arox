@@ -4,6 +4,7 @@ import tomllib
 from pathlib import Path
 from typing import Any, Literal
 
+import yaml
 from pydantic import BaseModel, Field
 
 from arox.utils import deep_merge
@@ -82,7 +83,7 @@ class AgentConfig(BaseModel):
     model_ref: str = ""
     plugins: list[str] = Field(default_factory=list)
     skills: str | list[str] | None = None
-    examples: str | None = None
+    examples: list[dict[str, Any]] | None = None
     model_params: dict[str, Any] = Field(default_factory=dict)
     model_prompt: dict[str, str] = Field(default_factory=dict)
     pre_step_hooks: list[str] = Field(default_factory=list)
@@ -110,27 +111,48 @@ class Config(BaseModel):
     model: dict[str, ModelConfig] = Field(default_factory=dict)
 
 
+def _load_config_file(path: Path) -> dict[str, Any]:
+    suffix = path.suffix.lower()
+    if suffix == ".toml":
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    elif suffix in (".yaml", ".yml"):
+        with open(path, "r") as f:
+            return yaml.safe_load(f) or {}
+    else:
+        raise ValueError(f"Unsupported config file format: {suffix}")
+
+
+def _discover_config_files(base: Path, stem: str) -> list[Path]:
+    """Discover config files with the given stem in toml/yaml formats."""
+    found = []
+    for suffix in (".toml", ".yaml", ".yml"):
+        candidate = base / f"{stem}{suffix}"
+        if candidate.exists():
+            found.append(candidate)
+    return found
+
+
 def load_config(
     config_files: list[str | Path] | None = None,
     cli_args: list[str] | dict[str, Any] | None = None,
     workspace: Path | None = None,
-) -> tuple[Config, list[Path]]:
+) -> Config:
     search_paths: list[Path] = []
     if config_files:
         search_paths.extend([Path(f) for f in config_files])
 
-    search_paths.append(Path.home() / ".config" / "arox" / "config.toml")
+    search_paths.extend(
+        _discover_config_files(Path.home() / ".config" / "arox", "config")
+    )
 
     workspace = workspace if workspace else Path.cwd()
-    search_paths.append(workspace / ".arox.config.toml")
-
-    config_dirs = list(dict.fromkeys([f.parent for f in search_paths]))
+    search_paths.extend(_discover_config_files(workspace, ".arox.config"))
 
     raw_config: dict[str, Any] = {}
     for path in search_paths:
         if path.exists():
-            with open(path, "rb") as f:
-                raw_config = deep_merge(raw_config, tomllib.load(f))
+            raw_config = deep_merge(raw_config, _load_config_file(path))
 
     if cli_args is not None:
         if isinstance(cli_args, list):
@@ -144,4 +166,4 @@ def load_config(
         raw_config = deep_merge(raw_config, cli_overrides)
 
     parsed_config = Config(**raw_config)
-    return parsed_config, config_dirs
+    return parsed_config

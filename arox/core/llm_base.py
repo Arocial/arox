@@ -34,9 +34,8 @@ from tenacity import (
 
 from arox import utils
 from arox.core.config import AgentConfig, Config
-from arox.core.example_parser import parse_example_yaml
 from arox.core.hooks import PostStepHook, PreStepHook
-from arox.core.session import AgentSession, _serialize_messages
+from arox.core.session import AgentSession, _deserialize_messages, _serialize_messages
 from arox.core.skills import build_skill_catalog, discover_skills
 from arox.ui.io import AgentIOInterface
 
@@ -130,12 +129,10 @@ class LLMBaseAgent:
         agent_io: AgentIOInterface,
         local_toolset: FunctionToolset[AgentDeps] | None = None,
         workspace: Path | str | None = None,
-        config_dirs: list[Path] | None = None,
     ):
         self.uuid = str(uuid.uuid4())
         self.name = name
         self.workspace = Path(workspace) if workspace else Path.cwd()
-        self.config_dirs = config_dirs or []
         self.agent_session: AgentSession = AgentSession(agent_name=name)
         self._capabilities: dict[Any, Any] = {}
         self.model_ref = None
@@ -261,20 +258,6 @@ class LLMBaseAgent:
             f"Using model {self.provider_model} for {self.name}"
         )
 
-    def find_file(self, fpath: str | Path) -> Path | None:
-        fpath = Path(fpath)
-        if fpath.is_absolute():
-            return fpath if fpath.exists() else None
-
-        if fpath.exists():
-            return fpath.absolute()
-
-        for directory in self.config_dirs:
-            full_path = directory / fpath
-            if full_path.exists():
-                return full_path.absolute()
-        return None
-
     def parse_configs(self):
         # Load default metadata using configargparse
         self.system_prompt = utils.render_template(
@@ -293,12 +276,9 @@ class LLMBaseAgent:
             self.system_prompt += f"\n\n{catalog}"
 
         self.example_messages = []
-        examples_file = self.agent_config.examples
-        if examples_file:
-            examples_path = self.find_file(Path(examples_file))
-            if examples_path:
-                with open(examples_path, "r") as f:
-                    self.example_messages = parse_example_yaml(f.read())
+        examples_data = self.agent_config.examples
+        if examples_data:
+            self.example_messages = _deserialize_messages(examples_data)
 
         self.model_ref = self.agent_config.model_ref or self.parsed_config.model_ref
         self.agent_model_params = self.agent_config.model_params

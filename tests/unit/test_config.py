@@ -10,7 +10,7 @@ def test_config_basic_parsing(tmp_path):
     type = "chat"
     """)
 
-    config, _ = load_config([config_file])
+    config = load_config([config_file])
 
     assert config.model_ref == "test-model"
     assert config.agent["test_agent"].type == "chat"
@@ -24,7 +24,7 @@ def test_config_override_order(tmp_path):
     file2 = tmp_path / "f2.toml"
     file2.write_text("model_ref = 'second'")
 
-    config, _ = load_config([file1, file2])
+    config = load_config([file1, file2])
     assert config.model_ref == "second"  # Last file should win
 
 
@@ -61,7 +61,7 @@ def test_cli_overrides(tmp_path):
     cli_overrides = parse_dot_config(
         ["model_ref=cli-model", "agent.test_agent.type=custom"]
     )
-    config, _ = load_config([config_file], cli_args=cli_overrides)
+    config = load_config([config_file], cli_args=cli_overrides)
 
     assert config.model_ref == "cli-model"
     assert config.agent["test_agent"].type == "custom"

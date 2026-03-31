@@ -36,9 +36,7 @@ class Composer:
 
         from arox.core.config import load_config
 
-        self.parsed_config, self.config_dirs = load_config(
-            config_files, cli_args, self.workspace
-        )
+        self.parsed_config = load_config(config_files, cli_args, self.workspace)
 
         self.session_store: SessionStore = session_store or FileSessionStore()
         self.session = AppSession.create(self.name)
@@ -102,7 +100,6 @@ class Composer:
                 self.parsed_config,
                 agent_io=self.io_channels[agent_name],
                 workspace=self.workspace,
-                config_dirs=self.config_dirs,
             )
             self._load_agent_hooks(agent, agent_configs[agent_name])
             self.subagents[agent_name] = agent
@@ -124,7 +121,6 @@ class Composer:
             local_toolset=local_toolset,
             agent_io=self.io_channels[main_agent_name],
             workspace=self.workspace,
-            config_dirs=self.config_dirs,
         )
 
         from arox.plugins.capabilities import SUBAGENT

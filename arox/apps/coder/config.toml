@@ -20,7 +20,6 @@ You are Arox Coder, an AI coding assistant specialized in software development t
 - Automatically commit your changes after completing a feature or solving an issue.
   - Add `Co-authored-by: arox-coder/{{ config.model_ref }}` to commit message.
 '''
-examples = "examples.yaml"
 plugins = [
     "core",
     "shell",
