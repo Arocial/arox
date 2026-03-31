@@ -44,14 +44,24 @@ def main():
     from arox.core.app import app_setup
 
     app_setup(config_files=[default_agent_config], cli_args=unknown_args)
-    composer = Composer(
-        "coder",
-        session_id=args.session,
-        config_files=[default_agent_config],
-        cli_args=unknown_args,
-    )
 
-    asyncio.run(composer.run())
+    if args.ui == "vercel_ai":
+        from arox.ui.vercel_ai import VercelStreamServer
+
+        server = VercelStreamServer(
+            composer_name="coder",
+            config_files=[default_agent_config],
+            cli_args=unknown_args,
+        )
+        asyncio.run(server.run())
+    else:
+        composer = Composer(
+            "coder",
+            session_id=args.session,
+            config_files=[default_agent_config],
+            cli_args=unknown_args,
+        )
+        asyncio.run(composer.run())
 
 
 if __name__ == "__main__":

@@ -1,9 +1,17 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
+from pathlib import Path
+from typing import TYPE_CHECKING
+from uuid import uuid4
+
+if TYPE_CHECKING:
+    from arox.core.composer import Composer
 
 from anyio import EndOfStream
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -48,6 +56,15 @@ class SuggestionResponse(BaseModel):
     items: list[SuggestionItem]
 
 
+class CreateComposerRequest(BaseModel):
+    workspace: str
+
+
+class ComposerInfo(BaseModel):
+    id: str
+    workspace: str
+
+
 class VercelStreamIOAdapter(AbstractIOAdapter):
     def __init__(self, adapter_io: AdapterIOInterface | None = None):
         super().__init__(adapter_io)
@@ -57,27 +74,11 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         self.coder_agent = None
         self.event_queue = asyncio.Queue()
 
-        self.app = FastAPI()
-
-        self.app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
-
-        self.app.post("/api/chat")(self.chat)
-        self.app.get("/api/suggestions", response_model=SuggestionResponse)(
-            self.suggestions
-        )
-
     def setup(self, agent):
         self.coder_agent = agent
 
     async def start(self):
         import anyio
-        import uvicorn
 
         async def process_io(adapter_io):
             try:
@@ -87,15 +88,9 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             except EndOfStream:
                 pass
 
-        async def run_server():
-            config = uvicorn.Config(self.app, host="0.0.0.0", port=8000)
-            server = uvicorn.Server(config)
-            await server.serve()
-
         async with anyio.create_task_group() as tg:
             for adapter_io in self.adapter_ios:
                 tg.start_soon(process_io, adapter_io)
-            tg.start_soon(run_server)
 
     async def run_cancellable(self, task):
         self.current_task = asyncio.create_task(task)
@@ -303,3 +298,103 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     )
 
         return SuggestionResponse(items=items)
+
+
+class VercelStreamServer:
+    def __init__(
+        self,
+        composer_name: str,
+        config_files: list[str | Path] | None = None,
+        cli_args: list[str] | None = None,
+    ):
+        self.composer_name = composer_name
+        self.config_files = config_files or []
+        self.cli_args = cli_args or []
+        self.composers: dict[str, Composer] = {}
+        self._tasks: dict[str, asyncio.Task] = {}
+
+        self.app = FastAPI()
+        self.app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+        self.app.post("/api/composers", response_model=ComposerInfo)(
+            self.create_composer
+        )
+        self.app.get("/api/composers", response_model=list[ComposerInfo])(
+            self.list_composers
+        )
+        self.app.delete("/api/composers/{composer_id}")(self.delete_composer)
+        self.app.post("/api/composers/{composer_id}/chat")(self.chat)
+        self.app.get(
+            "/api/composers/{composer_id}/suggestions",
+            response_model=SuggestionResponse,
+        )(self.suggestions)
+
+    def _get_adapter(self, composer_id: str) -> VercelStreamIOAdapter:
+        composer = self.composers.get(composer_id)
+        if not composer:
+            raise HTTPException(status_code=404, detail="Composer not found")
+        return composer.io_adapter
+
+    async def create_composer(self, request: CreateComposerRequest):
+        from arox.core.composer import Composer
+
+        composer_id = uuid4().hex[:12]
+        composer = Composer(
+            self.composer_name,
+            workspace=request.workspace,
+            config_files=self.config_files,
+            cli_args=self.cli_args,
+        )
+        self.composers[composer_id] = composer
+        task = asyncio.create_task(self._run_composer(composer_id, composer))
+        self._tasks[composer_id] = task
+        return ComposerInfo(id=composer_id, workspace=request.workspace)
+
+    async def _run_composer(self, composer_id: str, composer):
+        try:
+            await composer.run()
+        except asyncio.CancelledError:
+            logger.info(f"Composer {composer_id} cancelled")
+        except Exception:
+            logger.exception(f"Composer {composer_id} error")
+        finally:
+            self.composers.pop(composer_id, None)
+            self._tasks.pop(composer_id, None)
+
+    async def list_composers(self):
+        return [
+            ComposerInfo(id=cid, workspace=str(c.workspace))
+            for cid, c in self.composers.items()
+        ]
+
+    async def delete_composer(self, composer_id: str):
+        task = self._tasks.pop(composer_id, None)
+        composer = self.composers.pop(composer_id, None)
+        if not composer:
+            raise HTTPException(status_code=404, detail="Composer not found")
+        if task:
+            task.cancel()
+        return {"status": "deleted"}
+
+    async def chat(self, composer_id: str, request: ChatRequest):
+        adapter = self._get_adapter(composer_id)
+        return await adapter.chat(request)
+
+    async def suggestions(
+        self, composer_id: str, command: str | None = None, q: str | None = None
+    ):
+        adapter = self._get_adapter(composer_id)
+        return await adapter.suggestions(command, q)
+
+    async def run(self):
+        import uvicorn
+
+        config = uvicorn.Config(self.app, host="0.0.0.0", port=8000)
+        server = uvicorn.Server(config)
+        await server.serve()
