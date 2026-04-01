@@ -28,13 +28,7 @@ def get_shell_context():
 class ShellPlugin(Plugin):
     def __init__(self, agent):
         super().__init__(agent)
-        workspace_dir = self.agent.workspace.absolute()
-        if not workspace_dir:
-            raise ValueError("workspace_dir must be provided")
-
-        self.workspace_dir = Path(workspace_dir)
-        if not self.workspace_dir.is_absolute():
-            raise ValueError(f"workspace_dir must be an absolute path: {workspace_dir}")
+        self.workspace = self.agent.workspace.absolute()
 
         if sys.platform == "linux":
             self.bwrap_path = shutil.which("bwrap")
@@ -51,7 +45,7 @@ class ShellPlugin(Plugin):
             return []
 
     def _get_linux_sandboxed_cmd(self, command: str) -> list[str]:
-        workspace_str = str(self.workspace_dir)
+        workspace_str = str(self.workspace)
         home_dir = Path.home()
         home_str = str(home_dir)
 

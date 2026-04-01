@@ -73,16 +73,15 @@ class FilePlugin(Plugin):
             if p.is_file() and not p.name.startswith(".")
         ]
 
-    def _normalize_path(self, file_path: str) -> Path:
+    def _normalize_path(self, file_path: Path | str) -> Path:
         workspace = self.workspace
         p = Path(file_path)
         if not p.is_absolute():
             p = (workspace / p).absolute()
-        if p.is_relative_to(workspace):
-            p = p.relative_to(workspace)
         return p
 
-    def _add_to_session(self, file_path: str):
+    def _add_to_session(self, file_path: Path | str):
+        file_path = self._normalize_path(file_path)
         if file_path not in self.session_files:
             self.session_files.append(file_path)
 
@@ -104,7 +103,7 @@ class FilePlugin(Plugin):
                 else:
                     lines = self._read_raw(file_path)
                     self._pending_text_files[file_path] = "".join(lines)
-                self._add_to_session(file_path)
+                self._add_to_session(path)
             except Exception as e:
                 await self.agent.agent_io.agent_send(
                     f"Error reading file {file_path}: {e!s}"
@@ -234,10 +233,10 @@ class FilePlugin(Plugin):
             str: Success message or error description
         """
         try:
-            file_path = Path(path)
+            file_path = self._normalize_path(path)
             file_path.parent.mkdir(parents=True, exist_ok=True)
             file_path.write_text(content)
-            return f"Successfully wrote to {file_path}"
+            return f"Successfully wrote to {path}"
         except Exception as e:
             return f"Error writing to file: {e!s}"
 
@@ -257,7 +256,7 @@ class FilePlugin(Plugin):
                  if the file was not found or `old_str` could not be matched.
         """
         try:
-            file_path = Path(path)
+            file_path = self._normalize_path(path)
             if not file_path.exists():
                 return f"File not found: {file_path}"
 
@@ -392,9 +391,12 @@ class FilePlugin(Plugin):
 
     async def get_info(self) -> str:
         session_files = self.session_files
+        workspace = self.workspace
         if session_files:
             info = f"\nChat files ({len(session_files)}):"
             for file_path in session_files:
+                if file_path.is_relative_to(workspace):
+                    file_path = file_path.relative_to(workspace)
                 info += f"\n  - {file_path}"
             return info
         else:

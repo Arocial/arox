@@ -31,7 +31,7 @@ class Composer:
         session_store: SessionStore | None = None,
     ):
         self.name = name
-        self.workspace = Path(workspace) if workspace else Path.cwd()
+        self.workspace = Path(workspace).absolute() if workspace else Path.cwd()
         self.session_id = session_id
 
         from arox.core.config import load_config
