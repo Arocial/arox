@@ -80,7 +80,8 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
         elif isinstance(event, PartDeltaEvent):
             delta = event.delta
             if isinstance(delta, (TextPartDelta, ThinkingPartDelta)):
-                self.message_buffer.append(delta.content_delta)
+                if delta.content_delta:
+                    self.message_buffer.append(delta.content_delta)
         elif isinstance(event, PartEndEvent):
             if self.message_buffer:
                 text = "".join(self.message_buffer)

@@ -150,14 +150,16 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             index = event.index
 
             if isinstance(delta, TextPartDelta):
-                events.append(
-                    f"data: {json.dumps({'type': 'text-delta', 'id': f'text_{index}', 'delta': delta.content_delta})}\n\n"
-                )
+                if delta.content_delta:
+                    events.append(
+                        f"data: {json.dumps({'type': 'text-delta', 'id': f'text_{index}', 'delta': delta.content_delta})}\n\n"
+                    )
 
             elif isinstance(delta, ThinkingPartDelta):
-                events.append(
-                    f"data: {json.dumps({'type': 'reasoning-delta', 'id': f'reasoning_{index}', 'delta': delta.content_delta})}\n\n"
-                )
+                if delta.content_delta:
+                    events.append(
+                        f"data: {json.dumps({'type': 'reasoning-delta', 'id': f'reasoning_{index}', 'delta': delta.content_delta})}\n\n"
+                    )
 
             elif isinstance(event.delta, ToolCallPartDelta):
                 tool_id = self.tool_ids.get(index)

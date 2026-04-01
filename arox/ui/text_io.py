@@ -64,9 +64,11 @@ class TextIOAdapter(AbstractIOAdapter):
                 print(f"{part.content}", end="")
         elif isinstance(event, PartDeltaEvent):
             if isinstance(event.delta, (TextPartDelta, ThinkingPartDelta)):
-                print(event.delta.content_delta, end="")
+                if event.delta.content_delta:
+                    print(event.delta.content_delta, end="")
             elif isinstance(event.delta, ToolCallPartDelta):
-                print(event.delta.args_delta, end="")
+                if event.delta.args_delta:
+                    print(event.delta.args_delta, end="")
         elif isinstance(event, PartEndEvent):
             print()
         elif isinstance(event, FunctionToolResultEvent):
