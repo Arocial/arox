@@ -261,7 +261,7 @@ class LLMBaseAgent:
     def parse_configs(self):
         # Load default metadata using configargparse
         self.system_prompt = utils.render_template(
-            self.agent_config.system_prompt, config=self.parsed_config
+            self.agent_config.system_prompt, config=self.parsed_config, agent=self
         )
 
         skills = discover_skills(self.workspace)
