@@ -16,6 +16,7 @@ class CorePlugin(Plugin):
             await self.agent.agent_io.agent_send("Please specify a model name")
             return
         self.agent.set_model(arg)
+        await self.agent.agent_io.agent_send(f"Model switched to {arg}")
 
     @command("info", "Show current chat files and model in use - /info")
     async def info_command(self, name: str, arg: str):

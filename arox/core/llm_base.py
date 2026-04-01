@@ -156,10 +156,6 @@ class LLMBaseAgent:
 
         self.parse_configs()
 
-        self.model = infer_model(
-            self.provider_model,
-            provider_factory=lambda p: infer_provider(p, base_url=self.base_url),
-        )
         self.plugins = self.load_plugins()
         history_processors = [plugin.history_processor for plugin in self.plugins]
 
@@ -238,20 +234,33 @@ class LLMBaseAgent:
         self.local_toolset.add_function(func, **kwargs)
 
     def set_model(self, model_ref: str):
-        self.model_ref = model_ref
-        model_config = self.parsed_config.model.get(self.model_ref)
+        model_config = self.parsed_config.model.get(model_ref)
         if not model_config:
             from arox.core.config import ModelConfig
 
-            model_config = ModelConfig(provider_model=self.model_ref)
+            model_config = ModelConfig(provider_model=model_ref)
 
         model_params = model_config.params
-        self.model_params = utils.deep_merge(self.agent_model_params, model_params)
-        self.provider_model = model_config.provider_model
-        self.base_url = model_config.base_url
+        merged_model_params = utils.deep_merge(self.agent_model_params, model_params)
+        provider_model = model_config.provider_model
+        base_url = model_config.base_url
+
+        additional_prompt = ""
         for model_prompt in self.model_aware_prompts:
-            if re.search(model_prompt["pattern"], self.model_ref):
-                self.additional_prompt = model_prompt["prompt"]
+            if re.search(model_prompt["pattern"], model_ref):
+                additional_prompt = model_prompt["prompt"]
+
+        model = infer_model(
+            provider_model,
+            provider_factory=lambda p: infer_provider(p, base_url=base_url),
+        )
+
+        self.model_ref = model_ref
+        self.model_params = merged_model_params
+        self.provider_model = provider_model
+        self.base_url = base_url
+        self.additional_prompt = additional_prompt
+        self.model = model
 
     async def show_agent_info(self):
         await self.agent_io.agent_send(
@@ -318,6 +327,7 @@ class LLMBaseAgent:
                     input_content + "\n"
                     if isinstance(input_content, str)
                     else input_content,
+                    model=self.model,
                     event_stream_handler=self.handle_event,
                     model_settings=ModelSettings(**self.model_params),
                     instructions=f"{self.system_prompt}\n{self.additional_prompt}",
