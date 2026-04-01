@@ -112,7 +112,7 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
                     f"⚠️ An error occurred: {event.exception_input.exception}\nDo you want to continue? (y/n)"
                 )
                 line = await self.input_queue.get()
-                reply["exception_input"] = {"to_continue": line.strip().lower() == "y"}
+                reply["exception_input"] = {"retry": line.strip().lower() == "y"}
             if event.normal_input.request:
                 line = await self.input_queue.get()
                 reply["normal_input"] = {"user_input": line}

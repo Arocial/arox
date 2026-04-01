@@ -99,11 +99,9 @@ class TextIOAdapter(AbstractIOAdapter):
                 )
                 try:
                     line = await self.user_input()
-                    reply["exception_input"] = {
-                        "to_continue": line.strip().lower() == "y"
-                    }
+                    reply["exception_input"] = {"retry": line.strip().lower() == "y"}
                 except EOFError:
-                    reply["exception_input"] = {"to_continue": False}
+                    reply["exception_input"] = {"retry": False}
             if event.normal_input.request:
                 try:
                     line = await self.user_input()

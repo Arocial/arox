@@ -170,7 +170,7 @@ class ChatInputEvent:
     @dataclass
     class ExceptionInput:
         exception: BaseException | None = None
-        to_continue: bool = False
+        retry: bool = False
 
     def __init__(self):
         self.deferred_tools = OrderedDict[str, self.DeferredToolInput]()
@@ -206,7 +206,7 @@ class ChatInputEvent:
                 if k in self.deferred_tools:
                     self.deferred_tools[k].answer = v
         if "exception_input" in reply:
-            self.exception_input.to_continue = reply["exception_input"]["to_continue"]
+            self.exception_input.retry = reply["exception_input"]["retry"]
         if "normal_input" in reply:
             self.normal_input.user_input = reply["normal_input"]["user_input"]
 
