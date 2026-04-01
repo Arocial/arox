@@ -397,6 +397,6 @@ class VercelStreamServer:
     async def run(self):
         import uvicorn
 
-        config = uvicorn.Config(self.app, host="0.0.0.0", port=8000)
+        config = uvicorn.Config(self.app, host="0.0.0.0", port=8000, ws="none")
         server = uvicorn.Server(config)
         await server.serve()
