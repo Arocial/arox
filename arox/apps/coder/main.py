@@ -1,7 +1,11 @@
 import argparse
 import asyncio
 import logging
+import os
 from pathlib import Path
+
+# Disable fastmcp custom logging
+os.environ["FASTMCP_LOG_ENABLED"] = "false"
 
 from arox.core.composer import Composer
 
