@@ -1,8 +1,6 @@
-import json
 import logging
 import uuid
 
-import yaml
 from pydantic_ai.exceptions import CallDeferred
 
 from arox.core.plugin import Plugin, command, tool
@@ -18,77 +16,6 @@ class CorePlugin(Plugin):
             await self.agent.agent_io.agent_send("Please specify a model name")
             return
         self.agent.set_model(arg)
-
-    @command(
-        "invoke-tool",
-        "Invoke a registered tool - /invoke-tool <function_name> [json_args]",
-    )
-    async def invoke_tool_command(self, name: str, arg: str):
-        tool_registry = self.agent.tool_registry
-
-        parts = arg.split(maxsplit=1)
-        if len(parts) < 1:
-            await self.agent.agent_io.agent_send(
-                "Usage: /invoke-tool <function_name> [json_args]"
-            )
-            return
-
-        function_name = parts[0]
-        args_str = parts[1] if len(parts) > 1 else "{}"
-
-        try:
-            args = json.loads(args_str)
-            if not isinstance(args, dict):
-                raise ValueError("Arguments must be a JSON object (dictionary).")
-        except json.JSONDecodeError as e:
-            await self.agent.agent_io.agent_send(f"Error: Invalid JSON arguments: {e}")
-            return
-        except ValueError as e:
-            await self.agent.agent_io.agent_send(f"Error: {e}")
-            return
-
-        # Prepare the tool_call structure expected by execute_tool_call
-        # Note: We don't have a real tool_call ID here, as it's a direct invocation.
-        tool_call_data = {
-            "id": f"cmd_{function_name}",  # Generate a placeholder ID
-            "type": "function",
-            "function": {"name": function_name, "arguments": json.dumps(args)},
-        }
-
-        try:
-            await self.agent.agent_io.agent_send(
-                f"Invoking tool '{function_name}' with args: {args}"
-            )
-            result = await tool_registry.execute_tool_call(tool_call_data)
-            await self.agent.agent_io.agent_send(
-                f"Tool '{function_name}' executed successfully."
-            )
-            await self.agent.agent_io.agent_send("Result:")
-            await self.agent.agent_io.agent_send(result)
-        except ValueError as e:
-            await self.agent.agent_io.agent_send(
-                f"Error invoking tool '{function_name}': {e}"
-            )
-        except ConnectionError as e:
-            await self.agent.agent_io.agent_send(
-                f"Error connecting to MCP server for tool '{function_name}': {e}"
-            )
-        except Exception as e:
-            logger.error(
-                f"Unexpected error invoking tool '{function_name}': {e}", exc_info=True
-            )
-            await self.agent.agent_io.agent_send(f"An unexpected error occurred: {e}")
-
-    @command("list-tools", "List all registered tools")
-    async def list_tools_command(self, name: str, arg: str):
-        tool_registry = self.agent.tool_registry
-        tool_specs = await tool_registry.get_tools_specs()
-        if not tool_specs:
-            await self.agent.agent_io.agent_send("No tools registered.")
-            return
-
-        await self.agent.agent_io.agent_send("Registered Tools:")
-        await self.agent.agent_io.agent_send(yaml.safe_dump(tool_specs))
 
     @command("info", "Show current chat files and model in use - /info")
     async def info_command(self, name: str, arg: str):
