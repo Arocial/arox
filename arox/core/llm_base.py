@@ -239,6 +239,8 @@ class LLMBaseAgent:
             from arox.core.config import ModelConfig
 
             model_config = ModelConfig(provider_model=model_ref)
+        elif not model_config.provider_model:
+            model_config.provider_model = model_ref
 
         model_params = model_config.params
         merged_model_params = utils.deep_merge(self.agent_model_params, model_params)
