@@ -15,14 +15,15 @@ def app_setup(
     cli_args: list[str] | dict[str, Any] | None = None,
 ) -> Config:
     config = load_config(config_files, cli_args)
-    setup_llm_observability(config.app.observability)
+
+    for var_name, value in config.app.env_vars.items():
+        os.environ[var_name] = value
 
     for provider, api_key in config.app.api_keys.items():
         provider = provider.upper()
         os.environ[f"{provider}_API_KEY"] = api_key
 
-    for var_name, value in config.app.env_vars.items():
-        os.environ[var_name] = value
+    setup_llm_observability(config.app.observability)
 
     return config
 
