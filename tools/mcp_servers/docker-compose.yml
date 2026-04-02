@@ -1,6 +1,6 @@
 services:
   aggregator:
-    build: ./docker-files/aggregator/
+    build: ../docker-files/aggregator/
     depends_on:
     - web-fetch
     - web-search
@@ -12,7 +12,7 @@ services:
     restart: unless-stopped
     # entrypoint: ["sleep", "10d"]
   web-fetch:
-    build: ./docker-files/craw4ai/
+    build: ../docker-files/craw4ai/
     image: ${FETCH_IMAGE:-unclecode/crawl4ai:${FETCH_TAG:-latest-fix}}
     ports:
       - "11235:11235"
