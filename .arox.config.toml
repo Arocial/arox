@@ -1,12 +1,3 @@
-[composer.coder]
-
 [mcp_servers.pyls]
-# https://github.com/isaacphi/mcp-language-server
-command = "bash"
-args = [
-     "-c",
-     "mkdir -p .arox; exec mcp-language-server --workspace . --lsp basedpyright-langserver -- --stdio 2>> .arox/mcp.log",
-]
-env = {LOG_LEVEL = "ERROR"}
-tools = {"definition" = {"tags" = ["enabled"]}, "references" = {"tags" = ["enabled"]}}
-include_tags = ["enabled"]
+# The mcp server is not managed here.
+url = "http://localhost:8500/mcp"
