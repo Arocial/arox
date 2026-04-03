@@ -101,5 +101,7 @@ class ChatAgent(LLMBaseAgent):
 
                 except Exception as e:
                     logger.exception("An error occurred.")
-                    self.agent_session.add_event("error", {"error": str(e)})
+                    self.agent_session.add_event(
+                        "error", {"error": f"{type(e).__name__}: {e!s}"}
+                    )
                     chat_input_event.exception_input.exception = e
