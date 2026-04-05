@@ -1,6 +1,6 @@
 [composer.coder]
 main_agent = "coder"
-subagents = ["git_commit_agent", "compaction"]
+subagents = ["compaction"]
 io_adapter = "text_io"
 
 [agent.coder]
@@ -37,9 +37,6 @@ claude_pattern = ".*claude-sonnet.*"
 
 [agent.coder.model_params]
 temperature = 0
-
-[agent.git_commit_agent]
-type = "git_commit"
 
 [agent.compaction]
 type = "compaction"

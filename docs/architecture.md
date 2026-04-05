@@ -21,7 +21,7 @@ A **Composer** is responsible for assembling a complete application by wiring to
 
 - It defines a **Main Agent** (usually a `ChatAgent` that interacts with the user) and optional **Subagents** (specialized agents that run in the background or are invoked by the main agent).
 - It manages the lifecycle of all components and sets up the communication channels between them.
-- Example: The `Coder` app uses a Composer to set up a main coding assistant agent alongside subagents like a `GitCommitAgent` and a `CompactionAgent`.
+- Example: The `Coder` app uses a Composer to set up a main coding assistant agent alongside subagents like a `CompactionAgent`.
 
 ### 3. Plugins
 
@@ -30,7 +30,7 @@ Plugins are the primary way to extend an agent's capabilities. They bundle toget
 - **Tools**: Functions provided to the LLM to interact with the external environment. Arox supports two types of tools:
     - **Local Tools**: Python functions registered directly with the agent via plugins (e.g., `Shell` execution, `ask_human`).
     - **MCP (Model Context Protocol) Tools**: Arox natively supports connecting to MCP servers via `fastmcp`, allowing agents to leverage a wide ecosystem of external tools and data sources seamlessly.
-- **Commands**: Structured actions triggered by human users (e.g., `/commit`, `/reset`, `/model`). They are handled by the `CommandManager` in a `ChatAgent` and can execute local Python code or trigger specific agent behaviors without sending a prompt to the LLM, saving time and tokens.
+- **Commands**: Structured actions triggered by human users (e.g., `/project`, `/reset`, `/model`). They are handled by the `CommandManager` in a `ChatAgent` and can execute local Python code or trigger specific agent behaviors without sending a prompt to the LLM, saving time and tokens.
 - **History Processors**: Functions that can modify the message history before it is sent to the LLM.
 
 ### 4. Capabilities

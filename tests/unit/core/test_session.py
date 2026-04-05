@@ -144,7 +144,7 @@ class TestAgentSession:
     def test_non_step_events_ignored_in_rebuild(self):
         agent_session = AgentSession(agent_name="main")
         agent_session.add_event("user_input", {"text": "hello"})
-        agent_session.add_event("command", {"command": "/commit"})
+        agent_session.add_event("command", {"command": "/reset"})
         agent_session.add_event("error", {"error": "something"})
         history = agent_session.rebuild_message_history([])
         assert len(history) == 0

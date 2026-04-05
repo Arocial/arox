@@ -40,7 +40,6 @@ arox-coder = "arox.apps.coder.main:main"
 
 [project.entry-points."arox.agents"]
 chat = "arox.core.chat:ChatAgent"
-git_commit = "arox.apps.git_commit:GitCommitAgent"
 compaction = "arox.apps.compaction:CompactionAgent"
 
 [project.entry-points."arox.io_adapters"]

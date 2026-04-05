@@ -33,7 +33,7 @@ Example:
 Plugins are modular components that extend the capabilities of an agent. They bundle together:
 
 - **Tools**: External functions provided to the LLM to interact with the outside world (e.g., reading files, executing shell commands).
-- **Commands**: Predefined actions triggered by user input (e.g., `/commit`, `/reset`), providing a structured way for humans to interact with agents.
+- **Commands**: Predefined actions triggered by user input (e.g., `/model`, `/reset`), providing a structured way for humans to interact with agents.
 - **History Processors**: Functions that can modify the message history before it is sent to the LLM.
 
 ### Capabilities

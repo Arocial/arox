@@ -4,14 +4,13 @@ The **Coder** app is the primary application built on top of the Arox framework.
 
 ## Overview
 
-The Coder app uses a `Composer` to assemble a main `ChatAgent` (the "coder") along with several subagents that handle specific background tasks, such as generating Git commit messages and compacting conversation history.
+The Coder app uses a `Composer` to assemble a main `ChatAgent` (the "coder") along with a subagent that handles specific background tasks, such as compacting conversation history.
 
 ## Architecture
 
 The Coder app consists of the following components:
 
 - **Main Agent (`coder`)**: A `ChatAgent` that interacts directly with the user. It is equipped with tools for reading and writing files, executing shell commands, and interacting with the codebase.
-- **Subagent (`git_commit_agent`)**: A specialized agent responsible for automatically generating meaningful Git commit messages based on the changes made by the main agent.
 - **Subagent (`compaction`)**: A specialized agent that summarizes long technical conversations to manage the context window size and improve LLM performance.
 
 ## Features
@@ -27,7 +26,6 @@ The Coder app consists of the following components:
   - `/list_tools`: List all available tools.
   - `/reset`: Reset the conversation history.
   - `/info`: Display information about the current agent and model.
-  - `/commit`: Trigger the Git commit agent manually.
   - `/compaction`: Trigger the compaction agent manually.
 
 ## Configuration

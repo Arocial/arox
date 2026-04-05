@@ -29,7 +29,7 @@ Config is loaded from (in merge order):
 
 **`LLMBaseAgent`** (`arox/core/llm_base.py`): Base class for all LLM agents. Manages model inference via `pydantic_ai`, tool registration, MCP client, message history, and pre/post step hooks.
 
-**`ChatAgent`** (`arox/core/chat.py`): Extends `LLMBaseAgent` with a conversational loop and `CommandManager` for slash commands (e.g. `/commit`, `/reset`). This is the standard agent type for user-facing agents.
+**`ChatAgent`** (`arox/core/chat.py`): Extends `LLMBaseAgent` with a conversational loop and `CommandManager` for slash commands (e.g. `/model`, `/reset`). This is the standard agent type for user-facing agents.
 
 **`Composer`** (`arox/core/composer.py`): Wires together a main agent, subagents, and an IO adapter into a runnable app. Subagents are registered as a `SUBAGENT` capability on the main agent. The `coder` composer is the primary example.
 
@@ -43,7 +43,7 @@ Config is loaded from (in merge order):
 ### Entry Points (Plugin System)
 
 Components are loaded by name via setuptools entry points (defined in `pyproject.toml`):
-- `arox.agents` — agent types (`chat`, `git_commit`, `compaction`)
+- `arox.agents` — agent types (`chat`, `compaction`)
 - `arox.io_adapters` — UI adapters (`text`, `vercel_ai`, `telegram`, `feishu`)
 - `arox.plugins` — plugins (`core`, `file`, `repo`, `shell`)
 - `arox.hooks` — pre/post step hooks (`auto_compaction`)
@@ -63,6 +63,5 @@ Skills are discovered from `.arox/skills/` in the workspace. They are injected i
 
 ### Built-in Apps (`arox/apps/`)
 
-- **`coder`**: Main coding assistant. Composes a `ChatAgent` with `GitCommitAgent` and `CompactionAgent` subagents.
-- **`git_commit`**: Subagent that handles `/commit` — generates commit messages and runs git.
+- **`coder`**: Main coding assistant. Composes a `ChatAgent` with `CompactionAgent` subagent.
 - **`compaction`**: Subagent that compresses message history when it grows too long.
