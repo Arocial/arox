@@ -45,7 +45,7 @@ class ChatAgent(LLMBaseAgent):
         await self.agent_io.agent_send(chat_input_event)
 
         while True:
-            async with self.agent_io.chat_round():
+            async with self.agent_io.chat_round() as ctx:
                 if deferred_requests:
                     deferred_results = DeferredToolResults()
                     for call in deferred_requests.calls:
@@ -60,6 +60,7 @@ class ChatAgent(LLMBaseAgent):
                 if chat_input_event.normal_input.request:
                     user_input = chat_input_event.normal_input.user_input
                     if user_input is None:
+                        ctx["abort"] = True
                         break
                 else:
                     user_input = None

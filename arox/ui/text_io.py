@@ -52,6 +52,17 @@ class TextIOAdapter(AbstractIOAdapter):
         finally:
             signal.signal(signal.SIGINT, original_sigint_handler)
 
+    async def _flush_stdin(self):
+        import sys
+
+        await asyncio.sleep(0.1)
+        try:
+            import termios
+
+            termios.tcflush(sys.stdin, termios.TCIFLUSH)
+        except (ImportError, Exception):
+            pass
+
     async def _handle_output(self, event):
         if isinstance(event, PartStartEvent):
             part = event.part
@@ -87,8 +98,9 @@ class TextIOAdapter(AbstractIOAdapter):
                     try:
                         line = await self.user_input()
                         reply["deferred_tools"][key] = line
-                    except EOFError:
+                    except (EOFError, KeyboardInterrupt):
                         reply["deferred_tools"][key] = ""
+                        await self._flush_stdin()
             if event.exception_input.exception is not None:
                 print(
                     f"An error occurred: {event.exception_input.exception}\nDo you want to continue? (y/n)"
@@ -96,14 +108,16 @@ class TextIOAdapter(AbstractIOAdapter):
                 try:
                     line = await self.user_input()
                     reply["exception_input"] = {"retry": line.strip().lower() == "y"}
-                except EOFError:
+                except (EOFError, KeyboardInterrupt):
                     reply["exception_input"] = {"retry": False}
+                    await self._flush_stdin()
             if event.normal_input.request:
                 try:
                     line = await self.user_input()
                     reply["normal_input"] = {"user_input": line}
-                except EOFError:
+                except (EOFError, KeyboardInterrupt):
                     reply["normal_input"] = {"user_input": None}
+                    await self._flush_stdin()
             event.set_reply(reply)
         else:
             print(f"\nUnexpected event type: {event.__class__.__name__}\n")

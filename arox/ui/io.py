@@ -36,7 +36,7 @@ class AgentIOInterface(ABC):
 
     @contextlib.asynccontextmanager
     async def chat_round(self):
-        yield
+        yield {"abort": False}
 
     @abstractmethod
     async def agent_receive(self):
@@ -96,11 +96,13 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
     async def chat_round(self):
         assert self.chat_input_event is not None
         await self.chat_input_event.wait()
+        ctx = {"abort": False}
         try:
-            yield
+            yield ctx
         finally:
-            await self.agent_send(self.chat_input_event)
-            await self.agent_send(StepDoneEvent())
+            if not ctx["abort"]:
+                await self.agent_send(self.chat_input_event)
+                await self.agent_send(StepDoneEvent())
 
     @override
     async def add_tool_input_request(self, question, key):
