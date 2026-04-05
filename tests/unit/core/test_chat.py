@@ -9,7 +9,7 @@ from pydantic_ai.models.test import TestModel
 from arox.core.app import app_setup
 from arox.core.chat import ChatAgent
 from arox.ui.text_io import TextIOAdapter
-from arox.utils import user_input_generator
+from arox.utils import UserInputGenerator
 
 
 def multiply(a: int, b: int) -> int:
@@ -42,9 +42,7 @@ system_prompt = "Hi there."
     local_toolset.add_function(multiply)
 
     with create_pipe_input() as pipe_input:
-
-        async def user_input():
-            return await user_input_generator(input=pipe_input, output=DummyOutput())
+        user_input = UserInputGenerator(input=pipe_input, output=DummyOutput())
 
         from arox.ui.io import IOChannel
 

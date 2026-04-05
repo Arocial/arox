@@ -3,10 +3,10 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
 from arox.utils import (
+    UserInputGenerator,
     deep_merge,
     render_template,
     truncate_content,
-    user_input_generator,
 )
 
 
@@ -43,18 +43,16 @@ async def test_user_input_generator_quit():
     with create_pipe_input() as pipe_input:
         pipe_input.send_text("test1\n")
 
-        result = await user_input_generator(
+        generator = UserInputGenerator(
             input=pipe_input,
             output=DummyOutput(),
         )
+        result = await generator()
         assert result == "test1"
 
         pipe_input.send_text("\x04")  # EOF (Ctrl+D)
         with pytest.raises(EOFError):
-            await user_input_generator(
-                input=pipe_input,
-                output=DummyOutput(),
-            )
+            await generator()
 
 
 def test_render_template():

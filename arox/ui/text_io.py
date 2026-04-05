@@ -20,7 +20,7 @@ from pydantic_ai import (
 
 from arox.core.plugin import CommandCompleter
 from arox.ui.io import AbstractIOAdapter, ChatInputEvent, StepDoneEvent
-from arox.utils import user_input_generator
+from arox.utils import UserInputGenerator
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +29,9 @@ class TextIOAdapter(AbstractIOAdapter):
     def setup(self, agent):
         if hasattr(agent, "command_manager"):
             completer = CommandCompleter(agent.command_manager)
-
-            def user_input():
-                return user_input_generator(completer=completer)
-
-            self.user_input = user_input
+            self.user_input = UserInputGenerator(completer=completer)
         else:
-            self.user_input = user_input_generator
+            self.user_input = UserInputGenerator()
 
     async def run_cancellable(self, task):
         step_task = asyncio.create_task(task)

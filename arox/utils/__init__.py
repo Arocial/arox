@@ -52,32 +52,34 @@ def render_template(template, **kwargs):
     return template.render(**kwargs)
 
 
-async def user_input_generator(completer=None, input=None, output=None):
-    """Async generator that yields user input"""
-    history = FileHistory(".arox_history")
-    kb = KeyBindings()
+class UserInputGenerator:
+    def __init__(self, completer=None, input=None, output=None):
+        self.history = FileHistory(".arox_history")
+        self.kb = KeyBindings()
 
-    @kb.add("enter")
-    def _(event):  # Enter to submit
-        event.current_buffer.validate_and_handle()
+        @self.kb.add("enter")
+        def _(event):  # Enter to submit
+            event.current_buffer.validate_and_handle()
 
-    @kb.add("escape", "enter")  # Alt+Enter newline
-    @kb.add("escape", "O", "M")  # Shift+Enter (at least in my konsole)
-    def _(event):
-        event.current_buffer.insert_text("\n")
+        @self.kb.add("escape", "enter")  # Alt+Enter newline
+        @self.kb.add("escape", "O", "M")  # Shift+Enter (at least in my konsole)
+        def _(event):
+            event.current_buffer.insert_text("\n")
 
-    session = PromptSession(
-        prompt_continuation="> ",
-        multiline=True,
-        key_bindings=kb,
-        history=history,
-        auto_suggest=AutoSuggestFromHistory(),
-        mouse_support=False,
-        completer=completer,
-        input=input,
-        output=output,
-    )
-    return await session.prompt_async("\nUser (Ctrl+D to quit): ")
+        self.session = PromptSession(
+            prompt_continuation="> ",
+            multiline=True,
+            key_bindings=self.kb,
+            history=self.history,
+            auto_suggest=AutoSuggestFromHistory(),
+            mouse_support=False,
+            completer=completer,
+            input=input,
+            output=output,
+        )
+
+    async def __call__(self):
+        return await self.session.prompt_async("\nUser (Ctrl+D to quit): ")
 
 
 def truncate_content(
