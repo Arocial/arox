@@ -42,6 +42,8 @@ For more detailed information, please refer to the documentation:
 
 ## Quick Start
 
+> **⚠️ Security Warning**: Arox agents can execute shell commands and modify files directly on your host machine without a sandbox. They run with the same permissions as the user executing the app. Please use caution, especially when running agents on untrusted codebases or with highly capable models.
+
 1. Install the package using `uv`:
    ```bash
    uv sync

@@ -1,9 +1,7 @@
 import asyncio
 import logging
 import os
-import shutil
 import sys
-from pathlib import Path
 
 from arox.core.plugin import Plugin, tool
 from arox.utils import truncate_content
@@ -14,8 +12,12 @@ logger = logging.getLogger(__name__)
 def get_shell_context():
     import os
     import platform
+    import sys
 
-    shell_path = os.environ.get("SHELL", "/bin/bash")
+    if sys.platform == "win32":
+        shell_path = os.environ.get("COMSPEC", "cmd.exe")
+    else:
+        shell_path = os.environ.get("SHELL", "/bin/bash")
     shell_name = os.path.basename(shell_path)
 
     return {
@@ -30,92 +32,13 @@ class ShellPlugin(Plugin):
         super().__init__(agent)
         self.workspace = self.agent.workspace.absolute()
 
-        if sys.platform == "linux":
-            self.bwrap_path = shutil.which("bwrap")
-            if not self.bwrap_path:
-                raise RuntimeError("bwrap not found on linux, `Shell` tool disabled.")
+    def _get_cmd(self, command: str) -> list[str]:
+        if sys.platform == "win32":
+            shell_path = os.environ.get("COMSPEC", "cmd.exe")
+            return [shell_path, "/c", command]
         else:
-            raise RuntimeError("No sandbox implemented. `Shell` tool disabled.")
-
-    def _get_sandboxed_cmd(self, command: str) -> list[str]:
-        """Construct the bwrap command arguments."""
-        if sys.platform == "linux":
-            return self._get_linux_sandboxed_cmd(command)
-        else:
-            return []
-
-    def _get_linux_sandboxed_cmd(self, command: str) -> list[str]:
-        workspace_str = str(self.workspace)
-        home_dir = Path.home()
-        home_str = str(home_dir)
-
-        bwrap_args = [
-            self.bwrap_path,
-            "--ro-bind",
-            "/usr",
-            "/usr",
-            "--ro-bind",
-            "/bin",
-            "/bin",
-            "--ro-bind",
-            "/sbin",
-            "/sbin",
-            "--ro-bind",
-            "/lib",
-            "/lib",
-            "--proc",
-            "/proc",
-            "--dev",
-            "/dev",
-            "--tmpfs",
-            "/tmp",
-            "--bind",
-            home_str,
-            home_str,
-            "--bind",
-            workspace_str,
-            workspace_str,
-        ]
-
-        # Mask sensitive directories/files in home
-        sensitive_paths = [
-            ".ssh",
-            ".gnupg",
-        ]
-        for p in sensitive_paths:
-            full_path = home_dir / p
-            if full_path.exists():
-                bwrap_args.extend(["--tmpfs", str(full_path)])
-
-        bwrap_args.extend(
-            [
-                "--chdir",
-                workspace_str,
-                "--unshare-all",
-                "--share-net",
-                "--die-with-parent",
-            ]
-        )
-
-        if os.path.exists("/lib64"):
-            bwrap_args.extend(["--ro-bind", "/lib64", "/lib64"])
-
-        # Essential files for networking and basic tools to work
-        for path in [
-            "/etc/resolv.conf",
-            "/etc/hosts",
-            "/etc/passwd",
-            "/etc/group",
-            "/etc/ld.so.cache",
-            "/etc/alternatives",
-            "/etc/ssl",
-            "/etc/ca-certificates",
-        ]:
-            if os.path.exists(path):
-                bwrap_args.extend(["--ro-bind", path, path])
-
-        bwrap_args.extend(["--", os.environ.get("SHELL", "/bin/bash"), "-c", command])
-        return bwrap_args
+            shell_path = os.environ.get("SHELL", "/bin/bash")
+            return [shell_path, "-c", command]
 
     @tool(dynamic_context=get_shell_context)
     async def shell(self, command: str, timeout: int | None = 100) -> str:
@@ -145,12 +68,13 @@ class ShellPlugin(Plugin):
         """
         try:
             logger.info(f"Executing shell command: {command}")
-            sandboxed_cmd = self._get_sandboxed_cmd(command)
+            cmd_args = self._get_cmd(command)
 
             env = os.environ.copy()
 
             process = await asyncio.create_subprocess_exec(
-                *sandboxed_cmd,
+                *cmd_args,
+                cwd=str(self.workspace),
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

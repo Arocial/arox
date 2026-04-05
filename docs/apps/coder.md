@@ -17,6 +17,7 @@ The Coder app consists of the following components:
 
 - **Code Editing**: The agent can read, modify, and create files in your project. It is instructed to only edit files when it knows the exact current content of the section being modified.
 - **Shell Execution**: The agent can run shell commands (e.g., `ls`, `grep`, `pytest`) to explore the codebase and verify its changes.
+  > **⚠️ Security Warning**: The shell commands are executed directly on your host machine without a sandbox. The agent has the same permissions as the user running the app. Please be cautious and review the agent's actions, as it can potentially modify or delete files outside the workspace.
 - **Automatic Commits**: After completing a feature or solving an issue, the agent can automatically commit its changes with a generated commit message, including a `Co-authored-by` tag.
 - **Efficient Tool Usage**: The agent is instructed to perform multiple tool calls concurrently whenever the logic allows, avoiding unnecessary sequential interactions.
 - **Commands**: The Coder app supports several built-in commands for quick actions:

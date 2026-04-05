@@ -42,6 +42,8 @@ Capabilities provide a typed, decoupled way for plugins and agents to declare wh
 
 ## Getting Started
 
+> **⚠️ Security Warning**: Arox agents can execute shell commands and modify files directly on your host machine without a sandbox. They run with the same permissions as the user executing the app. Please use caution, especially when running agents on untrusted codebases or with highly capable models.
+
 To learn more about how Arox works and how to build your own agents, explore the following sections:
 
 - **[Architecture](architecture.md)**: Deep dive into the core components of the framework.
