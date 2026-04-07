@@ -82,7 +82,7 @@ def create_retrying_client(extra_request_hooks=None, **client_args):
 def infer_provider(provider: str, base_url: str = "") -> Provider[Any]:
     """Infer the provider from the provider name."""
     client = create_retrying_client(
-        timeout=Timeout(timeout=20),
+        timeout=Timeout(timeout=40),
     )
     if provider.startswith("gateway/"):
         upstream_provider = provider.removeprefix("gateway/")
@@ -94,7 +94,7 @@ def infer_provider(provider: str, base_url: str = "") -> Provider[Any]:
         # it to HttpOptions.timeout, so they are always coupled.
         #
         # To decouple them we:
-        # 1. Set timeout to 20, which is set for both client and server timeout by genai sdk.
+        # 1. Set timeout to 40, which is set for both client and server timeout by genai sdk.
         # 2. Then use an httpx request event hook to remove the X-Server-Timeout
         #    header before the request is sent, so the server is not
         #    constrained by that deadline.
@@ -102,7 +102,7 @@ def infer_provider(provider: str, base_url: str = "") -> Provider[Any]:
             request.headers.pop("X-Server-Timeout", None)
 
         client = create_retrying_client(
-            timeout=20,
+            timeout=40,
             extra_request_hooks=[_remove_server_timeout],
         )
         return google.GoogleProvider(
