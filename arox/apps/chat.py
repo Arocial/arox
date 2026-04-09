@@ -12,8 +12,15 @@ from arox.core.composer import Composer
 logger = logging.getLogger(__name__)
 
 
-def run_app(app_name: str):
+def main():
+    import sys
+
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--app",
+        default=None,
+        help="App name to run (e.g., coder, general)",
+    )
     parser.add_argument(
         "--ui",
         choices=["text", "vercel_ai", "telegram", "feishu"],
@@ -26,6 +33,14 @@ def run_app(app_name: str):
         help="Session ID to restore a previous session",
     )
     args, unknown_args = parser.parse_known_args()
+
+    app_name = args.app
+    if not app_name:
+        script_name = Path(sys.argv[0]).name
+        if script_name.startswith("arox-"):
+            app_name = script_name[5:]
+        else:
+            app_name = "coder"
 
     unknown_args.append(f"composer.{app_name}.io_adapter={args.ui}")
 
@@ -68,9 +83,5 @@ def run_app(app_name: str):
         asyncio.run(composer.run())
 
 
-def run_coder():
-    run_app("coder")
-
-
-def run_general():
-    run_app("general")
+if __name__ == "__main__":
+    main()

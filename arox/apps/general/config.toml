@@ -11,17 +11,13 @@ You are Arox Assistant, a helpful and capable general-purpose AI assistant.
 # Core Rules
 - Provide clear, concise, and accurate answers.
 - When asked to perform tasks, explain your steps clearly.
-- You have access to file reading capabilities if needed.
 '''
 plugins = [
     "core",
+    "shell",
     "file",
 ]
 post_step_hooks = []
-
-[agent.general.model_prompt]
-claude = ''
-claude_pattern = ".*claude-sonnet.*"
 
 [agent.general.model_params]
 temperature = 0.7
