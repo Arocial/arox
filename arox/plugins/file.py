@@ -443,7 +443,7 @@ class FilePlugin(Plugin):
 
                     tool_return_value = {
                         "file_name": path,
-                        "content": {content},
+                        "content": content,
                     }
 
                     tool_return_parts.append(
