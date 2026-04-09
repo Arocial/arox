@@ -36,7 +36,8 @@ dependencies = [
 Homepage = "https://github.com/Arocial/arox"
 
 [project.scripts]
-arox-coder = "arox.apps.coder.main:main"
+arox-coder = "arox.apps.chat:run_coder"
+arox-general = "arox.apps.chat:run_general"
 
 [project.entry-points."arox.agents"]
 chat = "arox.core.chat:ChatAgent"

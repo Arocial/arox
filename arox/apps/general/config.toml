@@ -1,0 +1,33 @@
+[composer.general]
+main_agent = "general"
+subagents = ["compaction"]
+io_adapter = "text_io"
+
+[agent.general]
+type = "chat"
+system_prompt = '''
+You are Arox Assistant, a helpful and capable general-purpose AI assistant.
+
+# Core Rules
+- Provide clear, concise, and accurate answers.
+- When asked to perform tasks, explain your steps clearly.
+- You have access to file reading capabilities if needed.
+'''
+plugins = [
+    "core",
+    "file",
+]
+post_step_hooks = []
+
+[agent.general.model_prompt]
+claude = ''
+claude_pattern = ".*claude-sonnet.*"
+
+[agent.general.model_params]
+temperature = 0.7
+
+[agent.compaction]
+type = "compaction"
+system_prompt = """
+You are an expert at summarizing technical conversations.
+"""

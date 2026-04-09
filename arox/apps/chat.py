@@ -12,7 +12,7 @@ from arox.core.composer import Composer
 logger = logging.getLogger(__name__)
 
 
-def main():
+def run_app(app_name: str):
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--ui",
@@ -27,7 +27,7 @@ def main():
     )
     args, unknown_args = parser.parse_known_args()
 
-    unknown_args.append(f"composer.coder.io_adapter={args.ui}")
+    unknown_args.append(f"composer.{app_name}.io_adapter={args.ui}")
 
     if args.ui == "text":
         log_dir = Path(".arox")
@@ -44,7 +44,7 @@ def main():
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
 
-    default_agent_config = Path(__file__).parent / "config.toml"
+    default_agent_config = Path(__file__).parent / app_name / "config.toml"
     from arox.core.app import app_setup
 
     app_setup(config_files=[default_agent_config], cli_args=unknown_args)
@@ -53,14 +53,14 @@ def main():
         from arox.ui.vercel_ai import VercelStreamServer
 
         server = VercelStreamServer(
-            composer_name="coder",
+            composer_name=app_name,
             config_files=[default_agent_config],
             cli_args=unknown_args,
         )
         asyncio.run(server.run())
     else:
         composer = Composer(
-            "coder",
+            app_name,
             session_id=args.session,
             config_files=[default_agent_config],
             cli_args=unknown_args,
@@ -68,5 +68,9 @@ def main():
         asyncio.run(composer.run())
 
 
-if __name__ == "__main__":
-    main()
+def run_coder():
+    run_app("coder")
+
+
+def run_general():
+    run_app("general")
