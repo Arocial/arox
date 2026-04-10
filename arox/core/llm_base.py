@@ -80,13 +80,13 @@ def create_retrying_client(extra_request_hooks=None, **client_args):
 
 # Copyied from pydantic_ai.providers.infer_provider and add http_client parameter.
 def infer_provider(
-    provider: str, base_url: str = "", session_id: str = ""
+    provider: str, base_url: str = "", session_id: str = "", session_header: str = ""
 ) -> Provider[Any]:
     """Infer the provider from the provider name."""
 
     async def _add_session_header(request):
-        if session_id:
-            request.headers["X-Session-Id"] = session_id
+        if session_id and session_header:
+            request.headers[session_header] = session_id
 
     client = create_retrying_client(
         timeout=Timeout(timeout=40),
@@ -263,7 +263,10 @@ class LLMBaseAgent:
         model = infer_model(
             provider_model,
             provider_factory=lambda p: infer_provider(
-                p, base_url=base_url, session_id=self.agent_session.session_id
+                p,
+                base_url=base_url,
+                session_id=self.agent_session.session_id,
+                session_header=model_config.session_header,
             ),
         )
 

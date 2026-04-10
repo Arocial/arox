@@ -74,6 +74,7 @@ class ObservabilityConfig(BaseModel):
 class ModelConfig(BaseModel):
     provider_model: str = ""
     base_url: str = ""
+    session_header: str = ""
     params: dict[str, Any] = Field(default_factory=dict)
 
 
