@@ -33,6 +33,7 @@ class SessionEvent(BaseModel):
 
 class AgentSession(BaseModel):
     agent_name: str
+    session_id: str = ""
     events: list[SessionEvent] = Field(default_factory=list)
     extra: dict[str, Any] = Field(default_factory=dict)
 
@@ -94,7 +95,9 @@ class AppSession(BaseModel):
 
     def get_agent_session(self, agent_name: str) -> AgentSession:
         if agent_name not in self.agent_sessions:
-            self.agent_sessions[agent_name] = AgentSession(agent_name=agent_name)
+            self.agent_sessions[agent_name] = AgentSession(
+                agent_name=agent_name, session_id=self.id
+            )
         return self.agent_sessions[agent_name]
 
     @staticmethod
@@ -161,9 +164,9 @@ class FileSessionStore:
             try:
                 state_raw = json.loads(state_file.read_text())
                 agent_name = state_raw["agent_name"]
-                session.agent_sessions[agent_name] = AgentSession.model_validate(
-                    state_raw
-                )
+                agent_session = AgentSession.model_validate(state_raw)
+                agent_session.session_id = session.id
+                session.agent_sessions[agent_name] = agent_session
             except Exception:
                 logger.warning(
                     f"Failed to load agent session from {state_file}", exc_info=True

@@ -79,14 +79,22 @@ def create_retrying_client(extra_request_hooks=None, **client_args):
 
 
 # Copyied from pydantic_ai.providers.infer_provider and add http_client parameter.
-def infer_provider(provider: str, base_url: str = "") -> Provider[Any]:
+def infer_provider(
+    provider: str, base_url: str = "", session_id: str = ""
+) -> Provider[Any]:
     """Infer the provider from the provider name."""
+
+    async def _add_session_header(request):
+        if session_id:
+            request.headers["X-Session-Id"] = session_id
+
     client = create_retrying_client(
         timeout=Timeout(timeout=40),
+        extra_request_hooks=[_add_session_header],
     )
     if provider.startswith("gateway/"):
         upstream_provider = provider.removeprefix("gateway/")
-        return gateway.gateway_provider(upstream_provider)
+        return gateway.gateway_provider(upstream_provider, http_client=client)  # type: ignore
     elif provider in ("google-vertex", "google-gla"):
         # Google GenAI SDK uses HttpOptions.timeout for both the httpx
         # per-request timeout AND the X-Server-Timeout header sent to the
@@ -103,7 +111,7 @@ def infer_provider(provider: str, base_url: str = "") -> Provider[Any]:
 
         client = create_retrying_client(
             timeout=40,
-            extra_request_hooks=[_remove_server_timeout],
+            extra_request_hooks=[_remove_server_timeout, _add_session_header],
         )
         return google.GoogleProvider(
             vertexai=provider == "google-vertex", http_client=client
@@ -254,7 +262,9 @@ class LLMBaseAgent:
 
         model = infer_model(
             provider_model,
-            provider_factory=lambda p: infer_provider(p, base_url=base_url),
+            provider_factory=lambda p: infer_provider(
+                p, base_url=base_url, session_id=self.agent_session.session_id
+            ),
         )
 
         self.model_ref = model_ref
@@ -367,6 +377,8 @@ class LLMBaseAgent:
         self.message_history = agent_session.rebuild_message_history(
             self.example_messages
         )
+        if self.model_ref:
+            self.set_model(self.model_ref)
 
     def reset(self):
         self.message_history = self.example_messages
