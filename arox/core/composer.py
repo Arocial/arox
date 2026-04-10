@@ -55,6 +55,7 @@ class Composer:
 
         self.subagents = {}
         self.io_channels = {}
+        self.initialized = asyncio.Event()
 
         self._init_agents()
 
@@ -182,6 +183,7 @@ class Composer:
             asyncio.create_task(self.io_adapter.start())
 
             await self._init_session(self.session_id)
+            self.initialized.set()
 
             for agent in self.subagents.values():
                 await agent.show_agent_info()

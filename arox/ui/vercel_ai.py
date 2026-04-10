@@ -345,6 +345,7 @@ class VercelStreamServer:
             "/api/composers/{composer_id}/suggestions",
             response_model=SuggestionResponse,
         )(self.suggestions)
+        self.app.get("/api/composers/{composer_id}/history")(self.history)
         self.app.get("/api/sessions", response_model=list[SessionInfo])(
             self.list_sessions
         )
@@ -422,6 +423,22 @@ class VercelStreamServer:
     ):
         adapter = self._get_adapter(composer_id)
         return await adapter.suggestions(command, q)
+
+    async def history(self, composer_id: str):
+        composer = self.composers.get(composer_id)
+        if not composer:
+            raise HTTPException(status_code=404, detail="Composer not found")
+
+        await composer.initialized.wait()
+
+        if not composer.main_agent:
+            return []
+
+        from pydantic_ai.ui.vercel_ai._adapter import VercelAIAdapter
+
+        messages = composer.main_agent.message_history
+        ui_messages = VercelAIAdapter.dump_messages(messages)
+        return [msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages]
 
     async def run(self):
         import uvicorn
