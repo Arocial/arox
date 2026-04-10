@@ -10,16 +10,16 @@ from pydantic_ai.messages import (
 
 from arox.core.session import (
     AgentSession,
-    AppSession,
+    ComposerSession,
     FileSessionStore,
     _deserialize_messages,
     _serialize_messages,
 )
 
 
-class TestAppSession:
+class TestComposerSession:
     def test_create(self):
-        session = AppSession.create("coder", title="test")
+        session = ComposerSession.create("coder", title="test")
         assert session.composer_name == "coder"
         assert len(session.id) == 12
         assert session.metadata == {"title": "test"}
@@ -27,13 +27,13 @@ class TestAppSession:
         assert session.agent_sessions == {}
 
     def test_add_event(self):
-        session = AppSession.create("coder")
+        session = ComposerSession.create("coder")
         event = session.add_event("system", {"msg": "started"})
         assert event.event_type == "system"
         assert len(session.events) == 1
 
     def test_get_agent_session(self):
-        session = AppSession.create("coder")
+        session = ComposerSession.create("coder")
         agent_session = session.get_agent_session("main")
         assert agent_session.agent_name == "main"
         assert "main" in session.agent_sessions
@@ -209,7 +209,7 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_save_and_load(self, store):
-        session = AppSession.create("coder")
+        session = ComposerSession.create("coder")
         agent_session = session.get_agent_session("main")
         agent_session.add_event("user_input", {"text": "hello"})
         agent_session.add_event(
@@ -248,9 +248,9 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_list_sessions(self, store):
-        s1 = AppSession.create("coder")
-        s2 = AppSession.create("coder")
-        s3 = AppSession.create("other")
+        s1 = ComposerSession.create("coder")
+        s2 = ComposerSession.create("coder")
+        s3 = ComposerSession.create("other")
 
         await store.save_session(s1)
         await store.save_session(s2)
@@ -272,7 +272,7 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_delete_session(self, store):
-        session = AppSession.create("coder")
+        session = ComposerSession.create("coder")
         await store.save_session(session)
 
         loaded = await store.load_session(session.id)
@@ -288,7 +288,7 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_multiple_agent_sessions(self, store):
-        session = AppSession.create("coder")
+        session = ComposerSession.create("coder")
         main_s = session.get_agent_session("main")
         main_s.add_event(
             "agent_step",
@@ -312,7 +312,7 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_save_overwrites(self, store):
-        session = AppSession.create("coder")
+        session = ComposerSession.create("coder")
         agent_s = session.get_agent_session("main")
         agent_s.add_event("user_input", {"text": "first"})
         await store.save_session(session)
@@ -335,11 +335,11 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_cleanup_deletes_expired(self, store):
-        old_session = AppSession.create("coder")
+        old_session = ComposerSession.create("coder")
         await store.save_session(old_session)
         self._backdate_session(store, old_session, days=60)
 
-        new_session = AppSession.create("coder")
+        new_session = ComposerSession.create("coder")
         await store.save_session(new_session)
 
         deleted = await store.cleanup(max_age_days=30)
@@ -350,7 +350,7 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_cleanup_keeps_recent(self, store):
-        session = AppSession.create("coder")
+        session = ComposerSession.create("coder")
         await store.save_session(session)
 
         deleted = await store.cleanup(max_age_days=30)
@@ -365,7 +365,7 @@ class TestFileSessionStore:
     @pytest.mark.asyncio
     async def test_cleanup_uses_default_max_age(self, tmp_path):
         store = FileSessionStore(base_dir=tmp_path / "sessions", max_age_days=7)
-        old_session = AppSession.create("coder")
+        old_session = ComposerSession.create("coder")
         await store.save_session(old_session)
         self._backdate_session(store, old_session, days=10)
 

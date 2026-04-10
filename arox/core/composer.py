@@ -10,7 +10,7 @@ from pydantic_ai import FunctionToolset
 
 from arox.core.config import ComposerConfig
 from arox.core.llm_base import AgentDeps
-from arox.core.session import AppSession, FileSessionStore, SessionStore
+from arox.core.session import ComposerSession, FileSessionStore, SessionStore
 from arox.ui.io import IOChannel
 from arox.utils import import_class
 
@@ -41,7 +41,7 @@ class Composer:
         self.session_store: SessionStore = session_store or FileSessionStore(
             max_age_days=self.parsed_config.app.session_max_age_days
         )
-        self.session = AppSession.create(self.name)
+        self.session = ComposerSession.create(self.name)
 
         composer_config = self.parsed_config.composer.get(name)
         if not composer_config:
@@ -157,7 +157,7 @@ class Composer:
                 )
 
         if not restored:
-            self.session = AppSession.create(self.name)
+            self.session = ComposerSession.create(self.name)
 
         for name, agent in self._all_agents().items():
             agent.restore_session(self.session.get_agent_session(name))

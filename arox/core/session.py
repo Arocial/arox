@@ -78,7 +78,7 @@ class AgentSession(BaseModel):
         return context_id
 
 
-class AppSession(BaseModel):
+class ComposerSession(BaseModel):
     id: str
     composer_name: str
     created_at: datetime
@@ -106,9 +106,9 @@ class AppSession(BaseModel):
         return self.agent_sessions[agent_name]
 
     @staticmethod
-    def create(composer_name: str, **metadata: Any) -> AppSession:
+    def create(composer_name: str, **metadata: Any) -> ComposerSession:
         now = datetime.now(UTC)
-        return AppSession(
+        return ComposerSession(
             id=uuid.uuid4().hex[:12],
             composer_name=composer_name,
             created_at=now,
@@ -118,9 +118,9 @@ class AppSession(BaseModel):
 
 
 class SessionStore(Protocol):
-    async def list_sessions(self, composer_name: str) -> list[AppSession]: ...
-    async def load_session(self, session_id: str) -> AppSession | None: ...
-    async def save_session(self, session: AppSession) -> None: ...
+    async def list_sessions(self, composer_name: str) -> list[ComposerSession]: ...
+    async def load_session(self, session_id: str) -> ComposerSession | None: ...
+    async def save_session(self, session: ComposerSession) -> None: ...
     async def delete_session(self, session_id: str) -> None: ...
     async def cleanup(self, max_age_days: int | None = None) -> int: ...
 
@@ -138,7 +138,7 @@ class FileSessionStore:
     def _session_meta_path(self, session_id: str) -> Path:
         return self._session_dir(session_id) / "session.json"
 
-    async def list_sessions(self, composer_name: str) -> list[AppSession]:
+    async def list_sessions(self, composer_name: str) -> list[ComposerSession]:
         if not self.base_dir.exists():
             return []
         sessions = []
@@ -151,19 +151,19 @@ class FileSessionStore:
             try:
                 raw = json.loads(meta_path.read_text())
                 if raw.get("composer_name") == composer_name:
-                    session = AppSession.model_validate(raw)
+                    session = ComposerSession.model_validate(raw)
                     sessions.append(session)
             except Exception:
                 logger.warning(f"Failed to load session from {d}", exc_info=True)
         return sessions
 
-    async def load_session(self, session_id: str) -> AppSession | None:
+    async def load_session(self, session_id: str) -> ComposerSession | None:
         meta_path = self._session_meta_path(session_id)
         if not meta_path.exists():
             return None
 
         raw = json.loads(meta_path.read_text())
-        session = AppSession.model_validate(raw)
+        session = ComposerSession.model_validate(raw)
 
         # Load agent sessions
         session_dir = self._session_dir(session_id)
@@ -180,7 +180,7 @@ class FileSessionStore:
 
         return session
 
-    async def save_session(self, session: AppSession) -> None:
+    async def save_session(self, session: ComposerSession) -> None:
         session.updated_at = datetime.now(UTC)
         session_dir = self._session_dir(session.id)
         session_dir.mkdir(parents=True, exist_ok=True)
