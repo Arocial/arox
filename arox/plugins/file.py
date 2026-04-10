@@ -124,7 +124,7 @@ class FilePlugin(Plugin):
         path: str,
         offset: int = 0,
         limit: int = DEFAULT_READ_LIMIT,
-    ) -> dict[str, str]:
+    ) -> str:
         """Reads a file from the local filesystem.
         It's better to read multiple files as a batch that are potentially useful.
 
@@ -133,7 +133,6 @@ class FilePlugin(Plugin):
             offset: The line number to start reading from (0-based).
             limit: The number of lines to read (defaults to 2000).
         """
-        result = {"file_name": path}
         try:
             lines = self._read_raw(path)
 
@@ -141,18 +140,19 @@ class FilePlugin(Plugin):
             content_lines = truncated["lines"]
             last_read_line = truncated["last_read_line"]
 
+            result = ""
             if content_lines:
-                result["content"] = "\n".join(content_lines)
+                result = "\n".join(content_lines)
 
             if truncated["truncated_by_bytes"]:
-                result["truncated"] = (
-                    f"Output truncated at {truncated['max_bytes']} bytes. "
-                    f"Use 'offset' parameter to read beyond line {last_read_line}"
+                result += (
+                    f"\n\n[Output truncated at {truncated['max_bytes']} bytes. "
+                    f"Use 'offset' parameter to read beyond line {last_read_line}]"
                 )
             elif truncated["has_more_lines"]:
-                result["truncated"] = (
-                    f"File has more lines. "
-                    f"Use 'offset' parameter to read beyond line {last_read_line}"
+                result += (
+                    f"\n\n[File has more lines. "
+                    f"Use 'offset' parameter to read beyond line {last_read_line}]"
                 )
 
             self._add_to_session(path)
@@ -160,8 +160,7 @@ class FilePlugin(Plugin):
 
         except Exception as e:
             logger.error(f"Error reading file {path}: {e!s}")
-            result["error"] = f"Error reading file: {e!s}"
-            return result
+            return f"Error reading file: {e!s}"
 
     def _is_binary_file(self, path: Path) -> bool:
         """Check if a file is binary using extension and content analysis."""
@@ -441,15 +440,10 @@ class FilePlugin(Plugin):
                         )
                     )
 
-                    tool_return_value = {
-                        "file_name": path,
-                        "content": content,
-                    }
-
                     tool_return_parts.append(
                         ToolReturnPart(
                             tool_name="read",
-                            content=tool_return_value,
+                            content=content,
                             tool_call_id=tool_call_id,
                         )
                     )
