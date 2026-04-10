@@ -3,7 +3,7 @@ import contextlib
 import logging
 import re
 import uuid
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -80,11 +80,15 @@ def create_retrying_client(extra_request_hooks=None, **client_args):
 
 # Copyied from pydantic_ai.providers.infer_provider and add http_client parameter.
 def infer_provider(
-    provider: str, base_url: str = "", session_id: str = "", session_header: str = ""
+    provider: str,
+    base_url: str = "",
+    session_id_fn: Callable[[], str] | None = None,
+    session_header: str = "",
 ) -> Provider[Any]:
     """Infer the provider from the provider name."""
 
     async def _add_session_header(request):
+        session_id = session_id_fn() if session_id_fn else ""
         if session_id and session_header:
             request.headers[session_header] = session_id
 
@@ -265,7 +269,7 @@ class LLMBaseAgent:
             provider_factory=lambda p: infer_provider(
                 p,
                 base_url=base_url,
-                session_id=self.agent_session.session_id,
+                session_id_fn=lambda: self.agent_session.llm_context_id,
                 session_header=model_config.session_header,
             ),
         )
@@ -385,6 +389,7 @@ class LLMBaseAgent:
 
     def reset(self):
         self.message_history = self.example_messages
+        self.agent_session.reset_llm_context()
 
     def add_pre_step_hook(self, hook: PreStepHook):
         if not hasattr(self, "pre_step_hooks"):

@@ -33,9 +33,13 @@ class SessionEvent(BaseModel):
 
 class AgentSession(BaseModel):
     agent_name: str
-    session_id: str = ""
+    llm_context_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     events: list[SessionEvent] = Field(default_factory=list)
     extra: dict[str, Any] = Field(default_factory=dict)
+
+    def reset_llm_context(self):
+        """Reset LLM context ID. Call after compaction or /reset."""
+        self.llm_context_id = uuid.uuid4().hex[:12]
 
     def add_event(
         self,
@@ -95,9 +99,7 @@ class AppSession(BaseModel):
 
     def get_agent_session(self, agent_name: str) -> AgentSession:
         if agent_name not in self.agent_sessions:
-            self.agent_sessions[agent_name] = AgentSession(
-                agent_name=agent_name, session_id=self.id
-            )
+            self.agent_sessions[agent_name] = AgentSession(agent_name=agent_name)
         return self.agent_sessions[agent_name]
 
     @staticmethod
@@ -165,7 +167,6 @@ class FileSessionStore:
                 state_raw = json.loads(state_file.read_text())
                 agent_name = state_raw["agent_name"]
                 agent_session = AgentSession.model_validate(state_raw)
-                agent_session.session_id = session.id
                 session.agent_sessions[agent_name] = agent_session
             except Exception:
                 logger.warning(

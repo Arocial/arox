@@ -67,6 +67,7 @@ class CompactionAgent(LLMBaseAgent):
                     "compacted_messages": _serialize_messages(compacted_messages),
                 },
             )
+            main_agent.agent_session.reset_llm_context()
 
         return "Conversation history compacted successfully."
 
