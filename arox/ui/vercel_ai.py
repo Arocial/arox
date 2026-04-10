@@ -57,12 +57,21 @@ class SuggestionResponse(BaseModel):
 
 
 class CreateComposerRequest(BaseModel):
-    workspace: str
+    workspace: str | None = None
+    session_id: str | None = None
 
 
 class ComposerInfo(BaseModel):
     id: str
     workspace: str
+
+
+class SessionInfo(BaseModel):
+    id: str
+    composer_name: str
+    created_at: str
+    updated_at: str
+    metadata: dict
 
 
 class VercelStreamIOAdapter(AbstractIOAdapter):
@@ -336,6 +345,9 @@ class VercelStreamServer:
             "/api/composers/{composer_id}/suggestions",
             response_model=SuggestionResponse,
         )(self.suggestions)
+        self.app.get("/api/sessions", response_model=list[SessionInfo])(
+            self.list_sessions
+        )
 
     def _get_adapter(self, composer_id: str) -> VercelStreamIOAdapter:
         composer = self.composers.get(composer_id)
@@ -350,13 +362,14 @@ class VercelStreamServer:
         composer = Composer(
             self.composer_name,
             workspace=request.workspace,
+            session_id=request.session_id,
             config_files=self.config_files,
             cli_args=self.cli_args,
         )
         self.composers[composer_id] = composer
         task = asyncio.create_task(self._run_composer(composer_id, composer))
         self._tasks[composer_id] = task
-        return ComposerInfo(id=composer_id, workspace=request.workspace)
+        return ComposerInfo(id=composer_id, workspace=str(composer.workspace))
 
     async def _run_composer(self, composer_id: str, composer):
         try:
@@ -373,6 +386,22 @@ class VercelStreamServer:
         return [
             ComposerInfo(id=cid, workspace=str(c.workspace))
             for cid, c in self.composers.items()
+        ]
+
+    async def list_sessions(self):
+        from arox.core.session import FileSessionStore
+
+        store = FileSessionStore()
+        sessions = await store.list_sessions(self.composer_name)
+        return [
+            SessionInfo(
+                id=s.id,
+                composer_name=s.composer_name,
+                created_at=s.created_at.isoformat(),
+                updated_at=s.updated_at.isoformat(),
+                metadata=s.metadata,
+            )
+            for s in sessions
         ]
 
     async def delete_composer(self, composer_id: str):

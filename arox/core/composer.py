@@ -41,7 +41,7 @@ class Composer:
         self.session_store: SessionStore = session_store or FileSessionStore(
             max_age_days=self.parsed_config.app.session_max_age_days
         )
-        self.session = ComposerSession.create(self.name)
+        self.session = ComposerSession.create(self.name, workspace=str(self.workspace))
 
         composer_config = self.parsed_config.composer.get(name)
         if not composer_config:
@@ -157,7 +157,9 @@ class Composer:
                 )
 
         if not restored:
-            self.session = ComposerSession.create(self.name)
+            self.session = ComposerSession.create(
+                self.name, workspace=str(self.workspace)
+            )
 
         for name, agent in self._all_agents().items():
             agent.restore_session(self.session.get_agent_session(name))
