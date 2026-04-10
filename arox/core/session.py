@@ -33,13 +33,8 @@ class SessionEvent(BaseModel):
 
 class AgentSession(BaseModel):
     agent_name: str
-    llm_context_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     events: list[SessionEvent] = Field(default_factory=list)
     extra: dict[str, Any] = Field(default_factory=dict)
-
-    def reset_llm_context(self):
-        """Reset LLM context ID. Call after compaction or /reset."""
-        self.llm_context_id = uuid.uuid4().hex[:12]
 
     def add_event(
         self,
@@ -73,6 +68,14 @@ class AgentSession(BaseModel):
                 raw = event.data.get("compacted_messages", [])
                 history = list(example_messages) + _deserialize_messages(raw)
         return history
+
+    def rebuild_llm_context_id(self) -> str | None:
+        """Rebuild llm_context_id from events. Returns None if no context was set."""
+        context_id = None
+        for event in self.events:
+            if event.event_type in ("compaction", "reset"):
+                context_id = event.data.get("llm_context_id")
+        return context_id
 
 
 class AppSession(BaseModel):

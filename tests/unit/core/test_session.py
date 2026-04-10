@@ -141,6 +141,30 @@ class TestAgentSession:
         assert isinstance(part2, UserPromptPart)
         assert part2.content == "new msg"
 
+    def test_rebuild_llm_context_id_none_without_events(self):
+        agent_session = AgentSession(agent_name="main")
+        assert agent_session.rebuild_llm_context_id() is None
+
+    def test_rebuild_llm_context_id_from_compaction(self):
+        agent_session = AgentSession(agent_name="main")
+        agent_session.add_event(
+            "compaction",
+            {"compacted_messages": [], "llm_context_id": "ctx_abc123"},
+        )
+        assert agent_session.rebuild_llm_context_id() == "ctx_abc123"
+
+    def test_rebuild_llm_context_id_from_reset(self):
+        agent_session = AgentSession(agent_name="main")
+        agent_session.add_event(
+            "compaction",
+            {"compacted_messages": [], "llm_context_id": "ctx_first"},
+        )
+        agent_session.add_event(
+            "reset",
+            {"llm_context_id": "ctx_second"},
+        )
+        assert agent_session.rebuild_llm_context_id() == "ctx_second"
+
     def test_non_step_events_ignored_in_rebuild(self):
         agent_session = AgentSession(agent_name="main")
         agent_session.add_event("user_input", {"text": "hello"})

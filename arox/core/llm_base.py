@@ -146,6 +146,7 @@ class LLMBaseAgent:
         self.name = name
         self.workspace = Path(workspace).absolute() if workspace else Path.cwd()
         self.agent_session: AgentSession = AgentSession(agent_name=name)
+        self.llm_context_id: str = uuid.uuid4().hex[:12]
         self._capabilities: dict[Any, Any] = {}
         self.model_ref = None
         self.additional_prompt = ""
@@ -269,7 +270,7 @@ class LLMBaseAgent:
             provider_factory=lambda p: infer_provider(
                 p,
                 base_url=base_url,
-                session_id_fn=lambda: self.agent_session.llm_context_id,
+                session_id_fn=lambda: self.llm_context_id,
                 session_header=model_config.session_header,
             ),
         )
@@ -384,12 +385,16 @@ class LLMBaseAgent:
         self.message_history = agent_session.rebuild_message_history(
             self.example_messages
         )
+        restored_id = agent_session.rebuild_llm_context_id()
+        if restored_id:
+            self.llm_context_id = restored_id
         if self.model_ref:
             self.set_model(self.model_ref)
 
     def reset(self):
         self.message_history = self.example_messages
-        self.agent_session.reset_llm_context()
+        self.llm_context_id = uuid.uuid4().hex[:12]
+        self.agent_session.add_event("reset", {"llm_context_id": self.llm_context_id})
 
     def add_pre_step_hook(self, hook: PreStepHook):
         if not hasattr(self, "pre_step_hooks"):

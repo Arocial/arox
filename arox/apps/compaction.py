@@ -57,17 +57,20 @@ class CompactionAgent(LLMBaseAgent):
         main_agent.message_history = main_agent.example_messages + compacted_messages
 
         if main_agent.agent_session:
+            import uuid
+
             from arox.core.session import _serialize_messages
 
+            main_agent.llm_context_id = uuid.uuid4().hex[:12]
             main_agent.agent_session.add_event(
                 "compaction",
                 {
                     "messages_before": messages_before,
                     "messages_after": len(main_agent.message_history),
                     "compacted_messages": _serialize_messages(compacted_messages),
+                    "llm_context_id": main_agent.llm_context_id,
                 },
             )
-            main_agent.agent_session.reset_llm_context()
 
         return "Conversation history compacted successfully."
 
