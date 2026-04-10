@@ -1,3 +1,5 @@
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from pydantic_ai.messages import (
     ModelRequest,
@@ -321,3 +323,51 @@ class TestFileSessionStore:
         loaded = await store.load_session(session.id)
         assert loaded is not None
         assert len(loaded.agent_sessions["main"].events) == 2
+
+    def _backdate_session(self, store, session, days):
+        """Save session then overwrite updated_at to simulate an old session."""
+        import json
+
+        meta_path = store._session_meta_path(session.id)
+        raw = json.loads(meta_path.read_text())
+        raw["updated_at"] = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+        meta_path.write_text(json.dumps(raw))
+
+    @pytest.mark.asyncio
+    async def test_cleanup_deletes_expired(self, store):
+        old_session = AppSession.create("coder")
+        await store.save_session(old_session)
+        self._backdate_session(store, old_session, days=60)
+
+        new_session = AppSession.create("coder")
+        await store.save_session(new_session)
+
+        deleted = await store.cleanup(max_age_days=30)
+        assert deleted == 1
+
+        assert await store.load_session(old_session.id) is None
+        assert await store.load_session(new_session.id) is not None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_keeps_recent(self, store):
+        session = AppSession.create("coder")
+        await store.save_session(session)
+
+        deleted = await store.cleanup(max_age_days=30)
+        assert deleted == 0
+        assert await store.load_session(session.id) is not None
+
+    @pytest.mark.asyncio
+    async def test_cleanup_empty_store(self, store):
+        deleted = await store.cleanup()
+        assert deleted == 0
+
+    @pytest.mark.asyncio
+    async def test_cleanup_uses_default_max_age(self, tmp_path):
+        store = FileSessionStore(base_dir=tmp_path / "sessions", max_age_days=7)
+        old_session = AppSession.create("coder")
+        await store.save_session(old_session)
+        self._backdate_session(store, old_session, days=10)
+
+        deleted = await store.cleanup()
+        assert deleted == 1

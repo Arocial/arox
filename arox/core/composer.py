@@ -38,7 +38,9 @@ class Composer:
 
         self.parsed_config = load_config(config_files, cli_args, self.workspace)
 
-        self.session_store: SessionStore = session_store or FileSessionStore()
+        self.session_store: SessionStore = session_store or FileSessionStore(
+            max_age_days=self.parsed_config.app.session_max_age_days
+        )
         self.session = AppSession.create(self.name)
 
         composer_config = self.parsed_config.composer.get(name)
@@ -142,6 +144,8 @@ class Composer:
         return agents
 
     async def _init_session(self, session_id: str | None = None):
+        await self.session_store.cleanup()
+
         restored = False
         if session_id:
             loaded = await self.session_store.load_session(session_id)

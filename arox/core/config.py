@@ -101,6 +101,7 @@ class AppConfig(BaseModel):
     env_vars: dict[str, str] = Field(default_factory=dict)
     api_keys: dict[str, str] = Field(default_factory=dict)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+    session_max_age_days: int = 30
 
 
 class Config(BaseModel):

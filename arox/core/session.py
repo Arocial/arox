@@ -122,13 +122,15 @@ class SessionStore(Protocol):
     async def load_session(self, session_id: str) -> AppSession | None: ...
     async def save_session(self, session: AppSession) -> None: ...
     async def delete_session(self, session_id: str) -> None: ...
+    async def cleanup(self, max_age_days: int | None = None) -> int: ...
 
 
 class FileSessionStore:
-    def __init__(self, base_dir: Path | None = None):
+    def __init__(self, base_dir: Path | None = None, max_age_days: int = 30):
         if base_dir is None:
             base_dir = Path.home() / ".local" / "share" / "arox" / "sessions"
         self.base_dir = base_dir
+        self.max_age_days = max_age_days
 
     def _session_dir(self, session_id: str) -> Path:
         return self.base_dir / session_id
@@ -206,3 +208,35 @@ class FileSessionStore:
         session_dir = self._session_dir(session_id)
         if session_dir.exists():
             shutil.rmtree(session_dir)
+
+    async def cleanup(self, max_age_days: int | None = None) -> int:
+        """Delete sessions older than max_age_days. Returns number of deleted sessions."""
+        if not self.base_dir.exists():
+            return 0
+
+        max_age = max_age_days if max_age_days is not None else self.max_age_days
+        from datetime import timedelta
+
+        cutoff = datetime.now(UTC) - timedelta(days=max_age)
+        deleted = 0
+
+        for d in list(self.base_dir.iterdir()):
+            if not d.is_dir():
+                continue
+            meta_path = d / "session.json"
+            if not meta_path.exists():
+                continue
+            try:
+                raw = json.loads(meta_path.read_text())
+                updated_at = datetime.fromisoformat(raw.get("updated_at", ""))
+                if updated_at < cutoff:
+                    import shutil
+
+                    shutil.rmtree(d)
+                    deleted += 1
+            except Exception:
+                logger.warning(f"Failed to check session {d.name}", exc_info=True)
+
+        if deleted:
+            logger.info(f"Cleaned up {deleted} expired session(s)")
+        return deleted
