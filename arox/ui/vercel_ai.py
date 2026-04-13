@@ -364,6 +364,10 @@ class VercelStreamServer:
         self.app.get("/api/sessions", response_model=list[SessionInfo])(
             self.list_sessions
         )
+        self.app.get("/api/health")(self.health)
+
+    async def health(self):
+        return {"status": "ok"}
 
     def _get_adapter(self, composer_id: str) -> VercelStreamIOAdapter:
         composer = self.composers.get(composer_id)
