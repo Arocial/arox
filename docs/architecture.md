@@ -28,7 +28,7 @@ A **Composer** is responsible for assembling a complete application by wiring to
 Plugins are the primary way to extend an agent's capabilities. They bundle together tools, commands, and history processors into a cohesive unit.
 
 - **Tools**: Functions provided to the LLM to interact with the external environment. Arox supports two types of tools:
-    - **Local Tools**: Python functions registered directly with the agent via plugins (e.g., `Shell` execution, `ask_human`).
+    - **Local Tools**: Python functions registered directly with the agent via plugins (e.g., `Shell` execution).
     - **MCP (Model Context Protocol) Tools**: Arox natively supports connecting to MCP servers via `fastmcp`, allowing agents to leverage a wide ecosystem of external tools and data sources seamlessly.
 - **Commands**: Structured actions triggered by human users (e.g., `/project`, `/reset`, `/model`). They are handled by the `CommandManager` in a `ChatAgent` and can execute local Python code or trigger specific agent behaviors without sending a prompt to the LLM, saving time and tokens.
 - **History Processors**: Functions that can modify the message history before it is sent to the LLM.
