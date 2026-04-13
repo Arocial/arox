@@ -185,11 +185,11 @@ class Composer:
             await self._init_session(self.session_id)
             self.initialized.set()
 
-            for agent in self.subagents.values():
-                await agent.show_agent_info()
-            await self.main_agent.show_agent_info()
-
             try:
+                for agent in self.subagents.values():
+                    await agent.show_agent_info()
+                await self.main_agent.show_agent_info()
+
                 if hasattr(self.main_agent, "start"):
                     await self.main_agent.start()
                 else:

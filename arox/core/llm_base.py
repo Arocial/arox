@@ -360,7 +360,18 @@ class LLMBaseAgent:
                 await self._run_post_step_hooks(input_content, result)
                 return result
             except (asyncio.CancelledError, Exception):
+                new_messages = messages[len(self.message_history):]
                 self.message_history = messages
+                if new_messages:
+                    self.agent_session.add_event(
+                        "agent_step",
+                        {
+                            "input": input_content,
+                            "new_messages": _serialize_messages(new_messages),
+                            "request_tokens": None,
+                            "response_tokens": None,
+                        },
+                    )
                 raise
 
     def _record_step_event(
