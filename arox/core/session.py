@@ -142,7 +142,7 @@ class FileSessionStore:
         if not self.base_dir.exists():
             return []
         sessions = []
-        for d in sorted(self.base_dir.iterdir(), reverse=True):
+        for d in self.base_dir.iterdir():
             if not d.is_dir():
                 continue
             meta_path = d / "session.json"
@@ -155,6 +155,9 @@ class FileSessionStore:
                     sessions.append(session)
             except Exception:
                 logger.warning(f"Failed to load session from {d}", exc_info=True)
+
+        # Sort sessions by updated_at descending (most recently updated first)
+        sessions.sort(key=lambda s: s.updated_at, reverse=True)
         return sessions
 
     async def load_session(self, session_id: str) -> ComposerSession | None:
