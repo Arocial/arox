@@ -317,12 +317,16 @@ class VercelStreamServer:
         composer_name: str,
         config_files: list[str | Path] | None = None,
         cli_args: list[str] | None = None,
+        host: str = "0.0.0.0",
+        port: int = 8000,
     ):
         from contextlib import asynccontextmanager
 
         self.composer_name = composer_name
         self.config_files = config_files or []
         self.cli_args = cli_args or []
+        self.host = host
+        self.port = port
         self.composers: dict[str, Composer] = {}
         self._tasks: dict[str, asyncio.Task] = {}
 
@@ -454,6 +458,6 @@ class VercelStreamServer:
     async def run(self):
         import uvicorn
 
-        config = uvicorn.Config(self.app, host="0.0.0.0", port=8000, ws="none")
+        config = uvicorn.Config(self.app, host=self.host, port=self.port, ws="none")
         server = uvicorn.Server(config)
         await server.serve()

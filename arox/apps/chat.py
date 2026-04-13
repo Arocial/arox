@@ -32,6 +32,17 @@ def main():
         default=None,
         help="Session ID to restore a previous session",
     )
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="Host to bind the server to (for vercel_ai UI)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to bind the server to (for vercel_ai UI)",
+    )
     args, unknown_args = parser.parse_known_args()
 
     app_name = args.app
@@ -71,6 +82,8 @@ def main():
             composer_name=app_name,
             config_files=[default_agent_config],
             cli_args=unknown_args,
+            host=args.host,
+            port=args.port,
         )
         asyncio.run(server.run())
     else:
