@@ -318,13 +318,24 @@ class VercelStreamServer:
         config_files: list[str | Path] | None = None,
         cli_args: list[str] | None = None,
     ):
+        from contextlib import asynccontextmanager
+
         self.composer_name = composer_name
         self.config_files = config_files or []
         self.cli_args = cli_args or []
         self.composers: dict[str, Composer] = {}
         self._tasks: dict[str, asyncio.Task] = {}
 
-        self.app = FastAPI()
+        @asynccontextmanager
+        async def lifespan(app: FastAPI):
+            yield
+            # Cancel all running composer tasks on shutdown
+            for task in self._tasks.values():
+                task.cancel()
+            if self._tasks:
+                await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+
+        self.app = FastAPI(lifespan=lifespan)
         self.app.add_middleware(
             CORSMiddleware,
             allow_origins=["*"],

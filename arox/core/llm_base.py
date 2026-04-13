@@ -360,7 +360,7 @@ class LLMBaseAgent:
                 await self._run_post_step_hooks(input_content, result)
                 return result
             except (asyncio.CancelledError, Exception):
-                new_messages = messages[len(self.message_history):]
+                new_messages = messages[len(self.message_history) :]
                 self.message_history = messages
                 if new_messages:
                     self.agent_session.add_event(
