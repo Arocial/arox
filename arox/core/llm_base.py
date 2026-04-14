@@ -148,7 +148,7 @@ class LLMBaseAgent:
         self.name = name
         self.workspace = Path(workspace).absolute() if workspace else Path.cwd()
         self.agent_session: AgentSession = AgentSession(agent_name=name)
-        self.llm_context_id: str = uuid.uuid4().hex[:12]
+        self.llm_context_id: str = str(uuid.uuid4())
         self._capabilities: dict[Any, Any] = {}
         self.model_ref = None
         self.additional_prompt = ""
@@ -406,7 +406,7 @@ class LLMBaseAgent:
 
     def reset(self):
         self.message_history = self.example_messages
-        self.llm_context_id = uuid.uuid4().hex[:12]
+        self.llm_context_id = str(uuid.uuid4())
         self.agent_session.add_event("reset", {"llm_context_id": self.llm_context_id})
 
     def add_pre_step_hook(self, hook: PreStepHook):

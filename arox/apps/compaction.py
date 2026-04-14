@@ -61,7 +61,7 @@ class CompactionAgent(LLMBaseAgent):
 
             from arox.core.session import _serialize_messages
 
-            main_agent.llm_context_id = uuid.uuid4().hex[:12]
+            main_agent.llm_context_id = str(uuid.uuid4())
             main_agent.agent_session.add_event(
                 "compaction",
                 {
