@@ -96,9 +96,14 @@ def infer_provider(
         timeout=Timeout(timeout=40),
         extra_request_hooks=[_add_session_header],
     )
+
+    kwargs: dict[str, Any] = {"http_client": client}
+    if base_url:
+        kwargs["base_url"] = base_url
+
     if provider.startswith("gateway/"):
         upstream_provider = provider.removeprefix("gateway/")
-        return gateway.gateway_provider(upstream_provider, http_client=client)  # type: ignore
+        return gateway.gateway_provider(upstream_provider, **kwargs)  # type: ignore
     elif provider in ("google-vertex", "google-gla"):
         # Google GenAI SDK uses HttpOptions.timeout for both the httpx
         # per-request timeout AND the X-Server-Timeout header sent to the
@@ -117,14 +122,11 @@ def infer_provider(
             timeout=40,
             extra_request_hooks=[_remove_server_timeout, _add_session_header],
         )
-        return google.GoogleProvider(
-            vertexai=provider == "google-vertex", http_client=client
-        )
+        kwargs["http_client"] = client
+        kwargs["vertexai"] = provider == "google-vertex"
+        return google.GoogleProvider(**kwargs)
     else:
         provider_class = infer_provider_class(provider)
-        kwargs: dict[str, Any] = {"http_client": client}
-        if base_url:
-            kwargs["base_url"] = base_url
         return provider_class(**kwargs)  # type: ignore
 
 
@@ -258,7 +260,6 @@ class LLMBaseAgent:
         model_params = model_config.params
         merged_model_params = utils.deep_merge(self.agent_model_params, model_params)
         provider_model = model_config.provider_model
-        base_url = model_config.base_url
 
         additional_prompt = ""
         for model_prompt in self.model_aware_prompts:
@@ -269,7 +270,9 @@ class LLMBaseAgent:
             provider_model,
             provider_factory=lambda p: infer_provider(
                 p,
-                base_url=base_url,
+                base_url=self.parsed_config.provider[p].base_url
+                if p in self.parsed_config.provider
+                else "",
                 session_id_fn=lambda: self.llm_context_id,
                 session_header=model_config.session_header,
             ),
@@ -278,7 +281,6 @@ class LLMBaseAgent:
         self.model_ref = model_ref
         self.model_params = merged_model_params
         self.provider_model = provider_model
-        self.base_url = base_url
         self.additional_prompt = additional_prompt
         self.model = model
 

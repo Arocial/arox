@@ -71,9 +71,12 @@ class ObservabilityConfig(BaseModel):
     logfire: bool = False
 
 
+class ProviderConfig(BaseModel):
+    base_url: str = ""
+
+
 class ModelConfig(BaseModel):
     provider_model: str = ""
-    base_url: str = ""
     session_header: str = ""
     params: dict[str, Any] = Field(default_factory=dict)
 
@@ -111,6 +114,7 @@ class Config(BaseModel):
     composer: dict[str, ComposerConfig] = Field(default_factory=dict)
     agent: dict[str, AgentConfig] = Field(default_factory=dict)
     model: dict[str, ModelConfig] = Field(default_factory=dict)
+    provider: dict[str, ProviderConfig] = Field(default_factory=dict)
 
 
 def _load_config_file(path: Path) -> dict[str, Any]:
