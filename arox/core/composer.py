@@ -166,6 +166,31 @@ class Composer:
             agent.restore_session(self.session.get_agent_session(name))
 
     async def _save_session(self):
+        last_user_messages = []
+        if self.main_agent and hasattr(self.main_agent, "message_history"):
+            from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+            for msg in reversed(self.main_agent.message_history):
+                if isinstance(msg, ModelRequest):
+                    for part in msg.parts:
+                        if isinstance(part, UserPromptPart):
+                            content = part.content
+                            if isinstance(content, str):
+                                last_user_messages.append(content)
+                            elif isinstance(content, (list, tuple)):
+                                text_parts = [c for c in content if isinstance(c, str)]
+                                if text_parts:
+                                    last_user_messages.append(" ".join(text_parts))
+                            if len(last_user_messages) >= 2:
+                                break
+                if len(last_user_messages) >= 2:
+                    break
+
+            if last_user_messages:
+                self.session.metadata["last_user_messages"] = list(
+                    reversed(last_user_messages)
+                )
+
         await self.session_store.save_session(self.session)
 
     async def run(self):
