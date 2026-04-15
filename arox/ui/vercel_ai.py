@@ -364,6 +364,7 @@ class VercelStreamServer:
         self.app.get("/api/sessions", response_model=list[SessionInfo])(
             self.list_sessions
         )
+        self.app.delete("/api/sessions/{session_id}")(self.delete_session)
         self.app.get("/api/health")(self.health)
 
     async def health(self):
@@ -423,6 +424,13 @@ class VercelStreamServer:
             )
             for s in sessions
         ]
+
+    async def delete_session(self, session_id: str):
+        from arox.core.session import FileSessionStore
+
+        store = FileSessionStore()
+        await store.delete_session(session_id)
+        return {"status": "deleted"}
 
     async def delete_composer(self, composer_id: str):
         task = self._tasks.pop(composer_id, None)
