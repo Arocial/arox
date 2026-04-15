@@ -186,10 +186,10 @@ class Composer:
                 if len(last_user_messages) >= 2:
                     break
 
-            if last_user_messages:
-                self.session.metadata["last_user_messages"] = list(
-                    reversed(last_user_messages)
-                )
+        if not last_user_messages:
+            return
+
+        self.session.metadata["last_user_messages"] = list(reversed(last_user_messages))
 
         await self.session_store.save_session(self.session)
 
