@@ -50,6 +50,16 @@ IO Adapters abstract the user interface, allowing the same agent logic to run ac
 - **`TelegramIOAdapter`**: For running the agent as a Telegram bot.
 - **`FeishuIOAdapter`**: For running the agent as a Feishu (Lark) bot.
 
+### 6. Session Management
+
+Arox uses an event-sourced design for managing sessions, allowing for robust state recovery, auditing, and context management.
+
+- **`ComposerSession`**: Represents the overall session for an application. It contains global metadata, a unique session ID, and a collection of `AgentSession`s.
+- **`AgentSession`**: Manages the state for an individual agent. Instead of storing a static list of messages, it stores a sequence of `SessionEvent`s (e.g., `agent_step`, `compaction`, `reset`).
+- **State Reconstruction**: The agent's `message_history` is dynamically rebuilt by replaying these events. For example, an `agent_step` event appends new messages, while a `compaction` event resets the history to a compacted state.
+- **`llm_context_id`**: A unique identifier (UUID) representing the current LLM context window. It is passed to the LLM provider (e.g., via headers) to leverage provider-side caching or session management. When the context is cleared or compacted (via a `reset` or `compaction` event), a new `llm_context_id` is generated, signaling to the provider that a new context has started.
+- **Storage**: Sessions are persisted using a `SessionStore` (e.g., `FileSessionStore`), which saves the composer metadata and individual agent states as JSON files, enabling seamless resumption of past sessions.
+
 ## Data Flow
 
 1. **User Input**: The user sends a message via the UI (handled by the IO Adapter).
