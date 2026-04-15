@@ -293,9 +293,7 @@ class LLMBaseAgent:
 
     def parse_configs(self):
         # Load default metadata using configargparse
-        self.system_prompt = utils.render_template(
-            self.agent_config.system_prompt, config=self.parsed_config, agent=self
-        )
+        self.raw_system_prompt = self.agent_config.system_prompt
 
         skills = discover_skills(self.workspace)
         allowed_skills = self.agent_config.skills
@@ -304,9 +302,9 @@ class LLMBaseAgent:
                 allowed_skills = [allowed_skills]
             skills = {k: v for k, v in skills.items() if k in allowed_skills}
 
+        self.skill_catalog = ""
         if skills:
-            catalog = build_skill_catalog(skills)
-            self.system_prompt += f"\n\n{catalog}"
+            self.skill_catalog = build_skill_catalog(skills)
 
         self.example_messages = []
         examples_data = self.agent_config.examples
@@ -328,6 +326,15 @@ class LLMBaseAgent:
                 )
 
         self.set_model(self.model_ref)
+
+    @property
+    def system_prompt(self) -> str:
+        prompt = utils.render_template(
+            self.raw_system_prompt, config=self.parsed_config, agent=self
+        )
+        if self.skill_catalog:
+            prompt += f"\n\n{self.skill_catalog}"
+        return prompt
 
     async def _run_pre_step_hooks(self, input_content: str | None):
         if hasattr(self, "pre_step_hooks"):
