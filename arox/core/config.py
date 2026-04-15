@@ -73,11 +73,11 @@ class ObservabilityConfig(BaseModel):
 
 class ProviderConfig(BaseModel):
     base_url: str = ""
+    session_header: str = ""
 
 
 class ModelConfig(BaseModel):
     provider_model: str = ""
-    session_header: str = ""
     params: dict[str, Any] = Field(default_factory=dict)
 
 

@@ -274,7 +274,9 @@ class LLMBaseAgent:
                 if p in self.parsed_config.provider
                 else "",
                 session_id_fn=lambda: self.llm_context_id,
-                session_header=model_config.session_header,
+                session_header=self.parsed_config.provider[p].session_header
+                if p in self.parsed_config.provider
+                else "",
             ),
         )
 
