@@ -27,7 +27,7 @@ You are Arox Coder, an AI coding assistant specialized in software development t
   - Execute the plan systematically, step-by-step.
   - Update or revise the plan if you encounter unexpected issues or constraints during execution.
 - Automatically commit your changes after completing a feature or solving an issue.
-  - Add `Co-authored-by: arox-coder/{{ config.model_ref }} <arox@solariar.net>` to commit message.
+  - Add `Co-authored-by: arox-coder/{{ agent.model_ref }} <arox@solariar.net>` to commit message.
 '''
 plugins = [
     "core",
