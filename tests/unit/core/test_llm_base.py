@@ -1,10 +1,55 @@
 from pathlib import Path
 
 import pytest
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 
 from arox.core.app import app_setup
-from arox.core.llm_base import LLMBaseAgent
+from arox.core.llm_base import LLMBaseAgent, _complete_pending_tool_calls
 from arox.ui.io import IOChannel
+
+
+def test_complete_pending_tool_calls_noop_when_all_matched():
+    messages = [
+        ModelRequest(parts=[UserPromptPart("hi")]),
+        ModelResponse(
+            parts=[ToolCallPart(tool_name="t", args="{}", tool_call_id="c1")]
+        ),
+        ModelRequest(
+            parts=[ToolReturnPart(tool_name="t", content="ok", tool_call_id="c1")]
+        ),
+        ModelResponse(parts=[TextPart("done")]),
+    ]
+    before = len(messages)
+    _complete_pending_tool_calls(messages)
+    assert len(messages) == before
+
+
+def test_complete_pending_tool_calls_fills_orphans():
+    messages = [
+        ModelRequest(parts=[UserPromptPart("hi")]),
+        ModelResponse(
+            parts=[
+                ToolCallPart(tool_name="t1", args="{}", tool_call_id="c1"),
+                ToolCallPart(tool_name="t2", args="{}", tool_call_id="c2"),
+            ]
+        ),
+        ModelRequest(
+            parts=[ToolReturnPart(tool_name="t1", content="ok", tool_call_id="c1")]
+        ),
+    ]
+    _complete_pending_tool_calls(messages)
+    assert isinstance(messages[-1], ModelRequest)
+    returns = [p for p in messages[-1].parts if isinstance(p, ToolReturnPart)]
+    assert len(returns) == 1
+    assert returns[0].tool_call_id == "c2"
+    assert returns[0].tool_name == "t2"
 
 
 @pytest.mark.asyncio

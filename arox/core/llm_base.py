@@ -20,6 +20,13 @@ from pydantic_ai import (
     RunContext,
     capture_run_messages,
 )
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.models import infer_model
 from pydantic_ai.providers import Provider, gateway, google, infer_provider_class
 from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
@@ -128,6 +135,46 @@ def infer_provider(
     else:
         provider_class = infer_provider_class(provider)
         return provider_class(**kwargs)  # type: ignore
+
+
+def _complete_pending_tool_calls(messages: list[ModelMessage]) -> None:
+    """Append synthetic tool returns for any orphan tool calls.
+
+    When a run is cancelled mid-step, the captured history can end with a
+    ``ModelResponse`` containing ``ToolCallPart``s whose matching
+    ``ToolReturnPart``s were never produced. Feeding such history back to a
+    provider (e.g. Anthropic) fails because every ``tool_use`` must have a
+    matching ``tool_result``. This function mutates ``messages`` in place to
+    append a single ``ModelRequest`` carrying synthetic ``ToolReturnPart``s
+    for every orphan tool call, keeping the history valid for the next run.
+    """
+    returned_ids: set[str] = set()
+    pending: list[tuple[str, str]] = []  # (tool_call_id, tool_name) in order
+    seen_ids: set[str] = set()
+    for msg in messages:
+        if isinstance(msg, ModelResponse):
+            for part in msg.parts:
+                if isinstance(part, ToolCallPart) and part.tool_call_id not in seen_ids:
+                    pending.append((part.tool_call_id, part.tool_name))
+                    seen_ids.add(part.tool_call_id)
+        elif isinstance(msg, ModelRequest):
+            for part in msg.parts:
+                if isinstance(part, ToolReturnPart):
+                    returned_ids.add(part.tool_call_id)
+
+    orphans = [(cid, name) for cid, name in pending if cid not in returned_ids]
+    if not orphans:
+        return
+
+    synthetic_parts = [
+        ToolReturnPart(
+            tool_name=name,
+            content="Tool call cancelled before completion.",
+            tool_call_id=cid,
+        )
+        for cid, name in orphans
+    ]
+    messages.append(ModelRequest(parts=synthetic_parts))
 
 
 @dataclass
@@ -371,7 +418,12 @@ class LLMBaseAgent:
                 await self._run_post_step_hooks(input_content, result)
                 return result
             except (asyncio.CancelledError, Exception):
-                new_messages = messages[len(self.message_history) :]
+                prev_len = len(self.message_history)
+                # A cancelled run may leave ToolCallParts without matching
+                # ToolReturnParts; patch the history so the next request is
+                # still valid.
+                _complete_pending_tool_calls(messages)
+                new_messages = messages[prev_len:]
                 self.message_history = messages
                 if new_messages:
                     self.agent_session.add_event(
