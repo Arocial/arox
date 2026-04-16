@@ -87,6 +87,7 @@ class AgentConfig(BaseModel):
     model_ref: str = ""
     plugins: list[str] = Field(default_factory=list)
     skills: str | list[str] | None = None
+    mcp_servers: str | list[str] | None = None
     examples: list[dict[str, Any]] | None = None
     model_params: dict[str, Any] = Field(default_factory=dict)
     model_prompt: dict[str, str] = Field(default_factory=dict)

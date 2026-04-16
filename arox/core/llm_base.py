@@ -210,6 +210,14 @@ class LLMBaseAgent:
         )
 
         mcp_server_configs = self.parsed_config.mcp_servers
+        allowed_mcp_servers = self.agent_config.mcp_servers
+        if allowed_mcp_servers is not None:
+            if isinstance(allowed_mcp_servers, str):
+                allowed_mcp_servers = [allowed_mcp_servers]
+            mcp_server_configs = {
+                k: v for k, v in mcp_server_configs.items() if k in allowed_mcp_servers
+            }
+
         self.mcp_client = None
         if mcp_server_configs:
             self.mcp_client = fastmcp.Client({"mcpServers": mcp_server_configs})
