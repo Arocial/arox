@@ -100,7 +100,7 @@ def infer_provider(
             request.headers[session_header] = session_id
 
     client = create_retrying_client(
-        timeout=Timeout(timeout=40),
+        timeout=Timeout(timeout=80),
         extra_request_hooks=[_add_session_header],
     )
 
@@ -126,7 +126,7 @@ def infer_provider(
             request.headers.pop("X-Server-Timeout", None)
 
         client = create_retrying_client(
-            timeout=40,
+            timeout=80,
             extra_request_hooks=[_remove_server_timeout, _add_session_header],
         )
         kwargs["http_client"] = client
