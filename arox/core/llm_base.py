@@ -20,6 +20,7 @@ from pydantic_ai import (
     RunContext,
     capture_run_messages,
 )
+from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -303,7 +304,7 @@ class LLMBaseAgent:
             self.local_toolset = FunctionToolset()
         self.local_toolset.add_function(func, **kwargs)
 
-    def set_model(self, model_ref: str):
+    def _resolve_model(self, model_ref: str) -> tuple[Any, dict[str, Any], str]:
         model_config = self.parsed_config.model.get(model_ref)
         if not model_config:
             from arox.core.config import ModelConfig
@@ -312,15 +313,7 @@ class LLMBaseAgent:
         elif not model_config.provider_model:
             model_config.provider_model = model_ref
 
-        model_params = model_config.params
-        merged_model_params = utils.deep_merge(self.agent_model_params, model_params)
         provider_model = model_config.provider_model
-
-        additional_prompt = ""
-        for model_prompt in self.model_aware_prompts:
-            if re.search(model_prompt["pattern"], model_ref):
-                additional_prompt = model_prompt["prompt"]
-
         model = infer_model(
             provider_model,
             provider_factory=lambda p: infer_provider(
@@ -334,6 +327,16 @@ class LLMBaseAgent:
                 else "",
             ),
         )
+        return model, model_config.params, provider_model
+
+    def set_model(self, model_ref: str):
+        model, model_params, provider_model = self._resolve_model(model_ref)
+        merged_model_params = utils.deep_merge(self.agent_model_params, model_params)
+
+        additional_prompt = ""
+        for model_prompt in self.model_aware_prompts:
+            if re.search(model_prompt["pattern"], model_ref):
+                additional_prompt = model_prompt["prompt"]
 
         self.model_ref = model_ref
         self.model_params = merged_model_params
@@ -367,6 +370,13 @@ class LLMBaseAgent:
             self.example_messages = _deserialize_messages(examples_data)
 
         self.model_ref = self.agent_config.model_ref or self.parsed_config.model_ref
+        fallback = (
+            self.agent_config.fallback_model_ref
+            or self.parsed_config.fallback_model_ref
+        )
+        if isinstance(fallback, str):
+            fallback = [fallback] if fallback else []
+        self.fallback_model_refs: list[str] = list(fallback)
         self.agent_model_params = self.agent_config.model_params
         self.model_aware_prompts = []
         mp = self.agent_config.model_prompt
@@ -405,45 +415,77 @@ class LLMBaseAgent:
         self,
         input_content: str | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
-    ) -> AgentRunResult[DeferredToolRequests | str]:
+    ) -> AgentRunResult[DeferredToolRequests | str]:  # type: ignore[return]
+        # refs_to_try is always non-empty, so the loop below either returns or
+        # raises; the type checker can't infer this, hence the ignore above.
         await self._run_pre_step_hooks(input_content)
-        with capture_run_messages() as messages:
-            try:
-                result = await self.pydantic_agent.run(
-                    input_content + "\n"
-                    if isinstance(input_content, str)
-                    else input_content,
-                    model=self.model,
-                    event_stream_handler=self.handle_event,
-                    model_settings=ModelSettings(**self.model_params),
-                    instructions=f"{self.system_prompt}\n{self.additional_prompt}",
-                    message_history=self.message_history,
-                    deps=AgentDeps(agent_io=self.agent_io),
-                    deferred_tool_results=deferred_tool_results,
-                )
-                self.message_history = result.all_messages()
-                self._record_step_event(input_content, result)
-                await self._run_post_step_hooks(input_content, result)
-                return result
-            except (asyncio.CancelledError, Exception):
-                prev_len = len(self.message_history)
-                # A cancelled run may leave ToolCallParts without matching
-                # ToolReturnParts; patch the history so the next request is
-                # still valid.
-                _complete_pending_tool_calls(messages)
-                new_messages = messages[prev_len:]
-                self.message_history = messages
-                if new_messages:
-                    self.agent_session.add_event(
-                        "agent_step",
-                        {
-                            "input": input_content,
-                            "new_messages": _serialize_messages(new_messages),
-                            "request_tokens": None,
-                            "response_tokens": None,
-                        },
+        primary_ref: str = self.model_ref or ""
+        refs_to_try: list[str] = [primary_ref] + list(self.fallback_model_refs)
+        try:
+            for idx, ref in enumerate(refs_to_try):
+                if ref != self.model_ref:
+                    self.set_model(ref)
+                    await self.agent_io.agent_send(
+                        f"Primary model failed, falling back to {self.provider_model}"
                     )
-                raise
+                is_last = idx == len(refs_to_try) - 1
+                with capture_run_messages() as messages:
+                    try:
+                        result = await self.pydantic_agent.run(
+                            input_content + "\n"
+                            if isinstance(input_content, str)
+                            else input_content,
+                            model=self.model,
+                            event_stream_handler=self.handle_event,
+                            model_settings=ModelSettings(**self.model_params),
+                            instructions=f"{self.system_prompt}\n{self.additional_prompt}",
+                            message_history=self.message_history,
+                            deps=AgentDeps(agent_io=self.agent_io),
+                            deferred_tool_results=deferred_tool_results,
+                        )
+                        self.message_history = result.all_messages()
+                        self._record_step_event(input_content, result)
+                        await self._run_post_step_hooks(input_content, result)
+                        return result
+                    except asyncio.CancelledError:
+                        self._handle_step_failure(input_content, messages)
+                        raise
+                    except ModelAPIError as exc:
+                        if is_last:
+                            self._handle_step_failure(input_content, messages)
+                            raise
+                        logger.warning(
+                            "Model %s failed (%s), trying next fallback",
+                            self.provider_model,
+                            exc,
+                        )
+                    except Exception:
+                        self._handle_step_failure(input_content, messages)
+                        raise
+        finally:
+            if self.model_ref != primary_ref:
+                self.set_model(primary_ref)
+
+    def _handle_step_failure(
+        self, input_content: str | None, messages: list[ModelMessage]
+    ) -> None:
+        prev_len = len(self.message_history)
+        # A cancelled or failed run may leave ToolCallParts without matching
+        # ToolReturnParts; patch the history so the next request is still
+        # valid.
+        _complete_pending_tool_calls(messages)
+        new_messages = messages[prev_len:]
+        self.message_history = messages
+        if new_messages:
+            self.agent_session.add_event(
+                "agent_step",
+                {
+                    "input": input_content,
+                    "new_messages": _serialize_messages(new_messages),
+                    "request_tokens": None,
+                    "response_tokens": None,
+                },
+            )
 
     def _record_step_event(
         self,

@@ -85,6 +85,7 @@ class AgentConfig(BaseModel):
     type: str = "chat"
     system_prompt: str = ""
     model_ref: str = ""
+    fallback_model_ref: str | list[str] = Field(default_factory=list)
     plugins: list[str] = Field(default_factory=list)
     skills: str | list[str] | None = None
     mcp_servers: str | list[str] | None = None
@@ -110,6 +111,7 @@ class AppConfig(BaseModel):
 
 class Config(BaseModel):
     model_ref: str = "deepseek:deepseek-chat"
+    fallback_model_ref: str | list[str] = Field(default_factory=list)
     app: AppConfig = Field(default_factory=AppConfig)
     mcp_servers: dict[str, Any] = Field(default_factory=dict)
     composer: dict[str, ComposerConfig] = Field(default_factory=dict)
