@@ -109,7 +109,13 @@ def main():
             config_files=[default_agent_config],
             cli_args=unknown_args,
         )
-        asyncio.run(composer.run())
+
+        async def run_all():
+            async with asyncio.TaskGroup() as tg:
+                tg.create_task(io_adapter.start())
+                await composer.run()
+
+        asyncio.run(run_all())
 
 
 if __name__ == "__main__":

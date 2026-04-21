@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+from typing import override
 
 from telegram import Update
 from telegram.ext import (
@@ -54,6 +55,7 @@ class TelegramIOAdapter(BotIOAdapter):
         await self.chat_id_event.wait()
         return bool(self.app and self.current_chat_id)
 
+    @override
     async def start(self):
         if not self.token:
             logger.error(
@@ -77,7 +79,7 @@ class TelegramIOAdapter(BotIOAdapter):
                     await app.updater.start_polling(drop_pending_updates=True)
                 TelegramIOAdapter._shared_app = app
 
-        asyncio.create_task(self.process_events())
+        await super().start()
 
     @classmethod
     async def shared_start_command(

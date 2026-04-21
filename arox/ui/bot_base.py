@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from abc import ABC, abstractmethod
+from typing import override
 
 from anyio import EndOfStream
 from pydantic_ai import (
@@ -51,28 +52,10 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
         finally:
             self.current_tasks.pop(adapter_io, None)
 
-    async def process_events(self):
-        import anyio
-
-        async def process_io(adapter_io):
-            try:
-                while True:
-                    event = await adapter_io.adapter_receive()
-                    async with self.read_lock:
-                        await self._handle_output(event)
-            except EndOfStream:
-                pass
-
-        unstarted = [io for io in self.adapter_ios if io not in self._started_ios]
-        for io in unstarted:
-            self._started_ios.add(io)
-
-        if not unstarted:
-            return
-
-        async with anyio.create_task_group() as tg:
-            for adapter_io in unstarted:
-                tg.start_soon(process_io, adapter_io)
+    @override
+    async def handle_event(self, adapter_io: AdapterIOInterface, event):
+        async with self.read_lock:
+            await self._handle_output(event)
 
     async def _handle_output(self, event):
         if not await self.before_handle_output():

@@ -202,8 +202,6 @@ class Composer:
                 await stack.enter_async_context(agent)
             await stack.enter_async_context(self.main_agent)
 
-            asyncio.create_task(self.io_adapter.start())
-
             await self._init_session(self.session_id)
             self.initialized.set()
 

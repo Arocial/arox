@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+from typing import override
 
 import lark_oapi as lark
 from anyio import to_thread
@@ -63,6 +64,7 @@ class FeishuIOAdapter(BotIOAdapter):
     async def before_handle_output(self) -> bool:
         return bool(self.current_chat_id)
 
+    @override
     async def start(self):
         if not self.app_id or not self.app_secret:
             logger.error(
@@ -120,7 +122,7 @@ class FeishuIOAdapter(BotIOAdapter):
                     to_thread.run_sync(wsclient.start, abandon_on_cancel=True)
                 )
 
-        asyncio.create_task(self.process_events())
+        await super().start()
 
     async def handle_user_message(self, chat_id: str, text: str):
         if chat_id != self.allowed_chat_id:

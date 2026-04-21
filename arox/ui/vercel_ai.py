@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, override
 from uuid import uuid4
 
 if TYPE_CHECKING:
@@ -86,28 +86,10 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     def setup(self, agent):
         self.coder_agents[agent.agent_io] = agent
 
-    async def start(self):
-        import anyio
-
-        async def process_io(adapter_io):
-            queue = self.event_queues.setdefault(adapter_io, asyncio.Queue())
-            try:
-                while True:
-                    event = await adapter_io.adapter_receive()
-                    await queue.put((adapter_io, event))
-            except EndOfStream:
-                pass
-
-        unstarted = [io for io in self.adapter_ios if io not in self._started_ios]
-        for io in unstarted:
-            self._started_ios.add(io)
-
-        if not unstarted:
-            return
-
-        async with anyio.create_task_group() as tg:
-            for adapter_io in unstarted:
-                tg.start_soon(process_io, adapter_io)
+    @override
+    async def handle_event(self, adapter_io: AdapterIOInterface, event):
+        queue = self.event_queues.setdefault(adapter_io, asyncio.Queue())
+        await queue.put((adapter_io, event))
 
     async def run_cancellable(self, task, adapter_io: AdapterIOInterface):
         self.current_tasks[adapter_io] = asyncio.create_task(task)
@@ -497,4 +479,8 @@ class VercelStreamServer:
 
         config = uvicorn.Config(self.app, host=self.host, port=self.port, ws="none")
         server = uvicorn.Server(config)
+
+        # Start io_adapter
+        asyncio.create_task(self.io_adapter.start())
+
         await server.serve()

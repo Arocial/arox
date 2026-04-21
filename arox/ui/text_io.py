@@ -128,25 +128,5 @@ class TextIOAdapter(AbstractIOAdapter):
             print(f"\nUnexpected event type: {event.__class__.__name__}\n")
 
     @override
-    async def start(self):
-        import anyio
-
-        async def process_io(adapter_io):
-            async with adapter_io:
-                try:
-                    while True:
-                        event = await adapter_io.adapter_receive()
-                        await self._handle_output(event)
-                except EndOfStream:
-                    pass
-
-        unstarted = [io for io in self.adapter_ios if io not in self._started_ios]
-        for io in unstarted:
-            self._started_ios.add(io)
-
-        if not unstarted:
-            return
-
-        async with anyio.create_task_group() as tg:
-            for adapter_io in unstarted:
-                tg.start_soon(process_io, adapter_io)
+    async def handle_event(self, adapter_io: AdapterIOInterface, event):
+        await self._handle_output(event)

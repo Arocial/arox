@@ -218,19 +218,43 @@ class ChatInputEvent:
 class AbstractIOAdapter(ABC):
     def __init__(self, adapter_io: AdapterIOInterface | None = None):
         self.adapter_ios: list[AdapterIOInterface] = []
-        self._started_ios: set[AdapterIOInterface] = set()
+        self._started = False
+        self._tg: asyncio.TaskGroup | None = None
         if adapter_io:
             self.add_adapter_io(adapter_io)
 
     def add_adapter_io(self, adapter_io: AdapterIOInterface):
         self.adapter_ios.append(adapter_io)
         adapter_io.set_adapter(self)
+        if self._started and self._tg:
+            self._tg.create_task(self._process_io(adapter_io))
 
     def setup(self, agent):
         pass
 
-    @abstractmethod
     async def start(self):
+        if self._started:
+            return
+        self._started = True
+        async with asyncio.TaskGroup() as tg:
+            self._tg = tg
+            for adapter_io in self.adapter_ios:
+                tg.create_task(self._process_io(adapter_io))
+
+            # Keep the task group alive
+            while True:
+                await asyncio.sleep(1)
+
+    async def _process_io(self, adapter_io: AdapterIOInterface):
+        try:
+            while True:
+                event = await adapter_io.adapter_receive()
+                await self.handle_event(adapter_io, event)
+        except EndOfStream:
+            pass
+
+    @abstractmethod
+    async def handle_event(self, adapter_io: AdapterIOInterface, event: Any):
         pass
 
     async def run_cancellable(self, task, adapter_io: "AdapterIOInterface"):
