@@ -78,7 +78,6 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     def __init__(self, adapter_io: AdapterIOInterface | None = None):
         super().__init__(adapter_io)
         self.tool_ids = {}
-        self.current_tasks = {}
         self.read_lock = asyncio.Lock()
         self.coder_agents = {}
         self.event_queues = {}
@@ -90,15 +89,6 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     async def handle_event(self, adapter_io: AdapterIOInterface, event):
         queue = self.event_queues.setdefault(adapter_io, asyncio.Queue())
         await queue.put((adapter_io, event))
-
-    async def run_cancellable(self, task, adapter_io: AdapterIOInterface):
-        self.current_tasks[adapter_io] = asyncio.create_task(task)
-        try:
-            return await self.current_tasks[adapter_io]
-        except asyncio.CancelledError:
-            logger.info("Task cancelled by client disconnect")
-        finally:
-            self.current_tasks.pop(adapter_io, None)
 
     async def drain_until_need_reply(self, adapter_io: AdapterIOInterface):
         queue = self.event_queues.get(adapter_io)
@@ -262,9 +252,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     break
         except asyncio.CancelledError:
             logger.info("Client disconnected, cancelling current task")
-            task = self.current_tasks.get(adapter_io)
-            if task:
-                task.cancel()
+            adapter_io.cancel_task()
             asyncio.create_task(self.drain_until_need_reply(adapter_io))
             raise
 

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from pathlib import Path
 
@@ -91,14 +92,24 @@ class ChatAgent(LLMBaseAgent):
                             chat_input_event.normal_input.request = True
                             continue
 
-                    result = await self.agent_io.run_cancellable(
+                    step_task = asyncio.create_task(
                         self.step(user_input, deferred_tool_results=deferred_results)
                     )
-                    if result and isinstance(result.output, DeferredToolRequests):
-                        deferred_requests = result.output
-                    else:
+                    self.agent_io.set_current_task(step_task)
+                    try:
+                        result = await step_task
+                        if result and isinstance(result.output, DeferredToolRequests):
+                            deferred_requests = result.output
+                        else:
+                            deferred_requests = None
+                            chat_input_event.normal_input.request = True
+                    except asyncio.CancelledError:
+                        logger.info("Step cancelled.")
+                        await self.agent_io.agent_send("\n[Step cancelled]\n")
                         deferred_requests = None
                         chat_input_event.normal_input.request = True
+                    finally:
+                        self.agent_io.set_current_task(None)
 
                 except Exception as e:
                     logger.exception("An error occurred.")

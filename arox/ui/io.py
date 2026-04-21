@@ -7,7 +7,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, override
 
-from anyio import create_memory_object_stream
+from anyio import EndOfStream, create_memory_object_stream
 from pydantic_ai import (
     PartEndEvent,
     PartStartEvent,
@@ -43,7 +43,7 @@ class AgentIOInterface(ABC):
         pass
 
     @abstractmethod
-    async def run_cancellable(self, task):
+    def set_current_task(self, task: asyncio.Task | None):
         pass
 
     async def __aenter__(self):
@@ -60,6 +60,10 @@ class AdapterIOInterface(ABC):
 
     @abstractmethod
     async def adapter_receive(self):
+        pass
+
+    @abstractmethod
+    def cancel_task(self):
         pass
 
     def set_adapter(self, adapter):
@@ -85,6 +89,7 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
         self._stack = contextlib.AsyncExitStack()
 
         self.chat_input_event = None
+        self.current_task: asyncio.Task | None = None
 
     @override
     def create_chat_input_event(self):
@@ -116,8 +121,13 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
         return self.chat_input_event.get_deferred_tool_input(key)
 
     @override
-    async def run_cancellable(self, task):
-        return await self.adapter.run_cancellable(task, self)
+    def set_current_task(self, task: asyncio.Task | None):
+        self.current_task = task
+
+    @override
+    def cancel_task(self):
+        if self.current_task:
+            self.current_task.cancel()
 
     @override
     async def agent_send(self, event):
@@ -256,6 +266,3 @@ class AbstractIOAdapter(ABC):
     @abstractmethod
     async def handle_event(self, adapter_io: AdapterIOInterface, event: Any):
         pass
-
-    async def run_cancellable(self, task, adapter_io: "AdapterIOInterface"):
-        return await task

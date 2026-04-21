@@ -3,7 +3,6 @@ import logging
 from abc import ABC, abstractmethod
 from typing import override
 
-from anyio import EndOfStream
 from pydantic_ai import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -29,7 +28,6 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
     def __init__(self, adapter_io: AdapterIOInterface | None = None):
         super().__init__(adapter_io)
         self.message_buffer = []
-        self.current_tasks = {}
         self.read_lock = asyncio.Lock()
         self.input_queue: asyncio.Queue | None = None
 
@@ -41,16 +39,6 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
         """Hook called before handling an output event. Can be used to wait for a chat ID.
         Returns True if the event should be processed, False otherwise."""
         return True
-
-    async def run_cancellable(self, task, adapter_io: AdapterIOInterface):
-        self.current_tasks[adapter_io] = asyncio.create_task(task)
-        try:
-            return await self.current_tasks[adapter_io]
-        except asyncio.CancelledError:
-            logger.info("Task cancelled")
-            await self.send_message("[Step cancelled]")
-        finally:
-            self.current_tasks.pop(adapter_io, None)
 
     @override
     async def handle_event(self, adapter_io: AdapterIOInterface, event):

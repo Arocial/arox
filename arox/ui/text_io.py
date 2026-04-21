@@ -3,7 +3,6 @@ import logging
 import signal
 from typing import override
 
-from anyio import EndOfStream
 from pydantic_ai import (
     FinalResultEvent,
     FunctionToolCallEvent,
@@ -38,22 +37,29 @@ class TextIOAdapter(AbstractIOAdapter):
         else:
             self.user_input = UserInputGenerator()
 
-    async def run_cancellable(self, task, adapter_io: AdapterIOInterface):
-        step_task = asyncio.create_task(task)
-        original_sigint_handler = signal.getsignal(signal.SIGINT)
+    @override
+    async def start(self):
+        if self._started:
+            return
+        self._started = True
 
         def sigint_handler(signum, frame):
             logger.info("Received SIGINT, cancelling current step...")
-            loop = asyncio.get_running_loop()
-            loop.call_soon_threadsafe(step_task.cancel)
+            for adapter_io in self.adapter_ios:
+                adapter_io.cancel_task()
 
+        original_sigint_handler = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, sigint_handler)
 
         try:
-            return await step_task
-        except asyncio.CancelledError:
-            print("\n[Step cancelled by user]")
-            return None
+            async with asyncio.TaskGroup() as tg:
+                self._tg = tg
+                for adapter_io in self.adapter_ios:
+                    tg.create_task(self._process_io(adapter_io))
+
+                # Keep the task group alive
+                while True:
+                    await asyncio.sleep(1)
         finally:
             signal.signal(signal.SIGINT, original_sigint_handler)
 
