@@ -117,7 +117,7 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
 
     @override
     async def run_cancellable(self, task):
-        return await self.adapter.run_cancellable(task)
+        return await self.adapter.run_cancellable(task, self)
 
     @override
     async def agent_send(self, event):
@@ -218,6 +218,7 @@ class ChatInputEvent:
 class AbstractIOAdapter(ABC):
     def __init__(self, adapter_io: AdapterIOInterface | None = None):
         self.adapter_ios: list[AdapterIOInterface] = []
+        self._started_ios: set[AdapterIOInterface] = set()
         if adapter_io:
             self.add_adapter_io(adapter_io)
 
@@ -232,5 +233,5 @@ class AbstractIOAdapter(ABC):
     async def start(self):
         pass
 
-    async def run_cancellable(self, task):
+    async def run_cancellable(self, task, adapter_io: "AdapterIOInterface"):
         return await task

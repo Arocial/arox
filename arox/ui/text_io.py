@@ -19,7 +19,12 @@ from pydantic_ai import (
 )
 
 from arox.core.plugin import CommandCompleter
-from arox.ui.io import AbstractIOAdapter, ChatInputEvent, StepDoneEvent
+from arox.ui.io import (
+    AbstractIOAdapter,
+    AdapterIOInterface,
+    ChatInputEvent,
+    StepDoneEvent,
+)
 from arox.utils import UserInputGenerator
 
 logger = logging.getLogger(__name__)
@@ -33,7 +38,7 @@ class TextIOAdapter(AbstractIOAdapter):
         else:
             self.user_input = UserInputGenerator()
 
-    async def run_cancellable(self, task):
+    async def run_cancellable(self, task, adapter_io: AdapterIOInterface):
         step_task = asyncio.create_task(task)
         original_sigint_handler = signal.getsignal(signal.SIGINT)
 
@@ -135,6 +140,13 @@ class TextIOAdapter(AbstractIOAdapter):
                 except EndOfStream:
                     pass
 
+        unstarted = [io for io in self.adapter_ios if io not in self._started_ios]
+        for io in unstarted:
+            self._started_ios.add(io)
+
+        if not unstarted:
+            return
+
         async with anyio.create_task_group() as tg:
-            for adapter_io in self.adapter_ios:
+            for adapter_io in unstarted:
                 tg.start_soon(process_io, adapter_io)

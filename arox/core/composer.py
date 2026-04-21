@@ -11,7 +11,7 @@ from pydantic_ai import FunctionToolset
 from arox.core.config import ComposerConfig
 from arox.core.llm_base import AgentDeps
 from arox.core.session import ComposerSession, FileSessionStore, SessionStore
-from arox.ui.io import IOChannel
+from arox.ui.io import AbstractIOAdapter, IOChannel
 from arox.utils import import_class
 
 if TYPE_CHECKING:
@@ -24,6 +24,7 @@ class Composer:
     def __init__(
         self,
         name: str,
+        io_adapter: AbstractIOAdapter,
         workspace: Path | str | None = None,
         session_id: str | None = None,
         config_files: list[str | Path] | None = None,
@@ -31,6 +32,7 @@ class Composer:
         session_store: SessionStore | None = None,
     ):
         self.name = name
+        self.io_adapter = io_adapter
         self.workspace = Path(workspace).absolute() if workspace else Path.cwd()
         self.session_id = session_id
 
@@ -47,11 +49,6 @@ class Composer:
         if not composer_config:
             raise ValueError(f"Composer config for '{name}' not found")
         self.composer_config: ComposerConfig = composer_config
-
-        io_adapter_cls = import_class(
-            self.composer_config.io_adapter, group="arox.io_adapters"
-        )
-        self.io_adapter = io_adapter_cls()
 
         self.subagents = {}
         self.io_channels = {}

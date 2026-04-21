@@ -87,8 +87,24 @@ def main():
         )
         asyncio.run(server.run())
     else:
+        if args.ui == "text":
+            from arox.ui.text_io import TextIOAdapter
+
+            io_adapter = TextIOAdapter()
+        elif args.ui == "telegram":
+            from arox.ui.telegram import TelegramIOAdapter
+
+            io_adapter = TelegramIOAdapter()
+        elif args.ui == "feishu":
+            from arox.ui.feishu import FeishuIOAdapter
+
+            io_adapter = FeishuIOAdapter()
+        else:
+            raise ValueError(f"Unknown UI: {args.ui}")
+
         composer = Composer(
             app_name,
+            io_adapter=io_adapter,
             session_id=args.session,
             config_files=[default_agent_config],
             cli_args=unknown_args,

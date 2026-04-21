@@ -78,48 +78,59 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     def __init__(self, adapter_io: AdapterIOInterface | None = None):
         super().__init__(adapter_io)
         self.tool_ids = {}
-        self.current_task = None
+        self.current_tasks = {}
         self.read_lock = asyncio.Lock()
-        self.coder_agent = None
-        self.event_queue = asyncio.Queue()
+        self.coder_agents = {}
+        self.event_queues = {}
 
     def setup(self, agent):
-        self.coder_agent = agent
+        self.coder_agents[agent.agent_io] = agent
 
     async def start(self):
         import anyio
 
         async def process_io(adapter_io):
+            queue = self.event_queues.setdefault(adapter_io, asyncio.Queue())
             try:
                 while True:
                     event = await adapter_io.adapter_receive()
-                    await self.event_queue.put((adapter_io, event))
+                    await queue.put((adapter_io, event))
             except EndOfStream:
                 pass
 
+        unstarted = [io for io in self.adapter_ios if io not in self._started_ios]
+        for io in unstarted:
+            self._started_ios.add(io)
+
+        if not unstarted:
+            return
+
         async with anyio.create_task_group() as tg:
-            for adapter_io in self.adapter_ios:
+            for adapter_io in unstarted:
                 tg.start_soon(process_io, adapter_io)
 
-    async def run_cancellable(self, task):
-        self.current_task = asyncio.create_task(task)
+    async def run_cancellable(self, task, adapter_io: AdapterIOInterface):
+        self.current_tasks[adapter_io] = asyncio.create_task(task)
         try:
-            return await self.current_task
+            return await self.current_tasks[adapter_io]
         except asyncio.CancelledError:
             logger.info("Task cancelled by client disconnect")
         finally:
-            self.current_task = None
+            self.current_tasks.pop(adapter_io, None)
 
-    async def drain_until_need_reply(self):
+    async def drain_until_need_reply(self, adapter_io: AdapterIOInterface):
+        queue = self.event_queues.get(adapter_io)
+        if not queue:
+            return
         try:
             while True:
-                _adapter_io, event = await self.event_queue.get()
+                _adapter_io, event = await queue.get()
                 if isinstance(event, StepDoneEvent):
                     break
         except Exception as e:
             logger.error(f"Error draining events: {e}")
 
-    def _format_event(self, event) -> list[str]:
+    def _format_event(self, adapter_io: AdapterIOInterface, event) -> list[str]:
         events = []
 
         if isinstance(event, PartStartEvent):
@@ -145,7 +156,8 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     )
 
             elif isinstance(part, ToolCallPart):
-                self.tool_ids[index] = part.tool_call_id
+                tool_ids = self.tool_ids.setdefault(adapter_io, {})
+                tool_ids[index] = part.tool_call_id
                 events.append(
                     f"data: {json.dumps({'type': 'tool-input-start', 'toolCallId': part.tool_call_id, 'toolName': part.tool_name})}\n\n"
                 )
@@ -171,7 +183,8 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     )
 
             elif isinstance(event.delta, ToolCallPartDelta):
-                tool_id = self.tool_ids.get(index)
+                tool_ids = self.tool_ids.get(adapter_io, {})
+                tool_id = tool_ids.get(index)
                 if tool_id:
                     events.append(
                         f"data: {json.dumps({'type': 'tool-input-delta', 'toolCallId': tool_id, 'inputTextDelta': delta.args_delta})}\n\n"
@@ -211,35 +224,37 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
         return events
 
-    async def output_generator(self):
+    async def output_generator(self, adapter_io: AdapterIOInterface):
+        queue = self.event_queues.get(adapter_io)
+        if not queue:
+            yield "data: [DONE]\n\n"
+            return
         try:
             while True:
-                _adapter_io, event = await self.event_queue.get()
+                _adapter_io, event = await queue.get()
                 if isinstance(event, StepDoneEvent):
                     yield "data: [DONE]\n\n"
                     break
                 else:
-                    formatted_events = self._format_event(event)
+                    formatted_events = self._format_event(adapter_io, event)
                     for fmt in formatted_events:
                         yield fmt
         except EndOfStream:
             yield "data: [DONE]\n\n"
 
-    async def submit_user_input(self, text: str):
+    async def submit_user_input(self, adapter_io: AdapterIOInterface, text: str):
         from typing import cast
 
         from arox.ui.io import IOChannel
 
-        for adapter_io in self.adapter_ios:
-            io_channel = cast(IOChannel, adapter_io)
-            if (
-                io_channel.chat_input_event
-                and not io_channel.chat_input_event.future.done()
-            ):
-                io_channel.chat_input_event.set_reply(json.loads(text))
-                break
+        io_channel = cast(IOChannel, adapter_io)
+        if (
+            io_channel.chat_input_event
+            and not io_channel.chat_input_event.future.done()
+        ):
+            io_channel.chat_input_event.set_reply(json.loads(text))
 
-    async def chat(self, request: ChatRequest):
+    async def chat(self, adapter_io: AdapterIOInterface, request: ChatRequest):
         messages = request.messages
         if messages:
             last_message = vercel_ui_types.UIMessage.model_validate(messages[-1])
@@ -248,33 +263,40 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 if isinstance(part, vercel_ui_types.TextUIPart):
                     content = part.text
                     logger.info(f"Got user input: {content}")
-                    await self.submit_user_input(content)
+                    await self.submit_user_input(adapter_io, content)
                 else:
                     logger.warning("Unsupported input type.")
 
         return StreamingResponse(
-            self.response_generator(), media_type="text/event-stream"
+            self.response_generator(adapter_io), media_type="text/event-stream"
         )
 
-    async def response_generator(self):
+    async def response_generator(self, adapter_io: AdapterIOInterface):
         try:
-            async for chunk in self.output_generator():
+            async for chunk in self.output_generator(adapter_io):
                 logger.info(chunk)
                 yield chunk
                 if "data: [DONE]\n\n" == chunk:
                     break
         except asyncio.CancelledError:
             logger.info("Client disconnected, cancelling current task")
-            if self.current_task:
-                self.current_task.cancel()
-            asyncio.create_task(self.drain_until_need_reply())
+            task = self.current_tasks.get(adapter_io)
+            if task:
+                task.cancel()
+            asyncio.create_task(self.drain_until_need_reply(adapter_io))
             raise
 
-    async def suggestions(self, command: str | None = None, q: str | None = None):
-        if not self.coder_agent:
+    async def suggestions(
+        self,
+        adapter_io: AdapterIOInterface,
+        command: str | None = None,
+        q: str | None = None,
+    ):
+        agent = self.coder_agents.get(adapter_io)
+        if not agent:
             return SuggestionResponse(items=[])
 
-        command_manager = self.coder_agent.command_manager
+        command_manager = agent.command_manager
         items = []
 
         if not command:
@@ -329,6 +351,7 @@ class VercelStreamServer:
         self.port = port
         self.composers: dict[str, Composer] = {}
         self._tasks: dict[str, asyncio.Task] = {}
+        self.io_adapter = VercelStreamIOAdapter()
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
@@ -370,11 +393,12 @@ class VercelStreamServer:
     async def health(self):
         return {"status": "ok"}
 
-    def _get_adapter(self, composer_id: str) -> VercelStreamIOAdapter:
+    def _get_adapter_io(self, composer_id: str) -> AdapterIOInterface:
         composer = self.composers.get(composer_id)
         if not composer:
             raise HTTPException(status_code=404, detail="Composer not found")
-        return composer.io_adapter
+        main_agent_name = composer.composer_config.main_agent
+        return composer.io_channels[main_agent_name]
 
     async def create_composer(self, request: CreateComposerRequest):
         from arox.core.composer import Composer
@@ -382,6 +406,7 @@ class VercelStreamServer:
         composer_id = uuid4().hex[:12]
         composer = Composer(
             self.composer_name,
+            io_adapter=self.io_adapter,
             workspace=request.workspace,
             session_id=request.session_id,
             config_files=self.config_files,
@@ -442,14 +467,14 @@ class VercelStreamServer:
         return {"status": "deleted"}
 
     async def chat(self, composer_id: str, request: ChatRequest):
-        adapter = self._get_adapter(composer_id)
-        return await adapter.chat(request)
+        adapter_io = self._get_adapter_io(composer_id)
+        return await self.io_adapter.chat(adapter_io, request)
 
     async def suggestions(
         self, composer_id: str, command: str | None = None, q: str | None = None
     ):
-        adapter = self._get_adapter(composer_id)
-        return await adapter.suggestions(command, q)
+        adapter_io = self._get_adapter_io(composer_id)
+        return await self.io_adapter.suggestions(adapter_io, command, q)
 
     async def history(self, composer_id: str):
         composer = self.composers.get(composer_id)

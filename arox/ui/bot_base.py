@@ -28,7 +28,7 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
     def __init__(self, adapter_io: AdapterIOInterface | None = None):
         super().__init__(adapter_io)
         self.message_buffer = []
-        self.current_task = None
+        self.current_tasks = {}
         self.read_lock = asyncio.Lock()
         self.input_queue: asyncio.Queue | None = None
 
@@ -41,15 +41,15 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
         Returns True if the event should be processed, False otherwise."""
         return True
 
-    async def run_cancellable(self, task):
-        self.current_task = asyncio.create_task(task)
+    async def run_cancellable(self, task, adapter_io: AdapterIOInterface):
+        self.current_tasks[adapter_io] = asyncio.create_task(task)
         try:
-            return await self.current_task
+            return await self.current_tasks[adapter_io]
         except asyncio.CancelledError:
             logger.info("Task cancelled")
             await self.send_message("[Step cancelled]")
         finally:
-            self.current_task = None
+            self.current_tasks.pop(adapter_io, None)
 
     async def process_events(self):
         import anyio
@@ -63,8 +63,15 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
             except EndOfStream:
                 pass
 
+        unstarted = [io for io in self.adapter_ios if io not in self._started_ios]
+        for io in unstarted:
+            self._started_ios.add(io)
+
+        if not unstarted:
+            return
+
         async with anyio.create_task_group() as tg:
-            for adapter_io in self.adapter_ios:
+            for adapter_io in unstarted:
                 tg.start_soon(process_io, adapter_io)
 
     async def _handle_output(self, event):
