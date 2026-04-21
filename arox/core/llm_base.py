@@ -450,7 +450,12 @@ class LLMBaseAgent:
                     except asyncio.CancelledError:
                         self._handle_step_failure(input_content, messages)
                         raise
-                    except ModelAPIError as exc:
+                    except (
+                        ModelAPIError,
+                        HTTPStatusError,
+                        TransportError,
+                        ConnectionError,
+                    ) as exc:
                         if is_last:
                             self._handle_step_failure(input_content, messages)
                             raise
