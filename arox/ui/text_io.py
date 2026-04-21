@@ -17,6 +17,7 @@ from pydantic_ai import (
     ToolCallPartDelta,
 )
 
+from arox.core.composer import Composer
 from arox.core.plugin import CommandCompleter
 from arox.ui.io import (
     AbstractIOAdapter,
@@ -30,38 +31,31 @@ logger = logging.getLogger(__name__)
 
 
 class TextIOAdapter(AbstractIOAdapter):
-    def setup(self, agent):
-        if hasattr(agent, "command_manager"):
-            completer = CommandCompleter(agent.command_manager)
+    def __init__(self):
+        super().__init__()
+        self.user_input: UserInputGenerator = UserInputGenerator()
+
+    async def register_composer(self, composer: Composer):
+        await super().register_composer(composer)
+
+        main_agent = composer.main_agent
+        if hasattr(main_agent, "command_manager"):
+            completer = CommandCompleter(main_agent.command_manager)
             self.user_input = UserInputGenerator(completer=completer)
-        else:
-            self.user_input = UserInputGenerator()
 
-    @override
-    async def start(self):
-        if self._started:
-            return
-        self._started = True
-
+    async def __aenter__(self):
         def sigint_handler(signum, frame):
             logger.info("Received SIGINT, cancelling current step...")
-            for adapter_io in self.adapter_ios:
-                adapter_io.cancel_task()
+            for composer in self.composers.values():
+                for io_channel in self._composer_io_channels(composer):
+                    io_channel.cancel_foreground_task()
 
-        original_sigint_handler = signal.getsignal(signal.SIGINT)
+        self.original_sigint_handler = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, sigint_handler)
+        return self
 
-        try:
-            async with asyncio.TaskGroup() as tg:
-                self._tg = tg
-                for adapter_io in self.adapter_ios:
-                    tg.create_task(self._process_io(adapter_io))
-
-                # Keep the task group alive
-                while True:
-                    await asyncio.sleep(1)
-        finally:
-            signal.signal(signal.SIGINT, original_sigint_handler)
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        signal.signal(signal.SIGINT, self.original_sigint_handler)
 
     async def _flush_stdin(self):
         import sys

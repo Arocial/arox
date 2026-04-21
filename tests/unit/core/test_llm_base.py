@@ -12,7 +12,12 @@ from pydantic_ai.messages import (
 
 from arox.core.app import app_setup
 from arox.core.llm_base import LLMBaseAgent, _complete_pending_tool_calls
-from arox.ui.io import IOChannel
+from arox.ui.io import AbstractIOAdapter
+
+
+class _StubIOAdapter(AbstractIOAdapter):
+    async def handle_event(self, adapter_io, event):
+        pass
 
 
 def test_complete_pending_tool_calls_noop_when_all_matched():
@@ -88,12 +93,12 @@ skills = ["skill1"]
         cli_args={"workspace": str(tmp_path)},
     )
 
-    io_channel = IOChannel()
+    io_adapter = _StubIOAdapter()
 
     # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
-    agent = LLMBaseAgent("test_agent", parsed_config, agent_io=io_channel)
+    agent = LLMBaseAgent("test_agent", parsed_config, io_adapter=io_adapter)
 
     assert "skill1" in agent.system_prompt
     assert "skill2" not in agent.system_prompt
@@ -135,12 +140,12 @@ skills = "skill2"
         cli_args={"workspace": str(tmp_path)},
     )
 
-    io_channel = IOChannel()
+    io_adapter = _StubIOAdapter()
 
     # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
-    agent = LLMBaseAgent("test_agent", parsed_config, agent_io=io_channel)
+    agent = LLMBaseAgent("test_agent", parsed_config, io_adapter=io_adapter)
 
     assert "skill1" not in agent.system_prompt
     assert "skill2" in agent.system_prompt
@@ -181,12 +186,12 @@ system_prompt = "Hi there."
         cli_args={"workspace": str(tmp_path)},
     )
 
-    io_channel = IOChannel()
+    io_adapter = _StubIOAdapter()
 
     # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
-    agent = LLMBaseAgent("test_agent", parsed_config, agent_io=io_channel)
+    agent = LLMBaseAgent("test_agent", parsed_config, io_adapter=io_adapter)
 
     assert "skill1" in agent.system_prompt
     assert "skill2" in agent.system_prompt

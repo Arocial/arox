@@ -45,7 +45,7 @@ from arox.core.config import AgentConfig, Config
 from arox.core.hooks import PostStepHook, PreStepHook
 from arox.core.session import AgentSession, _deserialize_messages, _serialize_messages
 from arox.core.skills import build_skill_catalog, discover_skills
-from arox.ui.io import AgentIOInterface
+from arox.ui.io import AbstractIOAdapter, AgentIOInterface, IOChannel
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +180,7 @@ def _complete_pending_tool_calls(messages: list[ModelMessage]) -> None:
 
 @dataclass
 class AgentDeps:
-    agent_io: AgentIOInterface
+    io_channel: AgentIOInterface
 
 
 class LLMBaseAgent:
@@ -188,7 +188,7 @@ class LLMBaseAgent:
         self,
         name: str,
         parsed_config: Config,
-        agent_io: AgentIOInterface,
+        io_adapter: AbstractIOAdapter,
         local_toolset: FunctionToolset[AgentDeps] | None = None,
         workspace: Path | str | None = None,
     ):
@@ -238,7 +238,9 @@ class LLMBaseAgent:
             output_type=(DeferredToolRequests, str),
         )
 
-        self.agent_io = agent_io
+        self.io_channel = IOChannel()
+        self.io_adapter = io_adapter
+        self.io_channel.set_adapter(io_adapter)
 
         self._stack = contextlib.AsyncExitStack()
         self.reset()
@@ -247,7 +249,7 @@ class LLMBaseAgent:
         self, ctx: RunContext["AgentDeps"], events: AsyncIterable[AgentStreamEvent]
     ):
         async for event in events:
-            await ctx.deps.agent_io.agent_send(event)
+            await ctx.deps.io_channel.agent_send(event)
 
     def load_plugins(self):
         plugin_classes = self.agent_config.plugins
@@ -291,7 +293,10 @@ class LLMBaseAgent:
         return None
 
     async def __aenter__(self):
-        await self._stack.enter_async_context(self.agent_io)
+        tg = asyncio.TaskGroup()
+        await self._stack.enter_async_context(tg)
+        tg.create_task(self.io_adapter._process_io(self.io_channel))
+        await self._stack.enter_async_context(self.io_channel)
         if self.mcp_client:
             await self._stack.enter_async_context(self.mcp_client)
         return self
@@ -345,7 +350,7 @@ class LLMBaseAgent:
         self.model = model
 
     async def show_agent_info(self):
-        await self.agent_io.agent_send(
+        await self.io_channel.agent_send(
             f"Using model {self.provider_model} for {self.name}"
         )
 
@@ -425,7 +430,7 @@ class LLMBaseAgent:
             for idx, ref in enumerate(refs_to_try):
                 if ref != self.model_ref:
                     self.set_model(ref)
-                    await self.agent_io.agent_send(
+                    await self.io_channel.agent_send(
                         f"Primary model failed, falling back to {self.provider_model}"
                     )
                 is_last = idx == len(refs_to_try) - 1
@@ -440,7 +445,7 @@ class LLMBaseAgent:
                             model_settings=ModelSettings(**self.model_params),
                             instructions=f"{self.system_prompt}\n{self.additional_prompt}",
                             message_history=self.message_history,
-                            deps=AgentDeps(agent_io=self.agent_io),
+                            deps=AgentDeps(io_channel=self.io_channel),
                             deferred_tool_results=deferred_tool_results,
                         )
                         self.message_history = result.all_messages()

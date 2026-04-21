@@ -8,7 +8,6 @@ import lark_oapi as lark
 from anyio import to_thread
 
 from arox.ui.bot_base import BotIOAdapter
-from arox.ui.io import AdapterIOInterface
 
 logger = logging.getLogger(__name__)
 
@@ -20,8 +19,8 @@ class FeishuIOAdapter(BotIOAdapter):
     _adapters = []
     _shared_input_queue = asyncio.Queue()
 
-    def __init__(self, adapter_io: AdapterIOInterface | None = None):
-        super().__init__(adapter_io)
+    def __init__(self):
+        super().__init__()
         self.app_id = os.environ.get("FEISHU_APP_ID")
         self.app_secret = os.environ.get("FEISHU_APP_SECRET")
         self.allowed_chat_id = os.environ.get("FEISHU_CHAT_ID")
@@ -30,9 +29,6 @@ class FeishuIOAdapter(BotIOAdapter):
         self.input_queue = FeishuIOAdapter._shared_input_queue
 
         FeishuIOAdapter._adapters.append(self)
-
-    def setup(self, agent):
-        pass
 
     async def send_message(self, text: str):
         if not self.current_chat_id:
@@ -65,12 +61,12 @@ class FeishuIOAdapter(BotIOAdapter):
         return bool(self.current_chat_id)
 
     @override
-    async def start(self):
+    async def __aenter__(self):
         if not self.app_id or not self.app_secret:
             logger.error(
                 "FEISHU_APP_ID or FEISHU_APP_SECRET is not set. Feishu adapter will not start."
             )
-            return
+            return self
 
         async with FeishuIOAdapter._app_lock:
             if FeishuIOAdapter._lark_client is None:
@@ -122,7 +118,7 @@ class FeishuIOAdapter(BotIOAdapter):
                     to_thread.run_sync(wsclient.start, abandon_on_cancel=True)
                 )
 
-        await super().start()
+        return self
 
     async def handle_user_message(self, chat_id: str, text: str):
         if chat_id != self.allowed_chat_id:

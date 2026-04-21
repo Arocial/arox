@@ -13,7 +13,6 @@ from telegram.ext import (
 )
 
 from arox.ui.bot_base import BotIOAdapter
-from arox.ui.io import AdapterIOInterface
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +23,8 @@ class TelegramIOAdapter(BotIOAdapter):
     _adapters = []
     _shared_input_queue = asyncio.Queue()
 
-    def __init__(self, adapter_io: AdapterIOInterface | None = None):
-        super().__init__(adapter_io)
+    def __init__(self):
+        super().__init__()
         self.token = os.environ.get("TELEGRAM_BOT_TOKEN")
         self.allowed_chat_id = os.environ.get("TELEGRAM_CHAT_ID")
         if self.allowed_chat_id:
@@ -43,9 +42,6 @@ class TelegramIOAdapter(BotIOAdapter):
     def app(self):
         return TelegramIOAdapter._shared_app
 
-    def setup(self, agent):
-        pass
-
     async def send_message(self, text: str):
         if not self.app or not self.current_chat_id:
             return
@@ -56,12 +52,12 @@ class TelegramIOAdapter(BotIOAdapter):
         return bool(self.app and self.current_chat_id)
 
     @override
-    async def start(self):
+    async def __aenter__(self):
         if not self.token:
             logger.error(
                 "TELEGRAM_BOT_TOKEN is not set. Telegram adapter will not start."
             )
-            return
+            return self
 
         async with TelegramIOAdapter._app_lock:
             if TelegramIOAdapter._shared_app is None:
@@ -79,7 +75,7 @@ class TelegramIOAdapter(BotIOAdapter):
                     await app.updater.start_polling(drop_pending_updates=True)
                 TelegramIOAdapter._shared_app = app
 
-        await super().start()
+        return self
 
     @classmethod
     async def shared_start_command(

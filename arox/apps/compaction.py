@@ -76,7 +76,7 @@ class CompactionAgent(LLMBaseAgent):
 
     async def compact(self, messages: list[ModelMessage]) -> str:
         logger.info("Starting context compaction...")
-        await self.agent_io.agent_send(
+        await self.io_channel.agent_send(
             "Context size is large. Compacting conversation history..."
         )
 
@@ -85,7 +85,7 @@ class CompactionAgent(LLMBaseAgent):
         result = await self.pydantic_agent.run(
             COMPACTION_PROMPT,
             message_history=messages,
-            deps=AgentDeps(agent_io=self.agent_io),
+            deps=AgentDeps(io_channel=self.io_channel),
         )
 
         logger.info("Context compaction completed.")

@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 
 class BotIOAdapter(AbstractIOAdapter, ABC):
-    def __init__(self, adapter_io: AdapterIOInterface | None = None):
-        super().__init__(adapter_io)
+    def __init__(self):
+        super().__init__()
         self.message_buffer = []
         self.read_lock = asyncio.Lock()
         self.input_queue: asyncio.Queue | None = None

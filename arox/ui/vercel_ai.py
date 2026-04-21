@@ -5,7 +5,6 @@ import json
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, override
-from uuid import uuid4
 
 if TYPE_CHECKING:
     from arox.core.composer import Composer
@@ -75,15 +74,11 @@ class SessionInfo(BaseModel):
 
 
 class VercelStreamIOAdapter(AbstractIOAdapter):
-    def __init__(self, adapter_io: AdapterIOInterface | None = None):
-        super().__init__(adapter_io)
+    def __init__(self):
+        super().__init__()
         self.tool_ids = {}
         self.read_lock = asyncio.Lock()
-        self.coder_agents = {}
         self.event_queues = {}
-
-    def setup(self, agent):
-        self.coder_agents[agent.agent_io] = agent
 
     @override
     async def handle_event(self, adapter_io: AdapterIOInterface, event):
@@ -226,7 +221,15 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         ):
             io_channel.chat_input_event.set_reply(json.loads(text))
 
-    async def chat(self, adapter_io: AdapterIOInterface, request: ChatRequest):
+    async def chat(self, composer_id: str, request: ChatRequest):
+        composer = self.composers.get(composer_id)
+        if not composer:
+            raise HTTPException(
+                status_code=404, detail=f"Composer {composer_id} not found."
+            )
+        main_agent = composer.main_agent
+        adapter_io = main_agent.io_channel
+
         messages = request.messages
         if messages:
             last_message = vercel_ui_types.UIMessage.model_validate(messages[-1])
@@ -252,17 +255,22 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     break
         except asyncio.CancelledError:
             logger.info("Client disconnected, cancelling current task")
-            adapter_io.cancel_task()
+            adapter_io.cancel_foreground_task()
             asyncio.create_task(self.drain_until_need_reply(adapter_io))
             raise
 
     async def suggestions(
         self,
-        adapter_io: AdapterIOInterface,
+        composer_id: str,
         command: str | None = None,
         q: str | None = None,
     ):
-        agent = self.coder_agents.get(adapter_io)
+        composer = self.composers.get(composer_id)
+        if not composer:
+            raise HTTPException(
+                status_code=404, detail=f"Composer {composer_id} not found."
+            )
+        agent = composer.main_agent
         if not agent:
             return SuggestionResponse(items=[])
 
@@ -363,17 +371,9 @@ class VercelStreamServer:
     async def health(self):
         return {"status": "ok"}
 
-    def _get_adapter_io(self, composer_id: str) -> AdapterIOInterface:
-        composer = self.composers.get(composer_id)
-        if not composer:
-            raise HTTPException(status_code=404, detail="Composer not found")
-        main_agent_name = composer.composer_config.main_agent
-        return composer.io_channels[main_agent_name]
-
     async def create_composer(self, request: CreateComposerRequest):
         from arox.core.composer import Composer
 
-        composer_id = uuid4().hex[:12]
         composer = Composer(
             self.composer_name,
             io_adapter=self.io_adapter,
@@ -382,10 +382,10 @@ class VercelStreamServer:
             config_files=self.config_files,
             cli_args=self.cli_args,
         )
-        self.composers[composer_id] = composer
-        task = asyncio.create_task(self._run_composer(composer_id, composer))
-        self._tasks[composer_id] = task
-        return ComposerInfo(id=composer_id, workspace=str(composer.workspace))
+        self.composers[composer.id] = composer
+        task = asyncio.create_task(self._run_composer(composer.id, composer))
+        self._tasks[composer.id] = task
+        return ComposerInfo(id=composer.id, workspace=str(composer.workspace))
 
     async def _run_composer(self, composer_id: str, composer):
         try:
@@ -437,14 +437,12 @@ class VercelStreamServer:
         return {"status": "deleted"}
 
     async def chat(self, composer_id: str, request: ChatRequest):
-        adapter_io = self._get_adapter_io(composer_id)
-        return await self.io_adapter.chat(adapter_io, request)
+        return await self.io_adapter.chat(composer_id, request)
 
     async def suggestions(
         self, composer_id: str, command: str | None = None, q: str | None = None
     ):
-        adapter_io = self._get_adapter_io(composer_id)
-        return await self.io_adapter.suggestions(adapter_io, command, q)
+        return await self.io_adapter.suggestions(composer_id, command, q)
 
     async def history(self, composer_id: str):
         composer = self.composers.get(composer_id)
@@ -467,8 +465,5 @@ class VercelStreamServer:
 
         config = uvicorn.Config(self.app, host=self.host, port=self.port, ws="none")
         server = uvicorn.Server(config)
-
-        # Start io_adapter
-        asyncio.create_task(self.io_adapter.start())
 
         await server.serve()

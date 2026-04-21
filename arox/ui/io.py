@@ -5,14 +5,17 @@ import math
 from abc import ABC, abstractmethod
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Any, override
+from typing import TYPE_CHECKING, Any, override
 
-from anyio import EndOfStream, create_memory_object_stream
+from anyio import ClosedResourceError, EndOfStream, create_memory_object_stream
 from pydantic_ai import (
     PartEndEvent,
     PartStartEvent,
     TextPart,
 )
+
+if TYPE_CHECKING:
+    from arox.core.composer import Composer
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +46,11 @@ class AgentIOInterface(ABC):
         pass
 
     @abstractmethod
-    def set_current_task(self, task: asyncio.Task | None):
+    def set_foreground_task(self, task: asyncio.Task | None):
+        pass
+
+    @abstractmethod
+    def cancel_foreground_task(self):
         pass
 
     async def __aenter__(self):
@@ -60,10 +67,6 @@ class AdapterIOInterface(ABC):
 
     @abstractmethod
     async def adapter_receive(self):
-        pass
-
-    @abstractmethod
-    def cancel_task(self):
         pass
 
     def set_adapter(self, adapter):
@@ -121,11 +124,11 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
         return self.chat_input_event.get_deferred_tool_input(key)
 
     @override
-    def set_current_task(self, task: asyncio.Task | None):
+    def set_foreground_task(self, task: asyncio.Task | None):
         self.current_task = task
 
     @override
-    def cancel_task(self):
+    def cancel_foreground_task(self):
         if self.current_task:
             self.current_task.cancel()
 
@@ -226,43 +229,31 @@ class ChatInputEvent:
 
 
 class AbstractIOAdapter(ABC):
-    def __init__(self, adapter_io: AdapterIOInterface | None = None):
-        self.adapter_ios: list[AdapterIOInterface] = []
-        self._started = False
-        self._tg: asyncio.TaskGroup | None = None
-        if adapter_io:
-            self.add_adapter_io(adapter_io)
+    def __init__(self):
+        self.composers: dict[str, Composer] = {}
+        self._composer_tasks: dict[Any, list[asyncio.Task]] = {}
+        self._tg: asyncio.TaskGroup = asyncio.TaskGroup()
 
-    def add_adapter_io(self, adapter_io: AdapterIOInterface):
-        self.adapter_ios.append(adapter_io)
-        adapter_io.set_adapter(self)
-        if self._started and self._tg:
-            self._tg.create_task(self._process_io(adapter_io))
+    def _composer_io_channels(self, composer) -> list[AdapterIOInterface]:
+        return [agent.io_channel for agent in composer.all_agents().values()]
 
-    def setup(self, agent):
-        pass
-
-    async def start(self):
-        if self._started:
-            return
-        self._started = True
-        async with asyncio.TaskGroup() as tg:
-            self._tg = tg
-            for adapter_io in self.adapter_ios:
-                tg.create_task(self._process_io(adapter_io))
-
-            # Keep the task group alive
-            while True:
-                await asyncio.sleep(1)
+    async def register_composer(self, composer: "Composer"):
+        self.composers[composer.id] = composer
 
     async def _process_io(self, adapter_io: AdapterIOInterface):
         try:
             while True:
                 event = await adapter_io.adapter_receive()
                 await self.handle_event(adapter_io, event)
-        except EndOfStream:
+        except (EndOfStream, ClosedResourceError):
             pass
 
     @abstractmethod
     async def handle_event(self, adapter_io: AdapterIOInterface, event: Any):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
         pass

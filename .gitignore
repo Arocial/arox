@@ -13,6 +13,7 @@ build/
 .aider*
 !.aider.conf.yml
 !.aider.instructions.md
+.claude
 
 *.testres
 

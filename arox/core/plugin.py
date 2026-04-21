@@ -122,11 +122,11 @@ class CommandManager:
                 else:
                     command.execute(c_name, c_arg)
             except Exception as e:
-                await self.agent.agent_io.agent_send(
+                await self.agent.io_channel.agent_send(
                     f"Error executing command {c_name}: {e}"
                 )
         else:
-            await self.agent.agent_io.agent_send(f"Command not found: {user_input}")
+            await self.agent.io_channel.agent_send(f"Command not found: {user_input}")
         return True
 
     def get_completions(self, name: str, args: str):

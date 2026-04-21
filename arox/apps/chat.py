@@ -111,8 +111,7 @@ def main():
         )
 
         async def run_all():
-            async with asyncio.TaskGroup() as tg:
-                tg.create_task(io_adapter.start())
+            async with io_adapter:
                 await composer.run()
 
         asyncio.run(run_all())

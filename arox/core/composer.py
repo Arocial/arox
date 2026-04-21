@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -11,7 +12,7 @@ from pydantic_ai import FunctionToolset
 from arox.core.config import ComposerConfig
 from arox.core.llm_base import AgentDeps
 from arox.core.session import ComposerSession, FileSessionStore, SessionStore
-from arox.ui.io import AbstractIOAdapter, IOChannel
+from arox.ui.io import AbstractIOAdapter
 from arox.utils import import_class
 
 if TYPE_CHECKING:
@@ -35,6 +36,7 @@ class Composer:
         self.io_adapter = io_adapter
         self.workspace = Path(workspace).absolute() if workspace else Path.cwd()
         self.session_id = session_id
+        self.id = str(uuid.uuid4())
 
         from arox.core.config import load_config
 
@@ -51,7 +53,6 @@ class Composer:
         self.composer_config: ComposerConfig = composer_config
 
         self.subagents = {}
-        self.io_channels = {}
         self.initialized = asyncio.Event()
 
         self._init_agents()
@@ -81,10 +82,6 @@ class Composer:
                 raise ValueError(f"Agent config for '{agent_name}' not found")
             agent_configs[agent_name] = agent_config
 
-            io_channel = IOChannel()
-            self.io_channels[agent_name] = io_channel
-            self.io_adapter.add_adapter_io(io_channel)
-
         # Second pass: instantiate subagents
         for agent_name in subagent_names:
             agent_type = agent_configs[agent_name].type
@@ -98,7 +95,7 @@ class Composer:
             agent = agent_cls(
                 agent_name,
                 self.parsed_config,
-                agent_io=self.io_channels[agent_name],
+                io_adapter=self.io_adapter,
                 workspace=self.workspace,
             )
             self._load_agent_hooks(agent, agent_configs[agent_name])
@@ -118,8 +115,8 @@ class Composer:
         main_agent = main_agent_cls(
             main_agent_name,
             self.parsed_config,
+            io_adapter=self.io_adapter,
             local_toolset=local_toolset,
-            agent_io=self.io_channels[main_agent_name],
             workspace=self.workspace,
         )
 
@@ -133,9 +130,7 @@ class Composer:
         self._load_agent_hooks(main_agent, agent_configs[main_agent_name])
         self.main_agent = main_agent
 
-        self.io_adapter.setup(main_agent)
-
-    def _all_agents(self) -> dict[str, LLMBaseAgent]:
+    def all_agents(self) -> dict[str, LLMBaseAgent]:
         agents = dict(self.subagents)
         if self.main_agent:
             agents[self.main_agent.name] = self.main_agent
@@ -150,7 +145,7 @@ class Composer:
             if loaded:
                 self.session = loaded
                 restored = True
-                await self.main_agent.agent_io.agent_send(
+                await self.main_agent.io_channel.agent_send(
                     f"Session restored: {self.session.id}"
                 )
 
@@ -159,7 +154,7 @@ class Composer:
                 self.name, workspace=str(self.workspace)
             )
 
-        for name, agent in self._all_agents().items():
+        for name, agent in self.all_agents().items():
             agent.restore_session(self.session.get_agent_session(name))
 
     async def _save_session(self):
@@ -195,8 +190,7 @@ class Composer:
             raise RuntimeError("Main agent is not initialized")
 
         async with contextlib.AsyncExitStack() as stack:
-            for io_channel in self.io_channels.values():
-                await stack.enter_async_context(io_channel)
+            await self.io_adapter.register_composer(self)
 
             for agent in self.subagents.values():
                 await stack.enter_async_context(agent)

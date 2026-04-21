@@ -19,7 +19,7 @@ def test():
 class MockAgent:
     def __init__(self, workspace):
         self.workspace = workspace
-        self.agent_io = None
+        self.io_channel = None
         self._capabilities = {}
 
     def provide_capability(self, capability, provider):

@@ -16,7 +16,7 @@ class ChatAgent(LLMBaseAgent):
         self,
         name,
         parsed_config,
-        agent_io,
+        io_adapter,
         local_toolset=None,
         workspace: Path | str | None = None,
     ):
@@ -24,7 +24,7 @@ class ChatAgent(LLMBaseAgent):
         super().__init__(
             name,
             parsed_config,
-            agent_io,
+            io_adapter,
             local_toolset,
             workspace,
         )
@@ -41,12 +41,12 @@ class ChatAgent(LLMBaseAgent):
     async def start(self):
         """Start the agent with optional input generator"""
         deferred_requests: DeferredToolRequests | None = None
-        chat_input_event = self.agent_io.create_chat_input_event()
+        chat_input_event = self.io_channel.create_chat_input_event()
         chat_input_event.normal_input.request = True
-        await self.agent_io.agent_send(chat_input_event)
+        await self.io_channel.agent_send(chat_input_event)
 
         while True:
-            async with self.agent_io.chat_round() as ctx:
+            async with self.io_channel.chat_round() as ctx:
                 if deferred_requests:
                     deferred_results = DeferredToolResults()
                     for call in deferred_requests.calls:
@@ -71,7 +71,7 @@ class ChatAgent(LLMBaseAgent):
                     and not chat_input_event.exception_input.retry
                 )
 
-                chat_input_event = self.agent_io.create_chat_input_event()
+                chat_input_event = self.io_channel.create_chat_input_event()
                 if skip:
                     chat_input_event.normal_input.request = True
                     continue
@@ -95,7 +95,7 @@ class ChatAgent(LLMBaseAgent):
                     step_task = asyncio.create_task(
                         self.step(user_input, deferred_tool_results=deferred_results)
                     )
-                    self.agent_io.set_current_task(step_task)
+                    self.io_channel.set_foreground_task(step_task)
                     try:
                         result = await step_task
                         if result and isinstance(result.output, DeferredToolRequests):
@@ -105,11 +105,11 @@ class ChatAgent(LLMBaseAgent):
                             chat_input_event.normal_input.request = True
                     except asyncio.CancelledError:
                         logger.info("Step cancelled.")
-                        await self.agent_io.agent_send("\n[Step cancelled]\n")
+                        await self.io_channel.agent_send("\n[Step cancelled]\n")
                         deferred_requests = None
                         chat_input_event.normal_input.request = True
                     finally:
-                        self.agent_io.set_current_task(None)
+                        self.io_channel.set_foreground_task(None)
 
                 except Exception as e:
                     logger.exception("An error occurred.")

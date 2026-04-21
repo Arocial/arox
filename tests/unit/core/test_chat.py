@@ -1,5 +1,3 @@
-import asyncio
-
 import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
@@ -44,14 +42,11 @@ system_prompt = "Hi there."
     with create_pipe_input() as pipe_input:
         user_input = UserInputGenerator(input=pipe_input, output=DummyOutput())
 
-        from arox.ui.io import IOChannel
-
-        io_channel = IOChannel()
-        io_adapter = TextIOAdapter(io_channel)
+        io_adapter = TextIOAdapter()
         agent = ChatAgent(
             "dummy_chat",
             parsed_config,
-            agent_io=io_channel,
+            io_adapter=io_adapter,
             local_toolset=local_toolset,
         )
         io_adapter.user_input = user_input
@@ -59,11 +54,9 @@ system_prompt = "Hi there."
         for msg in test_user_msg:
             pipe_input.send_text(msg)
 
-        asyncio.create_task(io_adapter.start())
-
         test_model = TestModel(call_tools=["multiply"])
         with agent.pydantic_agent.override(model=test_model):
-            async with agent:
+            async with io_adapter, agent:
                 await agent.start()
 
         # Verify that the tool was called
