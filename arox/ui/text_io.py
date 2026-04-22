@@ -22,7 +22,7 @@ from arox.core.composer import Composer
 from arox.core.plugin import CommandCompleter
 from arox.ui.io import (
     AbstractIOAdapter,
-    AdapterIOInterface,
+    AdapterIOEndpoint,
 )
 from arox.utils import UserInputGenerator
 
@@ -128,5 +128,5 @@ class TextIOAdapter(AbstractIOAdapter):
             print(f"\nUnexpected event type: {event.__class__.__name__}\n")
 
     @override
-    async def handle_event(self, adapter_io: AdapterIOInterface, event):
+    async def handle_event(self, adapter_io: AdapterIOEndpoint, event):
         await self._handle_output(event)

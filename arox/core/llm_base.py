@@ -45,7 +45,7 @@ from arox.core.config import AgentConfig, Config
 from arox.core.hooks import PostStepHook, PreStepHook
 from arox.core.session import AgentSession, _deserialize_messages, _serialize_messages
 from arox.core.skills import build_skill_catalog, discover_skills
-from arox.ui.io import AbstractIOAdapter, AgentIOInterface, create_io_channel
+from arox.ui.io import AbstractIOAdapter, AgentIOEndpoint, create_io_channel
 
 logger = logging.getLogger(__name__)
 
@@ -180,7 +180,7 @@ def _complete_pending_tool_calls(messages: list[ModelMessage]) -> None:
 
 @dataclass
 class AgentDeps:
-    io_channel: AgentIOInterface
+    io_channel: AgentIOEndpoint
 
 
 class LLMBaseAgent:

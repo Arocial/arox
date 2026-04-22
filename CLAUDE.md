@@ -31,7 +31,7 @@ uv run mkdocs serve  # Serve docs at http://127.0.0.1:3420
 
 ### IO Adapters (`arox/ui/`)
 
-Adapters abstract the UI. All agents communicate through `AgentIOInterface`. Available adapters:
+Adapters abstract the UI. All agents communicate through `AgentIOEndpoint`. Available adapters:
 - `TextIOAdapter` — rich terminal via `prompt-toolkit`
 - `VercelStreamIOAdapter` — web frontend via Vercel AI SDK (FastAPI/SSE)
 - `TelegramIOAdapter`, `FeishuIOAdapter` — chat bots

@@ -3,7 +3,7 @@ import contextlib
 import logging
 import math
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, override
+from typing import TYPE_CHECKING, Any
 
 from anyio import ClosedResourceError, EndOfStream, create_memory_object_stream
 from pydantic_ai import (
@@ -18,45 +18,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class AgentIOInterface(ABC):
-    @abstractmethod
-    async def agent_send(self, event):
-        pass
-
-    @abstractmethod
-    async def agent_receive(self):
-        pass
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        pass
-
-
-class AdapterIOInterface(ABC):
-    @abstractmethod
-    async def adapter_send(self, reply):
-        pass
-
-    @abstractmethod
-    async def adapter_receive(self):
-        pass
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        pass
-
-
-class AgentIOEndpoint(AgentIOInterface):
+class AgentIOEndpoint:
     def __init__(self, tx, rx):
         self.tx = tx
         self.rx = rx
         self._stack = contextlib.AsyncExitStack()
 
-    @override
     async def agent_send(self, event):
         if isinstance(event, str):
             await self.tx.send(PartStartEvent(part=TextPart(content=event), index=-1))
@@ -64,7 +31,6 @@ class AgentIOEndpoint(AgentIOInterface):
         else:
             await self.tx.send(event)
 
-    @override
     async def agent_receive(self):
         return await self.rx.receive()
 
@@ -77,17 +43,15 @@ class AgentIOEndpoint(AgentIOInterface):
         await self._stack.aclose()
 
 
-class AdapterIOEndpoint(AdapterIOInterface):
+class AdapterIOEndpoint:
     def __init__(self, tx, rx):
         self.tx = tx
         self.rx = rx
         self._stack = contextlib.AsyncExitStack()
 
-    @override
     async def adapter_send(self, reply):
         await self.tx.send(reply)
 
-    @override
     async def adapter_receive(self):
         return await self.rx.receive()
 
@@ -117,7 +81,7 @@ class AbstractIOAdapter(ABC):
     async def register_composer(self, composer: "Composer"):
         self.composers[composer.id] = composer
 
-    async def _process_io(self, adapter_io: AdapterIOInterface):
+    async def _process_io(self, adapter_io: AdapterIOEndpoint):
         try:
             while True:
                 event = await adapter_io.adapter_receive()
@@ -126,7 +90,7 @@ class AbstractIOAdapter(ABC):
             pass
 
     @abstractmethod
-    async def handle_event(self, adapter_io: AdapterIOInterface, event: Any):
+    async def handle_event(self, adapter_io: AdapterIOEndpoint, event: Any):
         pass
 
     async def __aenter__(self):

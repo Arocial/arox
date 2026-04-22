@@ -33,7 +33,7 @@ from pydantic_ai.ui.vercel_ai import request_types as vercel_ui_types
 from arox.core.chat import ChatInputEvent, StepDoneEvent
 from arox.ui.io import (
     AbstractIOAdapter,
-    AdapterIOInterface,
+    AdapterIOEndpoint,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,11 +80,11 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         self.event_queues = {}
 
     @override
-    async def handle_event(self, adapter_io: AdapterIOInterface, event):
+    async def handle_event(self, adapter_io: AdapterIOEndpoint, event):
         queue = self.event_queues.setdefault(adapter_io, asyncio.Queue())
         await queue.put((adapter_io, event))
 
-    async def drain_until_need_reply(self, adapter_io: AdapterIOInterface):
+    async def drain_until_need_reply(self, adapter_io: AdapterIOEndpoint):
         queue = self.event_queues.get(adapter_io)
         if not queue:
             return
@@ -96,7 +96,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         except Exception as e:
             logger.error(f"Error draining events: {e}")
 
-    def _format_event(self, adapter_io: AdapterIOInterface, event) -> list[str]:
+    def _format_event(self, adapter_io: AdapterIOEndpoint, event) -> list[str]:
         events = []
 
         if isinstance(event, PartStartEvent):
@@ -190,7 +190,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
         return events
 
-    async def output_generator(self, adapter_io: AdapterIOInterface):
+    async def output_generator(self, adapter_io: AdapterIOEndpoint):
         queue = self.event_queues.get(adapter_io)
         if not queue:
             yield "data: [DONE]\n\n"
@@ -242,7 +242,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             media_type="text/event-stream",
         )
 
-    async def response_generator(self, agent, adapter_io: AdapterIOInterface):
+    async def response_generator(self, agent, adapter_io: AdapterIOEndpoint):
         try:
             async for chunk in self.output_generator(adapter_io):
                 logger.info(chunk)
