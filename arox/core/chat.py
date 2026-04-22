@@ -21,6 +21,7 @@ class ChatAgent(LLMBaseAgent):
         workspace: Path | str | None = None,
     ):
         self.command_manager = CommandManager(self)
+        self.foreground_task: asyncio.Task | None = None
         super().__init__(
             name,
             parsed_config,
@@ -28,6 +29,10 @@ class ChatAgent(LLMBaseAgent):
             local_toolset,
             workspace,
         )
+
+    def cancel_foreground_task(self):
+        if self.foreground_task:
+            self.foreground_task.cancel()
 
     def load_plugins(self):
         plugins = super().load_plugins()
@@ -95,7 +100,7 @@ class ChatAgent(LLMBaseAgent):
                     step_task = asyncio.create_task(
                         self.step(user_input, deferred_tool_results=deferred_results)
                     )
-                    self.io_channel.set_foreground_task(step_task)
+                    self.foreground_task = step_task
                     try:
                         result = await step_task
                         if result and isinstance(result.output, DeferredToolRequests):
@@ -109,7 +114,7 @@ class ChatAgent(LLMBaseAgent):
                         deferred_requests = None
                         chat_input_event.normal_input.request = True
                     finally:
-                        self.io_channel.set_foreground_task(None)
+                        self.foreground_task = None
 
                 except Exception as e:
                     logger.exception("An error occurred.")

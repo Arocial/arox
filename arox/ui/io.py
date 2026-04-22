@@ -45,14 +45,6 @@ class AgentIOInterface(ABC):
     async def agent_receive(self):
         pass
 
-    @abstractmethod
-    def set_foreground_task(self, task: asyncio.Task | None):
-        pass
-
-    @abstractmethod
-    def cancel_foreground_task(self):
-        pass
-
     async def __aenter__(self):
         return self
 
@@ -92,7 +84,6 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
         self._stack = contextlib.AsyncExitStack()
 
         self.chat_input_event = None
-        self.current_task: asyncio.Task | None = None
 
     @override
     def create_chat_input_event(self):
@@ -122,15 +113,6 @@ class IOChannel(AgentIOInterface, AdapterIOInterface):
         assert self.chat_input_event is not None
         await self.chat_input_event.wait()
         return self.chat_input_event.get_deferred_tool_input(key)
-
-    @override
-    def set_foreground_task(self, task: asyncio.Task | None):
-        self.current_task = task
-
-    @override
-    def cancel_foreground_task(self):
-        if self.current_task:
-            self.current_task.cancel()
 
     @override
     async def agent_send(self, event):

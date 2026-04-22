@@ -17,6 +17,7 @@ from pydantic_ai import (
     ToolCallPartDelta,
 )
 
+from arox.core.chat import ChatAgent
 from arox.core.composer import Composer
 from arox.core.plugin import CommandCompleter
 from arox.ui.io import (
@@ -47,8 +48,9 @@ class TextIOAdapter(AbstractIOAdapter):
         def sigint_handler(signum, frame):
             logger.info("Received SIGINT, cancelling current step...")
             for composer in self.composers.values():
-                for io_channel in self._composer_io_channels(composer):
-                    io_channel.cancel_foreground_task()
+                for agent in composer.all_agents().values():
+                    if isinstance(agent, ChatAgent):
+                        agent.cancel_foreground_task()
 
         self.original_sigint_handler = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, sigint_handler)

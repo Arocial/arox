@@ -243,10 +243,11 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     logger.warning("Unsupported input type.")
 
         return StreamingResponse(
-            self.response_generator(adapter_io), media_type="text/event-stream"
+            self.response_generator(main_agent, adapter_io),
+            media_type="text/event-stream",
         )
 
-    async def response_generator(self, adapter_io: AdapterIOInterface):
+    async def response_generator(self, agent, adapter_io: AdapterIOInterface):
         try:
             async for chunk in self.output_generator(adapter_io):
                 logger.info(chunk)
@@ -255,7 +256,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     break
         except asyncio.CancelledError:
             logger.info("Client disconnected, cancelling current task")
-            adapter_io.cancel_foreground_task()
+            agent.cancel_foreground_task()
             asyncio.create_task(self.drain_until_need_reply(adapter_io))
             raise
 
