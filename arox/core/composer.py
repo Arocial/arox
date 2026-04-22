@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 import uuid
@@ -53,7 +52,6 @@ class Composer:
         self.composer_config: ComposerConfig = composer_config
 
         self.subagents = {}
-        self.initialized = asyncio.Event()
 
         self._init_agents()
 
@@ -189,9 +187,6 @@ class Composer:
         await self.session_store.save_session(self.session)
 
     async def run(self):
-        if self.main_agent is None:
-            raise RuntimeError("Main agent is not initialized")
-
         async with contextlib.AsyncExitStack() as stack:
             await self.io_adapter.register_composer(self)
 
@@ -200,7 +195,6 @@ class Composer:
             await stack.enter_async_context(self.main_agent)
 
             await self._init_session(self.session_id)
-            self.initialized.set()
 
             try:
                 for agent in self.subagents.values():

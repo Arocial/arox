@@ -72,12 +72,32 @@ class SessionInfo(BaseModel):
     metadata: dict
 
 
+from dataclasses import dataclass
+from enum import Enum
+
+
+class ComposerTaskStatus(str, Enum):
+    RUNNING = "running"
+    STOPPED = "stopped"
+    CANCELLED = "cancelled"
+    ERROR = "error"
+
+
+@dataclass
+class ComposerRun:
+    composer: Composer
+    task: asyncio.Task | None = None
+    status: ComposerTaskStatus = ComposerTaskStatus.RUNNING
+    error: Exception | None = None
+
+
 class VercelStreamIOAdapter(AbstractIOAdapter):
     def __init__(self):
         super().__init__()
         self.tool_ids = {}
         self.read_lock = asyncio.Lock()
         self.event_queues = {}
+        self.run_instances: dict[str, ComposerRun] = {}
 
     @override
     async def handle_event(self, adapter_io: AdapterIOEndpoint, event):
@@ -217,11 +237,12 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             agent.current_chat_input_event.set_reply(json.loads(text))
 
     async def chat(self, composer_id: str, request: ChatRequest):
-        composer = self.composers.get(composer_id)
-        if not composer:
+        run_instance = self.run_instances.get(composer_id)
+        if not run_instance:
             raise HTTPException(
                 status_code=404, detail=f"Composer {composer_id} not found."
             )
+        composer = run_instance.composer
         main_agent = composer.main_agent
         adapter_io = main_agent.adapter_io
 
@@ -261,11 +282,12 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         command: str | None = None,
         q: str | None = None,
     ):
-        composer = self.composers.get(composer_id)
-        if not composer:
+        run_instance = self.run_instances.get(composer_id)
+        if not run_instance:
             raise HTTPException(
                 status_code=404, detail=f"Composer {composer_id} not found."
             )
+        composer = run_instance.composer
         agent = composer.main_agent
         if not isinstance(agent, ChatAgent):
             return SuggestionResponse(items=[])
@@ -323,18 +345,21 @@ class VercelStreamServer:
         self.cli_args = cli_args or []
         self.host = host
         self.port = port
-        self.composers: dict[str, Composer] = {}
-        self._tasks: dict[str, asyncio.Task] = {}
         self.io_adapter = VercelStreamIOAdapter()
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             yield
             # Cancel all running composer tasks on shutdown
-            for task in self._tasks.values():
+            tasks = [
+                r.task
+                for r in self.io_adapter.run_instances.values()
+                if r.task and not r.task.done()
+            ]
+            for task in tasks:
                 task.cancel()
-            if self._tasks:
-                await asyncio.gather(*self._tasks.values(), return_exceptions=True)
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
         self.app = FastAPI(lifespan=lifespan)
         self.app.add_middleware(
@@ -378,27 +403,65 @@ class VercelStreamServer:
             config_files=self.config_files,
             cli_args=self.cli_args,
         )
-        self.composers[composer.id] = composer
-        task = asyncio.create_task(self._run_composer(composer.id, composer))
-        self._tasks[composer.id] = task
-        return ComposerInfo(id=composer.id, workspace=str(composer.workspace))
+        run_instance = ComposerRun(composer=composer)
+        self.io_adapter.run_instances[composer.id] = run_instance
 
-    async def _run_composer(self, composer_id: str, composer):
-        try:
-            await composer.run()
-        except asyncio.CancelledError:
-            logger.info(f"Composer {composer_id} cancelled")
-        except Exception:
-            logger.exception(f"Composer {composer_id} error")
-        finally:
-            self.composers.pop(composer_id, None)
-            self._tasks.pop(composer_id, None)
+        task = asyncio.create_task(composer.run())
+        run_instance.task = task
+
+        def on_task_done(t: asyncio.Task):
+            try:
+                t.result()
+                run_instance.status = ComposerTaskStatus.STOPPED
+                logger.info(f"Composer {composer.id} finished normally.")
+            except asyncio.CancelledError:
+                run_instance.status = ComposerTaskStatus.CANCELLED
+                logger.info(f"Composer {composer.id} was cancelled.")
+            except Exception as e:
+                run_instance.status = ComposerTaskStatus.ERROR
+                run_instance.error = e
+                logger.exception(f"Composer {composer.id} crashed with error.")
+
+        task.add_done_callback(on_task_done)
+
+        return ComposerInfo(id=composer.id, workspace=str(composer.workspace))
 
     async def list_composers(self):
         return [
-            ComposerInfo(id=cid, workspace=str(c.workspace))
-            for cid, c in self.composers.items()
+            ComposerInfo(id=cid, workspace=str(r.composer.workspace))
+            for cid, r in self.io_adapter.run_instances.items()
         ]
+
+    async def delete_composer(self, composer_id: str):
+        run_instance = self.io_adapter.run_instances.pop(composer_id, None)
+        if not run_instance:
+            raise HTTPException(status_code=404, detail="Composer not found")
+        if run_instance.task and not run_instance.task.done():
+            run_instance.task.cancel()
+        return {"status": "deleted"}
+
+    async def chat(self, composer_id: str, request: ChatRequest):
+        return await self.io_adapter.chat(composer_id, request)
+
+    async def suggestions(
+        self, composer_id: str, command: str | None = None, q: str | None = None
+    ):
+        return await self.io_adapter.suggestions(composer_id, command, q)
+
+    async def history(self, composer_id: str):
+        run_instance = self.io_adapter.run_instances.get(composer_id)
+        if not run_instance:
+            raise HTTPException(status_code=404, detail="Composer not found")
+
+        composer = run_instance.composer
+        if not composer.main_agent:
+            return []
+
+        from pydantic_ai.ui.vercel_ai._adapter import VercelAIAdapter
+
+        messages = composer.main_agent.message_history
+        ui_messages = VercelAIAdapter.dump_messages(messages)
+        return [msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages]
 
     async def list_sessions(self):
         from arox.core.session import FileSessionStore
@@ -422,39 +485,6 @@ class VercelStreamServer:
         store = FileSessionStore()
         await store.delete_session(session_id)
         return {"status": "deleted"}
-
-    async def delete_composer(self, composer_id: str):
-        task = self._tasks.pop(composer_id, None)
-        composer = self.composers.pop(composer_id, None)
-        if not composer:
-            raise HTTPException(status_code=404, detail="Composer not found")
-        if task:
-            task.cancel()
-        return {"status": "deleted"}
-
-    async def chat(self, composer_id: str, request: ChatRequest):
-        return await self.io_adapter.chat(composer_id, request)
-
-    async def suggestions(
-        self, composer_id: str, command: str | None = None, q: str | None = None
-    ):
-        return await self.io_adapter.suggestions(composer_id, command, q)
-
-    async def history(self, composer_id: str):
-        composer = self.composers.get(composer_id)
-        if not composer:
-            raise HTTPException(status_code=404, detail="Composer not found")
-
-        await composer.initialized.wait()
-
-        if not composer.main_agent:
-            return []
-
-        from pydantic_ai.ui.vercel_ai._adapter import VercelAIAdapter
-
-        messages = composer.main_agent.message_history
-        ui_messages = VercelAIAdapter.dump_messages(messages)
-        return [msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages]
 
     async def run(self):
         import uvicorn
