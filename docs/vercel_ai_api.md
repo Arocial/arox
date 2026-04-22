@@ -22,7 +22,8 @@ Create a new composer instance.
 {
   "id": "composer-uuid",
   "workspace": "/path/to/workspace",
-  "agents": ["main", "coder", "planner"]
+  "main_agent": "main",
+  "subagents": ["coder", "planner"]
 }
 ```
 
@@ -35,7 +36,8 @@ List all running composer instances.
   {
     "id": "composer-uuid",
     "workspace": "/path/to/workspace",
-    "agents": ["main", "coder", "planner"]
+    "main_agent": "main",
+    "subagents": ["coder", "planner"]
   }
 ]
 ```
@@ -45,7 +47,7 @@ Stop and delete a composer instance.
 
 ### Agent Interactions
 
-The following endpoints are per-agent, meaning you must specify both the `composer_id` and the `agent_name` (which can be found in the `agents` list of the `ComposerInfo` response).
+The following endpoints are per-agent, meaning you must specify both the `composer_id` and the `agent_name` (which can be the `main_agent` or one of the `subagents` from the `ComposerInfo` response).
 
 #### `POST /api/composers/{composer_id}/agents/{agent_name}/chat`
 Send a message to a specific agent and receive a streaming response (Server-Sent Events).

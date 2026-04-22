@@ -62,7 +62,8 @@ class CreateComposerRequest(BaseModel):
 class ComposerInfo(BaseModel):
     id: str
     workspace: str
-    agents: list[str]
+    main_agent: str
+    subagents: list[str]
 
 
 class SessionInfo(BaseModel):
@@ -441,7 +442,8 @@ class VercelStreamServer:
         return ComposerInfo(
             id=composer.id,
             workspace=str(composer.workspace),
-            agents=list(composer.all_agents().keys()),
+            main_agent=composer.main_agent.name,
+            subagents=list(composer.subagents.keys()),
         )
 
     async def list_composers(self):
@@ -449,7 +451,8 @@ class VercelStreamServer:
             ComposerInfo(
                 id=cid,
                 workspace=str(r.composer.workspace),
-                agents=list(r.composer.all_agents().keys()),
+                main_agent=r.composer.main_agent.name,
+                subagents=list(r.composer.subagents.keys()),
             )
             for cid, r in self.io_adapter.run_instances.items()
         ]

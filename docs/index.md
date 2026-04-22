@@ -47,7 +47,7 @@ Capabilities provide a typed, decoupled way for plugins and agents to declare wh
 To learn more about how Arox works and how to build your own agents, explore the following sections:
 
 - **[Architecture](architecture.md)**: Deep dive into the core components of the framework.
-- **[API Reference](api.md)**: Documentation for the Vercel AI SDK compatible API.
+- **[API Reference](vercel_ai_api.md)**: Documentation for the Vercel AI SDK compatible API.
 - **[Apps: Coder](apps/coder.md)**: Learn about the built-in Coder application.
 - **[Development](development.md)**: Guide on how to set up the project and contribute.
 - **[Philosophy](philosophy.md)**: Read about the design philosophy behind Arox.

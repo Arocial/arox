@@ -29,7 +29,7 @@ theme:
 nav:
   - Home: index.md
   - Architecture: architecture.md
-  - API Reference: api.md
+  - API Reference: vercel_ai_api.md
   - Apps:
     - Coder: apps/coder.md
   - Development: development.md
