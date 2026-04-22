@@ -10,9 +10,9 @@ from typing import TYPE_CHECKING, Any
 from pydantic_ai import FunctionToolset
 
 from arox.core.config import ComposerConfig
+from arox.core.io import AbstractIOAdapter
 from arox.core.llm_base import AgentDeps
 from arox.core.session import ComposerSession, FileSessionStore, SessionStore
-from arox.ui.io import AbstractIOAdapter
 from arox.utils import import_class
 
 if TYPE_CHECKING:

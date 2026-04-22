@@ -11,8 +11,8 @@ from pydantic_ai.messages import (
 )
 
 from arox.core.app import app_setup
+from arox.core.io import AbstractIOAdapter
 from arox.core.llm_base import LLMBaseAgent, _complete_pending_tool_calls
-from arox.ui.io import AbstractIOAdapter
 
 
 class _StubIOAdapter(AbstractIOAdapter):

@@ -31,7 +31,7 @@ from pydantic_ai import (
 from pydantic_ai.ui.vercel_ai import request_types as vercel_ui_types
 
 from arox.core.chat import ChatInputEvent, StepDoneEvent
-from arox.ui.io import (
+from arox.core.io import (
     AbstractIOAdapter,
     AdapterIOEndpoint,
 )

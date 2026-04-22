@@ -43,9 +43,9 @@ from tenacity import (
 from arox import utils
 from arox.core.config import AgentConfig, Config
 from arox.core.hooks import PostStepHook, PreStepHook
+from arox.core.io import AbstractIOAdapter, AgentIOEndpoint, create_io_channel
 from arox.core.session import AgentSession, _deserialize_messages, _serialize_messages
 from arox.core.skills import build_skill_catalog, discover_skills
-from arox.ui.io import AbstractIOAdapter, AgentIOEndpoint, create_io_channel
 
 logger = logging.getLogger(__name__)
 

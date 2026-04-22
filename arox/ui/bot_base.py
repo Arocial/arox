@@ -16,7 +16,7 @@ from pydantic_ai import (
 )
 
 from arox.core.chat import ChatInputEvent
-from arox.ui.io import (
+from arox.core.io import (
     AbstractIOAdapter,
     AdapterIOEndpoint,
 )

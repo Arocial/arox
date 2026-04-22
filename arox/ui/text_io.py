@@ -19,11 +19,11 @@ from pydantic_ai import (
 
 from arox.core.chat import ChatAgent, ChatInputEvent, StepDoneEvent
 from arox.core.composer import Composer
-from arox.core.plugin import CommandCompleter
-from arox.ui.io import (
+from arox.core.io import (
     AbstractIOAdapter,
     AdapterIOEndpoint,
 )
+from arox.core.plugin import CommandCompleter
 from arox.utils import UserInputGenerator
 
 logger = logging.getLogger(__name__)
