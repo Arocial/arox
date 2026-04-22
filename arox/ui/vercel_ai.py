@@ -236,15 +236,19 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         ):
             agent.current_chat_input_event.set_reply(json.loads(text))
 
-    async def chat(self, composer_id: str, request: ChatRequest):
+    async def chat(self, composer_id: str, agent_name: str, request: ChatRequest):
         run_instance = self.run_instances.get(composer_id)
         if not run_instance:
             raise HTTPException(
                 status_code=404, detail=f"Composer {composer_id} not found."
             )
         composer = run_instance.composer
-        main_agent = composer.main_agent
-        adapter_io = main_agent.adapter_io
+        agent = composer.all_agents().get(agent_name)
+        if not agent:
+            raise HTTPException(
+                status_code=404, detail=f"Agent {agent_name} not found."
+            )
+        adapter_io = agent.adapter_io
 
         messages = request.messages
         if messages:
@@ -254,12 +258,12 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 if isinstance(part, vercel_ui_types.TextUIPart):
                     content = part.text
                     logger.info(f"Got user input: {content}")
-                    await self.submit_user_input(main_agent, content)
+                    await self.submit_user_input(agent, content)
                 else:
                     logger.warning("Unsupported input type.")
 
         return StreamingResponse(
-            self.response_generator(main_agent, adapter_io),
+            self.response_generator(agent, adapter_io),
             media_type="text/event-stream",
         )
 
@@ -279,6 +283,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     async def suggestions(
         self,
         composer_id: str,
+        agent_name: str,
         command: str | None = None,
         q: str | None = None,
     ):
@@ -288,7 +293,11 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 status_code=404, detail=f"Composer {composer_id} not found."
             )
         composer = run_instance.composer
-        agent = composer.main_agent
+        agent = composer.all_agents().get(agent_name)
+        if not agent:
+            raise HTTPException(
+                status_code=404, detail=f"Agent {agent_name} not found."
+            )
         if not isinstance(agent, ChatAgent):
             return SuggestionResponse(items=[])
 
@@ -377,12 +386,16 @@ class VercelStreamServer:
             self.list_composers
         )
         self.app.delete("/api/composers/{composer_id}")(self.delete_composer)
-        self.app.post("/api/composers/{composer_id}/chat")(self.chat)
+        self.app.post("/api/composers/{composer_id}/agents/{agent_name}/chat")(
+            self.chat
+        )
         self.app.get(
-            "/api/composers/{composer_id}/suggestions",
+            "/api/composers/{composer_id}/agents/{agent_name}/suggestions",
             response_model=SuggestionResponse,
         )(self.suggestions)
-        self.app.get("/api/composers/{composer_id}/history")(self.history)
+        self.app.get("/api/composers/{composer_id}/agents/{agent_name}/history")(
+            self.history
+        )
         self.app.get("/api/sessions", response_model=list[SessionInfo])(
             self.list_sessions
         )
@@ -440,26 +453,31 @@ class VercelStreamServer:
             run_instance.task.cancel()
         return {"status": "deleted"}
 
-    async def chat(self, composer_id: str, request: ChatRequest):
-        return await self.io_adapter.chat(composer_id, request)
+    async def chat(self, composer_id: str, agent_name: str, request: ChatRequest):
+        return await self.io_adapter.chat(composer_id, agent_name, request)
 
     async def suggestions(
-        self, composer_id: str, command: str | None = None, q: str | None = None
+        self,
+        composer_id: str,
+        agent_name: str,
+        command: str | None = None,
+        q: str | None = None,
     ):
-        return await self.io_adapter.suggestions(composer_id, command, q)
+        return await self.io_adapter.suggestions(composer_id, agent_name, command, q)
 
-    async def history(self, composer_id: str):
+    async def history(self, composer_id: str, agent_name: str):
         run_instance = self.io_adapter.run_instances.get(composer_id)
         if not run_instance:
             raise HTTPException(status_code=404, detail="Composer not found")
 
         composer = run_instance.composer
-        if not composer.main_agent:
-            return []
+        agent = composer.all_agents().get(agent_name)
+        if not agent:
+            raise HTTPException(status_code=404, detail="Agent not found")
 
         from pydantic_ai.ui.vercel_ai._adapter import VercelAIAdapter
 
-        messages = composer.main_agent.message_history
+        messages = agent.message_history
         ui_messages = VercelAIAdapter.dump_messages(messages)
         return [msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages]
 
