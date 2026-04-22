@@ -45,7 +45,7 @@ from arox.core.config import AgentConfig, Config
 from arox.core.hooks import PostStepHook, PreStepHook
 from arox.core.session import AgentSession, _deserialize_messages, _serialize_messages
 from arox.core.skills import build_skill_catalog, discover_skills
-from arox.ui.io import AbstractIOAdapter, AgentIOInterface, IOChannel
+from arox.ui.io import AbstractIOAdapter, AgentIOInterface, create_io_channel
 
 logger = logging.getLogger(__name__)
 
@@ -238,9 +238,8 @@ class LLMBaseAgent:
             output_type=(DeferredToolRequests, str),
         )
 
-        self.io_channel = IOChannel()
+        self.io_channel, self.adapter_io = create_io_channel()
         self.io_adapter = io_adapter
-        self.io_channel.set_adapter(io_adapter)
 
         self._stack = contextlib.AsyncExitStack()
         self.reset()
@@ -295,8 +294,9 @@ class LLMBaseAgent:
     async def __aenter__(self):
         tg = asyncio.TaskGroup()
         await self._stack.enter_async_context(tg)
-        tg.create_task(self.io_adapter._process_io(self.io_channel))
+        tg.create_task(self.io_adapter._process_io(self.adapter_io))
         await self._stack.enter_async_context(self.io_channel)
+        await self._stack.enter_async_context(self.adapter_io)
         if self.mcp_client:
             await self._stack.enter_async_context(self.mcp_client)
         return self

@@ -15,10 +15,10 @@ from pydantic_ai import (
     ThinkingPartDelta,
 )
 
+from arox.core.chat import ChatInputEvent
 from arox.ui.io import (
     AbstractIOAdapter,
     AdapterIOInterface,
-    ChatInputEvent,
 )
 
 logger = logging.getLogger(__name__)

@@ -17,14 +17,12 @@ from pydantic_ai import (
     ToolCallPartDelta,
 )
 
-from arox.core.chat import ChatAgent
+from arox.core.chat import ChatAgent, ChatInputEvent, StepDoneEvent
 from arox.core.composer import Composer
 from arox.core.plugin import CommandCompleter
 from arox.ui.io import (
     AbstractIOAdapter,
     AdapterIOInterface,
-    ChatInputEvent,
-    StepDoneEvent,
 )
 from arox.utils import UserInputGenerator
 

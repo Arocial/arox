@@ -30,11 +30,10 @@ from pydantic_ai import (
 )
 from pydantic_ai.ui.vercel_ai import request_types as vercel_ui_types
 
+from arox.core.chat import ChatInputEvent, StepDoneEvent
 from arox.ui.io import (
     AbstractIOAdapter,
     AdapterIOInterface,
-    ChatInputEvent,
-    StepDoneEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -209,17 +208,13 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         except EndOfStream:
             yield "data: [DONE]\n\n"
 
-    async def submit_user_input(self, adapter_io: AdapterIOInterface, text: str):
-        from typing import cast
-
-        from arox.ui.io import IOChannel
-
-        io_channel = cast(IOChannel, adapter_io)
+    async def submit_user_input(self, agent, text: str):
         if (
-            io_channel.chat_input_event
-            and not io_channel.chat_input_event.future.done()
+            hasattr(agent, "current_chat_input_event")
+            and agent.current_chat_input_event
+            and not agent.current_chat_input_event.future.done()
         ):
-            io_channel.chat_input_event.set_reply(json.loads(text))
+            agent.current_chat_input_event.set_reply(json.loads(text))
 
     async def chat(self, composer_id: str, request: ChatRequest):
         composer = self.composers.get(composer_id)
@@ -228,7 +223,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 status_code=404, detail=f"Composer {composer_id} not found."
             )
         main_agent = composer.main_agent
-        adapter_io = main_agent.io_channel
+        adapter_io = main_agent.adapter_io
 
         messages = request.messages
         if messages:
@@ -238,7 +233,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 if isinstance(part, vercel_ui_types.TextUIPart):
                     content = part.text
                     logger.info(f"Got user input: {content}")
-                    await self.submit_user_input(adapter_io, content)
+                    await self.submit_user_input(main_agent, content)
                 else:
                     logger.warning("Unsupported input type.")
 
