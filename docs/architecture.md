@@ -1,69 +1,73 @@
 # Architecture
 
-Arox is designed with a modular architecture that separates concerns into distinct components. This allows for high flexibility and extensibility when building AI agents.
+Arox is organized around a clear runtime hierarchy, a split IO system, and a small set of extension points on top of a common agent base. This document walks through each layer.
 
-## Core Components
+## Hierarchy: App → Composer → Agents
 
-### 1. Agent Patterns
+An **App** is a runnable process (e.g. `arox-coder`) that owns a single **IO adapter** and hosts one or more **Composers**.
 
-Agent Patterns define the core behavior and interaction model of an AI agent.
+A **`Composer`** (`arox/core/composer.py`) assembles a working agent system against a workspace:
 
-- **`LLMBaseAgent`**: The foundational class for all LLM-driven agents. It handles:
-    - Model inference and provider abstraction (via `pydantic_ai`).
-    - State and history management.
-    - Tool integration (both local Python functions and MCP servers).
-    - Execution hooks (Pre-step and Post-step).
-- **`ChatAgent`**: Extends `LLMBaseAgent` to implement a continuous conversational loop. It introduces the concept of a `CommandManager` to handle user-triggered commands during the chat.
+- Exactly one **main agent** — the user-facing entry point, must subclass `MainAgent` (typically a `ChatAgent`).
+- Zero or more **subagents** — specialized agents the main agent can delegate to. They are exposed through the `SUBAGENT` capability on the main agent.
+- A resolved `ComposerConfig` (from `arox/core/config.py`), which names the main agent, its subagents, and their per-agent configuration.
 
-### 2. Composers (Apps)
+The composer drives lifecycle: it constructs agents (looked up by entry-point name from `AgentConfig.type`), attaches pre/post step hooks, enters their async contexts, restores session state, then runs `main_agent.run()`.
 
-A **Composer** is responsible for assembling a complete application by wiring together multiple agents, tools, and an IO adapter. 
+### Session management
 
-- It defines a **Main Agent** (usually a `ChatAgent` that interacts with the user) and optional **Subagents** (specialized agents that run in the background or are invoked by the main agent).
-- It manages the lifecycle of all components and sets up the communication channels between them.
-- Example: The `Coder` app uses a Composer to set up a main coding assistant agent alongside subagents like a `CompactionAgent`.
+Session handling lives at the composer layer (`arox/core/session.py`), one layer above individual agents:
 
-### 3. Plugins
+- **`ComposerSession`** aggregates per-agent `AgentSession` entries plus composer-level metadata under a single session id.
+- **`AgentSession`** is event-sourced: instead of storing a static message list, it stores a sequence of `SessionEvent`s (`agent_step`, `compaction`, `reset`, …) and rebuilds `message_history` by replay.
+- **`llm_context_id`** is a UUID tracking the current LLM context window, passed to providers (e.g. via headers) to leverage server-side caching. A `reset` or `compaction` event rolls it forward, signaling a new context.
+- **`SessionStore`** (default `FileSessionStore`) persists sessions as JSON with age-based cleanup. `Composer.run()` restores on entry and saves on exit; resume by passing `session_id` to the composer.
 
-Plugins are the primary way to extend an agent's capabilities. They bundle together tools, commands, and history processors into a cohesive unit.
+## IO system
 
-- **Tools**: Functions provided to the LLM to interact with the external environment. Arox supports two types of tools:
-    - **Local Tools**: Python functions registered directly with the agent via plugins (e.g., `Shell` execution).
-    - **MCP (Model Context Protocol) Tools**: Arox natively supports connecting to MCP servers via `fastmcp`, allowing agents to leverage a wide ecosystem of external tools and data sources seamlessly.
-- **Commands**: Structured actions triggered by human users (e.g., `/project`, `/reset`, `/model`). They are handled by the `CommandManager` in a `ChatAgent` and can execute local Python code or trigger specific agent behaviors without sending a prompt to the LLM, saving time and tokens.
-- **History Processors**: Functions that can modify the message history before it is sent to the LLM.
+IO is split into two layers: a per-agent channel and an app-level adapter.
 
-### 4. Capabilities
+### Per-agent channel
 
-Capabilities provide a typed, decoupled way for plugins and agents to declare what they provide or require. 
+Every agent holds its own **`AgentIOEndpoint`** (`agent.agent_io`), created by `create_io_channel()` in `arox/core/io.py`. The endpoint is backed by a pair of in-memory streams and exposes `agent_send` / `agent_receive`. Because the main agent and each subagent each have their own channel, their output can be routed, rendered, or stored independently.
 
-- A `Capability` is a typed object representing a specific feature or service (e.g., `FileEditCapability`).
-- Plugins can provide implementations for specific capabilities.
-- Other components can request a capability from the agent, allowing them to use the feature without knowing which specific plugin provides it. This promotes loose coupling and modularity.
+### App-level adapter
 
-### 5. IO Adapters (UI)
+One **`AbstractIOAdapter`** (`arox/ui/`) is instantiated per App and shared across all composers in it. The adapter:
 
-IO Adapters abstract the user interface, allowing the same agent logic to run across different platforms.
+- Registers composers via `register_composer`.
+- Consumes each agent's matching `AdapterIOEndpoint`.
+- Renders events to the concrete UI.
 
-- **`TextIOAdapter`**: A rich terminal interface using `prompt-toolkit`.
-- **`VercelStreamIOAdapter`**: For integration with web frontends using the Vercel AI SDK.
-- **`TelegramIOAdapter`**: For running the agent as a Telegram bot.
-- **`FeishuIOAdapter`**: For running the agent as a Feishu (Lark) bot.
+Built-in adapters:
 
-### 6. Session Management
+- **`TextIOAdapter`** — rich terminal via `prompt-toolkit`.
+- **`VercelStreamIOAdapter`** — web frontend via Vercel AI SDK (FastAPI/SSE).
+- **`TelegramIOAdapter`** — Telegram bot.
+- **`FeishuIOAdapter`** — Feishu (Lark) bot.
 
-Arox uses an event-sourced design for managing sessions, allowing for robust state recovery, auditing, and context management.
+## Agents
 
-- **`ComposerSession`**: Represents the overall session for an application. It contains global metadata, a unique session ID, and a collection of `AgentSession`s.
-- **`AgentSession`**: Manages the state for an individual agent. Instead of storing a static list of messages, it stores a sequence of `SessionEvent`s (e.g., `agent_step`, `compaction`, `reset`).
-- **State Reconstruction**: The agent's `message_history` is dynamically rebuilt by replaying these events. For example, an `agent_step` event appends new messages, while a `compaction` event resets the history to a compacted state.
-- **`llm_context_id`**: A unique identifier (UUID) representing the current LLM context window. It is passed to the LLM provider (e.g., via headers) to leverage provider-side caching or session management. When the context is cleared or compacted (via a `reset` or `compaction` event), a new `llm_context_id` is generated, signaling to the provider that a new context has started.
-- **Storage**: Sessions are persisted using a `SessionStore` (e.g., `FileSessionStore`), which saves the composer metadata and individual agent states as JSON files, enabling seamless resumption of past sessions.
+### Types
 
-## Data Flow
+- **`LLMBaseAgent`** (`arox/core/llm_base.py`) — base class for all LLM agents. Owns model inference via `pydantic_ai`, tool registration (local + MCP), message history, and pre/post step hooks.
+- **`MainAgent`** (`arox/core/llm_base.py`) — abstract subclass a composer's main agent must extend; defines the top-level run loop entry point.
+- **`ChatAgent`** (`arox/core/chat.py`) — concrete `MainAgent` that adds a conversational loop and a `CommandManager` for slash commands (`/model`, `/reset`, …). Standard choice for user-facing agents.
 
-1. **User Input**: The user sends a message via the UI (handled by the IO Adapter).
-2. **Command Check**: The `ChatAgent` checks if the input is a command. If so, it executes the command locally.
-3. **LLM Inference**: If it's a normal message, it's appended to the state and sent to the LLM via `pydantic_ai`.
-4. **Tool Execution**: If the LLM decides to call a tool, the framework executes the tool (local or MCP) and returns the result to the LLM.
-5. **Response**: The final text response from the LLM is streamed back to the user via the IO Adapter.
+### Extension points
+
+- **Plugins** (`arox/core/plugin.py`): the primary unit of extension. A plugin bundles:
+    - `tools()` — Python functions exposed to the LLM (`@tool`). Arox also natively supports **MCP** tools via `fastmcp`, registered alongside local tools.
+    - `commands()` — slash commands for the human (`@command`), dispatched by `CommandManager`. Commands run locally without calling the LLM, saving time and tokens.
+    - `history_processor()` — async hook that modifies message history before each LLM call.
+- **Capabilities** (`arox/core/capability.py`): typed tokens for loose coupling. Producers call `agent.provide_capability(cap, impl)`; consumers call `agent.get_capability(cap)`. Built-in capabilities live in `arox/plugins/capabilities.py` (e.g. `SUBAGENT`, `FileEditCapability`).
+- **Skills** (`arox/core/skills.py`): discovered from `.arox/skills/` in the workspace and injected into the agent's system prompt as a catalog. `AgentConfig.skills` restricts which skills are visible to a given agent.
+- **Hooks**: `pre_step_hooks` / `post_step_hooks` declared in `AgentConfig` are resolved via entry points and attached around each inference step.
+
+## Data flow
+
+1. **User input** arrives at the IO adapter and is forwarded over the main agent's `AgentIOEndpoint`.
+2. **Command check**: the `ChatAgent` tests whether the input is a slash command and, if so, executes it locally without calling the LLM.
+3. **LLM inference**: otherwise the message is appended to history (an `agent_step` event) and sent to the LLM via `pydantic_ai`.
+4. **Tool execution**: tool calls (local, MCP, or a subagent via the `SUBAGENT` capability) are dispatched and their results fed back to the LLM.
+5. **Response**: the final text is streamed back through the agent's IO channel and rendered by the adapter.

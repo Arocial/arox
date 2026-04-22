@@ -14,28 +14,40 @@ uv run mkdocs serve  # Serve docs at http://127.0.0.1:3420
 
 ## Architecture
 
-### Core Abstractions
+### Hierarchy: App → Composer → Agents
 
-**`LLMBaseAgent`** (`arox/core/llm_base.py`): Base class for all LLM agents. Manages model inference via `pydantic_ai`, tool registration, MCP client, message history, and pre/post step hooks.
+An **App** is a runnable process that owns one `IOAdapter` and hosts one or more **Composers**. Each `Composer` (`arox/core/composer.py`) wires together a **main agent** plus zero or more **subagents** against a single workspace, driven by `ComposerConfig`. The main agent runs the user-facing loop; subagents are exposed to it via the `SUBAGENT` capability so it can delegate.
 
-**`ChatAgent`** (`arox/core/chat.py`): Extends `LLMBaseAgent` with a conversational loop and `CommandManager` for slash commands (e.g. `/model`, `/reset`). This is the standard agent type for user-facing agents.
+Agent types and which agent to instantiate come from config (`arox/core/config.py`): `AppConfig` / `ComposerConfig` / `AgentConfig` are resolved by `load_config` from layered YAML plus CLI overrides.
 
-**`Composer`** (`arox/core/composer.py`): Wires together a main agent, subagents, and an IO adapter into a runnable app. Subagents are registered as a `SUBAGENT` capability on the main agent. The `coder` composer is the primary example.
+**Session management** lives at the composer layer (`arox/core/session.py`):
+- `ComposerSession` aggregates per-agent `AgentSession` entries (message history + metadata) under one session id.
+- `SessionStore` (default `FileSessionStore`) persists sessions to disk with an age-based cleanup.
+- On `Composer.run()`, sessions are restored into each agent; on exit they are saved back. Resuming is done via the `session_id` passed to `Composer`.
 
-**`Plugin`** (`arox/core/plugin.py`): Base class for extending agents. A plugin declares:
-- `tools()` — Python functions exposed to the LLM (decorated with `@tool`)
-- `commands()` — slash commands for the human (decorated with `@command`)
-- `history_processor()` — async hook to modify message history before LLM calls
+### IO system
 
-**`Capability`** (`arox/core/capability.py`): A typed token used for loose coupling. Plugins call `agent.provide_capability(cap, impl)` and consumers call `agent.get_capability(cap)`. Defined capabilities are in `arox/plugins/capabilities.py`.
+IO is split into two layers: per-agent channels and app-level adapters.
 
-### IO Adapters (`arox/ui/`)
+- **Per-agent channel** (`arox/core/io.py`): `create_io_channel()` returns an `(AgentIOEndpoint, AdapterIOEndpoint)` pair backed by two in-memory streams. Every agent holds its own `agent_io: AgentIOEndpoint` and uses `agent_send` / `agent_receive` to talk to the UI — both the main agent and each subagent have independent channels, so their output can be routed/rendered separately.
+- **App-level adapter** (`arox/ui/`, base `AbstractIOAdapter`): one adapter per App, shared across composers. It registers composers, consumes each agent's `AdapterIOEndpoint`, and renders events to the concrete UI. Available adapters:
+  - `TextIOAdapter` — rich terminal via `prompt-toolkit`
+  - `VercelStreamIOAdapter` — web frontend via Vercel AI SDK (FastAPI/SSE)
+  - `TelegramIOAdapter`, `FeishuIOAdapter` — chat bots
 
-Adapters abstract the UI. All agents communicate through `AgentIOEndpoint`. Available adapters:
-- `TextIOAdapter` — rich terminal via `prompt-toolkit`
-- `VercelStreamIOAdapter` — web frontend via Vercel AI SDK (FastAPI/SSE)
-- `TelegramIOAdapter`, `FeishuIOAdapter` — chat bots
+### Agents
 
-### Skills (`arox/core/skills.py`)
+**Types**
+- **`LLMBaseAgent`** (`arox/core/llm_base.py`): base class for all LLM agents. Owns model inference via `pydantic_ai`, tool registration, MCP clients, message history, and pre/post step hooks.
+- **`MainAgent`** (`arox/core/llm_base.py`): abstract subclass that a `Composer`'s main agent must extend; hosts the user-driven run loop entry point.
+- **`ChatAgent`** (`arox/core/chat.py`): concrete `MainAgent` adding a conversational loop and `CommandManager` for slash commands (e.g. `/model`, `/reset`). Standard choice for user-facing agents.
 
-Skills are discovered from `.arox/skills/` in the workspace. They are injected into the agent's system prompt as a catalog. An `AgentConfig` can restrict which skills are available via the `skills` field.
+**Extension points**
+- **`Plugin`** (`arox/core/plugin.py`): primary extension unit. A plugin declares:
+  - `tools()` — Python functions exposed to the LLM (`@tool`)
+  - `commands()` — slash commands for the human (`@command`)
+  - `history_processor()` — async hook to modify message history before LLM calls
+- **`Capability`** (`arox/core/capability.py`): typed token for loose coupling between plugins/agents. Producers call `agent.provide_capability(cap, impl)`; consumers call `agent.get_capability(cap)`. Built-in capabilities are in `arox/plugins/capabilities.py` (e.g. `SUBAGENT`).
+- **Skills** (`arox/core/skills.py`): discovered from `.arox/skills/` in the workspace and injected into the agent's system prompt as a catalog. `AgentConfig.skills` restricts which are visible.
+- **MCP**: each agent can connect to MCP servers through its `pydantic_ai` client, exposing remote tools alongside local ones.
+- **Hooks**: `pre_step_hooks` / `post_step_hooks` from `AgentConfig` are loaded via entry points and attached by the composer around each inference step.
