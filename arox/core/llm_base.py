@@ -3,6 +3,7 @@ import contextlib
 import logging
 import re
 import uuid
+from abc import ABC, abstractmethod
 from collections.abc import AsyncIterable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -539,3 +540,9 @@ class LLMBaseAgent:
         if not hasattr(self, "post_step_hooks"):
             self.post_step_hooks: list[PostStepHook] = []
         self.post_step_hooks.append(hook)
+
+
+class MainAgent(LLMBaseAgent, ABC):
+    @abstractmethod
+    async def run(self):
+        pass

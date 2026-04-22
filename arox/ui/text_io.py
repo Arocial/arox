@@ -38,7 +38,7 @@ class TextIOAdapter(AbstractIOAdapter):
         await super().register_composer(composer)
 
         main_agent = composer.main_agent
-        if hasattr(main_agent, "command_manager"):
+        if isinstance(main_agent, ChatAgent):
             completer = CommandCompleter(main_agent.command_manager)
             self.user_input = UserInputGenerator(completer=completer)
 

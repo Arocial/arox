@@ -57,7 +57,7 @@ system_prompt = "Hi there."
         test_model = TestModel(call_tools=["multiply"])
         with agent.pydantic_agent.override(model=test_model):
             async with io_adapter, agent:
-                await agent.start()
+                await agent.run()
 
         # Verify that the tool was called
         messages = agent.message_history

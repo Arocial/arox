@@ -11,7 +11,7 @@ from pydantic_ai import FunctionToolset
 
 from arox.core.config import ComposerConfig
 from arox.core.io import AbstractIOAdapter
-from arox.core.llm_base import AgentDeps
+from arox.core.llm_base import AgentDeps, MainAgent
 from arox.core.session import ComposerSession, FileSessionStore, SessionStore
 from arox.utils import import_class
 
@@ -127,6 +127,9 @@ class Composer:
 
         main_agent.provide_capability(SUBAGENT, get_subagent)
 
+        if not isinstance(main_agent, MainAgent):
+            raise TypeError(f"Main agent '{main_agent_name}' must be a MainAgent")
+
         self._load_agent_hooks(main_agent, agent_configs[main_agent_name])
         self.main_agent = main_agent
 
@@ -204,9 +207,6 @@ class Composer:
                     await agent.show_agent_info()
                 await self.main_agent.show_agent_info()
 
-                if hasattr(self.main_agent, "start"):
-                    await self.main_agent.start()
-                else:
-                    logger.error("Main agent does not have a start method")
+                await self.main_agent.run()
             finally:
                 await self._save_session()

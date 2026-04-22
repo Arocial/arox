@@ -30,7 +30,7 @@ from pydantic_ai import (
 )
 from pydantic_ai.ui.vercel_ai import request_types as vercel_ui_types
 
-from arox.core.chat import ChatInputEvent, StepDoneEvent
+from arox.core.chat import ChatAgent, ChatInputEvent, StepDoneEvent
 from arox.core.io import (
     AbstractIOAdapter,
     AdapterIOEndpoint,
@@ -267,7 +267,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 status_code=404, detail=f"Composer {composer_id} not found."
             )
         agent = composer.main_agent
-        if not agent:
+        if not isinstance(agent, ChatAgent):
             return SuggestionResponse(items=[])
 
         command_manager = agent.command_manager

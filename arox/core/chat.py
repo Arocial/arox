@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic_ai import DeferredToolResults
 from pydantic_ai.tools import DeferredToolRequests
 
-from arox.core.llm_base import LLMBaseAgent
+from arox.core.llm_base import MainAgent
 from arox.core.plugin import CommandManager
 
 logger = logging.getLogger(__name__)
@@ -75,7 +75,7 @@ class ChatInputEvent:
         self.future.set_result(True)
 
 
-class ChatAgent(LLMBaseAgent):
+class ChatAgent(MainAgent):
     def __init__(
         self,
         name,
@@ -129,7 +129,7 @@ class ChatAgent(LLMBaseAgent):
         await self.current_chat_input_event.wait()
         return self.current_chat_input_event.get_deferred_tool_input(key)
 
-    async def start(self):
+    async def run(self):
         """Start the agent with optional input generator"""
         deferred_requests: DeferredToolRequests | None = None
         self.current_chat_input_event = ChatInputEvent()
