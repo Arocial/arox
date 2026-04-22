@@ -70,7 +70,7 @@ def create_retrying_client(extra_request_hooks=None, **client_args):
             ),
             # Smart waiting: respects Retry-After headers, falls back to exponential backoff
             wait=wait_retry_after(
-                fallback_strategy=wait_exponential(multiplier=2, max=60), max_wait=300
+                fallback_strategy=wait_exponential(multiplier=2, max=30)
             ),
             stop=stop_after_attempt(8),
             # Re-raise the last exception if all retries fail
