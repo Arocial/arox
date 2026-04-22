@@ -117,8 +117,8 @@ class ChatAgent(MainAgent):
             yield ctx
         finally:
             if not ctx["abort"]:
-                await self.io_channel.agent_send(self.current_chat_input_event)
-                await self.io_channel.agent_send(StepDoneEvent())
+                await self.agent_io.agent_send(self.current_chat_input_event)
+                await self.agent_io.agent_send(StepDoneEvent())
 
     async def add_tool_input_request(self, question, key):
         assert self.current_chat_input_event is not None
@@ -134,7 +134,7 @@ class ChatAgent(MainAgent):
         deferred_requests: DeferredToolRequests | None = None
         self.current_chat_input_event = ChatInputEvent()
         self.current_chat_input_event.normal_input.request = True
-        await self.io_channel.agent_send(self.current_chat_input_event)
+        await self.agent_io.agent_send(self.current_chat_input_event)
 
         while True:
             async with self.chat_round() as ctx:
@@ -196,7 +196,7 @@ class ChatAgent(MainAgent):
                             self.current_chat_input_event.normal_input.request = True
                     except asyncio.CancelledError:
                         logger.info("Step cancelled.")
-                        await self.io_channel.agent_send("\n[Step cancelled]\n")
+                        await self.agent_io.agent_send("\n[Step cancelled]\n")
                         deferred_requests = None
                         self.current_chat_input_event.normal_input.request = True
                     finally:

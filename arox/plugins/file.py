@@ -105,7 +105,7 @@ class FilePlugin(Plugin):
                     self._pending_text_files[file_path] = "".join(lines)
                 self._add_to_session(path)
             except Exception as e:
-                await self.agent.io_channel.agent_send(
+                await self.agent.agent_io.agent_send(
                     f"Error reading file {file_path}: {e!s}"
                 )
 
@@ -363,7 +363,7 @@ class FilePlugin(Plugin):
         if name == "add":
             files = arg.split() if arg else []
             if not files:
-                await self.agent.io_channel.agent_send("Please specify files.")
+                await self.agent.agent_io.agent_send("Please specify files.")
                 return
             await self.read_by_user(files)
 

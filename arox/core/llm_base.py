@@ -181,7 +181,7 @@ def _complete_pending_tool_calls(messages: list[ModelMessage]) -> None:
 
 @dataclass
 class AgentDeps:
-    io_channel: AgentIOEndpoint
+    agent_io: AgentIOEndpoint
 
 
 class LLMBaseAgent:
@@ -239,7 +239,7 @@ class LLMBaseAgent:
             output_type=(DeferredToolRequests, str),
         )
 
-        self.io_channel, self.adapter_io = create_io_channel()
+        self.agent_io, self.adapter_io = create_io_channel()
         self.io_adapter = io_adapter
 
         self._stack = contextlib.AsyncExitStack()
@@ -249,7 +249,7 @@ class LLMBaseAgent:
         self, ctx: RunContext["AgentDeps"], events: AsyncIterable[AgentStreamEvent]
     ):
         async for event in events:
-            await ctx.deps.io_channel.agent_send(event)
+            await ctx.deps.agent_io.agent_send(event)
 
     def load_plugins(self):
         plugin_classes = self.agent_config.plugins
@@ -296,7 +296,7 @@ class LLMBaseAgent:
         tg = asyncio.TaskGroup()
         await self._stack.enter_async_context(tg)
         tg.create_task(self.io_adapter._process_io(self.adapter_io))
-        await self._stack.enter_async_context(self.io_channel)
+        await self._stack.enter_async_context(self.agent_io)
         await self._stack.enter_async_context(self.adapter_io)
         if self.mcp_client:
             await self._stack.enter_async_context(self.mcp_client)
@@ -351,7 +351,7 @@ class LLMBaseAgent:
         self.model = model
 
     async def show_agent_info(self):
-        await self.io_channel.agent_send(
+        await self.agent_io.agent_send(
             f"Using model {self.provider_model} for {self.name}"
         )
 
@@ -431,7 +431,7 @@ class LLMBaseAgent:
             for idx, ref in enumerate(refs_to_try):
                 if ref != self.model_ref:
                     self.set_model(ref)
-                    await self.io_channel.agent_send(
+                    await self.agent_io.agent_send(
                         f"Primary model failed, falling back to {self.provider_model}"
                     )
                 is_last = idx == len(refs_to_try) - 1
@@ -446,7 +446,7 @@ class LLMBaseAgent:
                             model_settings=ModelSettings(**self.model_params),
                             instructions=f"{self.system_prompt}\n{self.additional_prompt}",
                             message_history=self.message_history,
-                            deps=AgentDeps(io_channel=self.io_channel),
+                            deps=AgentDeps(agent_io=self.agent_io),
                             deferred_tool_results=deferred_tool_results,
                         )
                         self.message_history = result.all_messages()
