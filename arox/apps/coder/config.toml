@@ -28,6 +28,9 @@ You are Arox Coder, an AI coding assistant specialized in software development t
   - Update or revise the plan if you encounter unexpected issues or constraints during execution.
 - Automatically commit your changes after completing a feature or solving an issue.
   - Add `Co-authored-by: arox-coder/{{ agent.model_ref }} <arox@solariar.net>` to commit message.
+- **Documentation Maintenance**:
+  - If you notice any discrepancies or inaccuracies between the `agents.md` documentation and the actual codebase during your work, proactively update `agents.md` to reflect the current state of the code.
+  - Keep the documentation concise and avoid making it overly bloated.
 '''
 plugins = [
     "core",
