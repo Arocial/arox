@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from arox.core.composer import Composer
 
 from anyio import EndOfStream
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -118,40 +118,52 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         except Exception as e:
             logger.error(f"Error draining events: {e}")
 
-    def _format_event(self, adapter_io: AdapterIOEndpoint, event) -> list[str]:
-        events = []
+    def _event_messages(self, adapter_io: AdapterIOEndpoint, event) -> list[dict]:
+        messages: list[dict] = []
 
         if isinstance(event, PartStartEvent):
             part = event.part
             index = event.index
 
             if isinstance(part, TextPart):
-                events.append(
-                    f"data: {json.dumps({'type': 'text-start', 'id': f'text_{index}'})}\n\n"
-                )
+                messages.append({"type": "text-start", "id": f"text_{index}"})
                 if part.content:
-                    events.append(
-                        f"data: {json.dumps({'type': 'text-delta', 'id': f'text_{index}', 'delta': part.content})}\n\n"
+                    messages.append(
+                        {
+                            "type": "text-delta",
+                            "id": f"text_{index}",
+                            "delta": part.content,
+                        }
                     )
 
             elif isinstance(part, ThinkingPart):
-                events.append(
-                    f"data: {json.dumps({'type': 'reasoning-start', 'id': f'reasoning_{index}'})}\n\n"
-                )
+                messages.append({"type": "reasoning-start", "id": f"reasoning_{index}"})
                 if part.content:
-                    events.append(
-                        f"data: {json.dumps({'type': 'reasoning-delta', 'id': f'reasoning_{index}', 'delta': part.content})}\n\n"
+                    messages.append(
+                        {
+                            "type": "reasoning-delta",
+                            "id": f"reasoning_{index}",
+                            "delta": part.content,
+                        }
                     )
 
             elif isinstance(part, ToolCallPart):
                 tool_ids = self.tool_ids.setdefault(adapter_io, {})
                 tool_ids[index] = part.tool_call_id
-                events.append(
-                    f"data: {json.dumps({'type': 'tool-input-start', 'toolCallId': part.tool_call_id, 'toolName': part.tool_name})}\n\n"
+                messages.append(
+                    {
+                        "type": "tool-input-start",
+                        "toolCallId": part.tool_call_id,
+                        "toolName": part.tool_name,
+                    }
                 )
                 if part.args and isinstance(part.args, str):
-                    events.append(
-                        f"data: {json.dumps({'type': 'tool-input-delta', 'toolCallId': part.tool_call_id, 'inputTextDelta': part.args})}\n\n"
+                    messages.append(
+                        {
+                            "type": "tool-input-delta",
+                            "toolCallId": part.tool_call_id,
+                            "inputTextDelta": part.args,
+                        }
                     )
 
         elif isinstance(event, PartDeltaEvent):
@@ -160,22 +172,34 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
             if isinstance(delta, TextPartDelta):
                 if delta.content_delta:
-                    events.append(
-                        f"data: {json.dumps({'type': 'text-delta', 'id': f'text_{index}', 'delta': delta.content_delta})}\n\n"
+                    messages.append(
+                        {
+                            "type": "text-delta",
+                            "id": f"text_{index}",
+                            "delta": delta.content_delta,
+                        }
                     )
 
             elif isinstance(delta, ThinkingPartDelta):
                 if delta.content_delta:
-                    events.append(
-                        f"data: {json.dumps({'type': 'reasoning-delta', 'id': f'reasoning_{index}', 'delta': delta.content_delta})}\n\n"
+                    messages.append(
+                        {
+                            "type": "reasoning-delta",
+                            "id": f"reasoning_{index}",
+                            "delta": delta.content_delta,
+                        }
                     )
 
             elif isinstance(event.delta, ToolCallPartDelta):
                 tool_ids = self.tool_ids.get(adapter_io, {})
                 tool_id = tool_ids.get(index)
                 if tool_id:
-                    events.append(
-                        f"data: {json.dumps({'type': 'tool-input-delta', 'toolCallId': tool_id, 'inputTextDelta': delta.args_delta})}\n\n"
+                    messages.append(
+                        {
+                            "type": "tool-input-delta",
+                            "toolCallId": tool_id,
+                            "inputTextDelta": delta.args_delta,
+                        }
                     )
 
         elif isinstance(event, PartEndEvent):
@@ -183,34 +207,112 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             index = event.index
 
             if isinstance(part, TextPart):
-                events.append(
-                    f"data: {json.dumps({'type': 'text-end', 'id': f'text_{index}'})}\n\n"
-                )
+                messages.append({"type": "text-end", "id": f"text_{index}"})
             elif isinstance(part, ThinkingPart):
-                events.append(
-                    f"data: {json.dumps({'type': 'reasoning-end', 'id': f'reasoning_{index}'})}\n\n"
-                )
+                messages.append({"type": "reasoning-end", "id": f"reasoning_{index}"})
 
         elif isinstance(event, FunctionToolCallEvent):
             part = event.part
-            events.append(
-                f"data: {json.dumps({'type': 'tool-input-available', 'toolCallId': part.tool_call_id, 'toolName': part.tool_name, 'input': part.args})}\n\n"
+            messages.append(
+                {
+                    "type": "tool-input-available",
+                    "toolCallId": part.tool_call_id,
+                    "toolName": part.tool_name,
+                    "input": part.args,
+                }
             )
 
         elif isinstance(event, FunctionToolResultEvent):
-            events.append(
-                f"data: {json.dumps({'type': 'tool-output-available', 'toolCallId': event.tool_call_id, 'output': event.result.content})}\n\n"
+            messages.append(
+                {
+                    "type": "tool-output-available",
+                    "toolCallId": event.tool_call_id,
+                    "output": event.result.content,
+                }
             )
 
         elif isinstance(event, FinalResultEvent):
-            events.append(f"data: {json.dumps({'type': 'finish'})}\n\n")
+            messages.append({"type": "finish"})
 
         elif isinstance(event, ChatInputEvent):
-            events.append(
-                f"data: {json.dumps({'type': 'data-input-request', 'data': event.generate_request()})}\n\n"
+            messages.append(
+                {"type": "data-input-request", "data": event.generate_request()}
             )
 
-        return events
+        elif isinstance(event, StepDoneEvent):
+            messages.append({"type": "step-done"})
+
+        return messages
+
+    def _format_event(self, adapter_io: AdapterIOEndpoint, event) -> list[str]:
+        return [
+            f"data: {json.dumps(m)}\n\n"
+            for m in self._event_messages(adapter_io, event)
+        ]
+
+    def _apply_input(self, agent, payload: dict) -> dict:
+        if payload.get("cancel"):
+            cancel = getattr(agent, "cancel_foreground_task", None)
+            if callable(cancel):
+                cancel()
+            return {"status": "cancelled"}
+
+        reply = payload.get("reply")
+        if reply is not None:
+            event = getattr(agent, "current_chat_input_event", None)
+            if event and not event.future.done():
+                event.set_reply(reply)
+                return {"status": "ok"}
+            return {"status": "no_pending_input"}
+
+        return {"status": "noop"}
+
+    async def ws_handler(self, websocket: WebSocket, composer_id: str, agent_name: str):
+        from fastapi import WebSocketDisconnect
+
+        run_instance = self.run_instances.get(composer_id)
+        if not run_instance:
+            await websocket.close(code=4004, reason="composer not found")
+            return
+        composer = run_instance.composer
+        agent = composer.all_agents().get(agent_name)
+        if not agent:
+            await websocket.close(code=4004, reason="agent not found")
+            return
+
+        adapter_io = agent.adapter_io
+        queue = self.event_queues.setdefault(adapter_io, asyncio.Queue())
+
+        await websocket.accept()
+
+        async def pump_out():
+            while True:
+                _io, event = await queue.get()
+                for msg in self._event_messages(adapter_io, event):
+                    logger.info(f"WS OUT: {msg}")
+                    await websocket.send_json(msg)
+
+        async def pump_in():
+            while True:
+                payload = await websocket.receive_json()
+                logger.info(f"WS IN: {payload}")
+                ack = self._apply_input(agent, payload)
+                await websocket.send_json({"type": "ack", **ack})
+
+        out_task = asyncio.create_task(pump_out())
+        in_task = asyncio.create_task(pump_in())
+        try:
+            done, _ = await asyncio.wait(
+                {out_task, in_task}, return_when=asyncio.FIRST_EXCEPTION
+            )
+            for t in done:
+                exc = t.exception()
+                if exc and not isinstance(exc, WebSocketDisconnect):
+                    logger.exception("ws pump error", exc_info=exc)
+        finally:
+            out_task.cancel()
+            in_task.cancel()
+            await asyncio.gather(out_task, in_task, return_exceptions=True)
 
     async def output_generator(self, adapter_io: AdapterIOEndpoint):
         queue = self.event_queues.get(adapter_io)
@@ -391,6 +493,9 @@ class VercelStreamServer:
         self.app.post("/api/composers/{composer_id}/agents/{agent_name}/chat")(
             self.chat
         )
+        self.app.websocket("/api/composers/{composer_id}/agents/{agent_name}/ws")(
+            self.ws
+        )
         self.app.get(
             "/api/composers/{composer_id}/agents/{agent_name}/suggestions",
             response_model=SuggestionResponse,
@@ -468,6 +573,9 @@ class VercelStreamServer:
     async def chat(self, composer_id: str, agent_name: str, request: ChatRequest):
         return await self.io_adapter.chat(composer_id, agent_name, request)
 
+    async def ws(self, websocket: WebSocket, composer_id: str, agent_name: str):
+        return await self.io_adapter.ws_handler(websocket, composer_id, agent_name)
+
     async def suggestions(
         self,
         composer_id: str,
@@ -519,7 +627,7 @@ class VercelStreamServer:
     async def run(self):
         import uvicorn
 
-        config = uvicorn.Config(self.app, host=self.host, port=self.port, ws="none")
+        config = uvicorn.Config(self.app, host=self.host, port=self.port, ws="auto")
         server = uvicorn.Server(config)
 
         await server.serve()

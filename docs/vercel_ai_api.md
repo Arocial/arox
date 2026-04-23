@@ -64,6 +64,35 @@ Send a message to a specific agent and receive a streaming response (Server-Sent
 }
 ```
 
+#### `WS /api/composers/{composer_id}/agents/{agent_name}/ws`
+Full-duplex WebSocket for async interaction with an agent. Unlike `chat`, this connection is long-lived across multiple steps — sending input and receiving events are decoupled.
+
+**Server → Client messages** (JSON, one object per frame)
+
+Each frame is a message conforming to the [Vercel AI SDK data stream protocol](https://ai-sdk.dev/docs/ai-sdk-ui/stream-protocol#data-stream-protocol) (`text-*`, `reasoning-*`, `tool-*`, `finish`, etc.), delivered as a plain JSON object per WS frame instead of SSE `data:` lines.
+
+Arox adds a few non-standard frames on the same channel:
+
+| type | fields | meaning |
+|---|---|---|
+| `data-input-request` | `data` | agent is waiting for user input; `data` carries `deferred_tools`, `normal_input`, `exception_input` |
+| `step-done` | — | current step fully drained; next step may follow on the same connection |
+| `ack` | `status` | acknowledgment of a client-sent message (see below) |
+
+**Client → Server messages** (JSON)
+
+```json
+// submit a reply to a pending data-input-request
+{ "reply": { "normal_input": { "user_input": "hello" } } }
+
+// cancel the agent's currently running foreground step
+{ "cancel": true }
+```
+
+The `reply` object matches the structure of `ChatInputEvent.set_reply` (fields `deferred_tools`, `normal_input`, `exception_input`). The server responds with `{"type": "ack", "status": "ok" | "cancelled" | "no_pending_input" | "noop"}`.
+
+The connection stays open until either side closes it. Closing the client disconnects the stream but does **not** cancel any in-flight step — send `{"cancel": true}` first if needed.
+
 #### `GET /api/composers/{composer_id}/agents/{agent_name}/suggestions`
 Get command suggestions or auto-completions for a specific agent.
 
