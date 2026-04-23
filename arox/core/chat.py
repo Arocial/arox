@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -108,18 +107,6 @@ class ChatAgent(MainAgent):
                 self.command_manager.register_commands(cmds)
         return plugins
 
-    @contextlib.asynccontextmanager
-    async def chat_round(self):
-        assert self.current_chat_input_event is not None
-        await self.current_chat_input_event.wait()
-        ctx = {"abort": False}
-        try:
-            yield ctx
-        finally:
-            if not ctx["abort"]:
-                await self.agent_io.agent_send(self.current_chat_input_event)
-                await self.agent_io.agent_send(StepDoneEvent())
-
     async def add_tool_input_request(self, question, key):
         assert self.current_chat_input_event is not None
         self.current_chat_input_event.add_deferred_tool(question, key)
@@ -132,12 +119,48 @@ class ChatAgent(MainAgent):
     async def run(self):
         """Start the agent with optional input generator"""
         deferred_requests: DeferredToolRequests | None = None
-        self.current_chat_input_event = ChatInputEvent()
-        self.current_chat_input_event.normal_input.request = True
-        await self.agent_io.agent_send(self.current_chat_input_event)
+        pending_exception: BaseException | None = None
 
         while True:
-            async with self.chat_round() as ctx:
+            # 1. Prepare the event for this round
+            self.current_chat_input_event = ChatInputEvent()
+
+            if pending_exception:
+                self.current_chat_input_event.exception_input.exception = (
+                    pending_exception
+                )
+                pending_exception = None
+
+            if deferred_requests:
+                self.current_chat_input_event.normal_input.request = False
+            else:
+                self.current_chat_input_event.normal_input.request = True
+
+            # 2. Send the event to request input
+            await self.agent_io.agent_send(self.current_chat_input_event)
+
+            # 3. Wait for the user's reply
+            await self.current_chat_input_event.wait()
+
+            # 4. Process the reply
+            if self.current_chat_input_event.normal_input.request:
+                user_input = self.current_chat_input_event.normal_input.user_input
+                if user_input is None:
+                    break  # EOF or abort
+            else:
+                user_input = None
+
+            skip = (
+                self.current_chat_input_event.exception_input.exception
+                and not self.current_chat_input_event.exception_input.retry
+            )
+
+            if skip:
+                await self.agent_io.agent_send(StepDoneEvent())
+                continue
+
+            # 5. Execute the step
+            try:
                 if deferred_requests:
                     deferred_results = DeferredToolResults()
                     for call in deferred_requests.calls:
@@ -149,62 +172,42 @@ class ChatAgent(MainAgent):
                 else:
                     deferred_results = None
 
-                if self.current_chat_input_event.normal_input.request:
-                    user_input = self.current_chat_input_event.normal_input.user_input
-                    if user_input is None:
-                        ctx["abort"] = True
-                        break
-                else:
-                    user_input = None
+                if user_input is not None:
+                    self.agent_session.add_event("user_input", {"text": user_input})
+                    if not user_input.strip():
+                        await self.agent_io.agent_send(StepDoneEvent())
+                        continue
+                    is_command = await self.command_manager.try_execute_command(
+                        user_input
+                    )
+                    if is_command:
+                        self.agent_session.add_event("command", {"command": user_input})
+                        await self.agent_io.agent_send(StepDoneEvent())
+                        continue
 
-                skip = (
-                    self.current_chat_input_event.exception_input.exception
-                    and not self.current_chat_input_event.exception_input.retry
+                step_task = asyncio.create_task(
+                    self.step(user_input, deferred_tool_results=deferred_results)
                 )
-
-                self.current_chat_input_event = ChatInputEvent()
-                if skip:
-                    self.current_chat_input_event.normal_input.request = True
-                    continue
-
+                self.foreground_task = step_task
                 try:
-                    if user_input is not None:
-                        self.agent_session.add_event("user_input", {"text": user_input})
-                        if not user_input.strip():
-                            self.current_chat_input_event.normal_input.request = True
-                            continue
-                        is_command = await self.command_manager.try_execute_command(
-                            user_input
-                        )
-                        if is_command:
-                            self.agent_session.add_event(
-                                "command", {"command": user_input}
-                            )
-                            self.current_chat_input_event.normal_input.request = True
-                            continue
-
-                    step_task = asyncio.create_task(
-                        self.step(user_input, deferred_tool_results=deferred_results)
-                    )
-                    self.foreground_task = step_task
-                    try:
-                        result = await step_task
-                        if result and isinstance(result.output, DeferredToolRequests):
-                            deferred_requests = result.output
-                        else:
-                            deferred_requests = None
-                            self.current_chat_input_event.normal_input.request = True
-                    except asyncio.CancelledError:
-                        logger.info("Step cancelled.")
-                        await self.agent_io.agent_send("\n[Step cancelled]\n")
+                    result = await step_task
+                    if result and isinstance(result.output, DeferredToolRequests):
+                        deferred_requests = result.output
+                    else:
                         deferred_requests = None
-                        self.current_chat_input_event.normal_input.request = True
-                    finally:
-                        self.foreground_task = None
+                except asyncio.CancelledError:
+                    logger.info("Step cancelled.")
+                    await self.agent_io.agent_send("\n[Step cancelled]\n")
+                    deferred_requests = None
+                finally:
+                    self.foreground_task = None
 
-                except Exception as e:
-                    logger.exception("An error occurred.")
-                    self.agent_session.add_event(
-                        "error", {"error": f"{type(e).__name__}: {e!s}"}
-                    )
-                    self.current_chat_input_event.exception_input.exception = e
+            except Exception as e:
+                logger.exception("An error occurred.")
+                self.agent_session.add_event(
+                    "error", {"error": f"{type(e).__name__}: {e!s}"}
+                )
+                pending_exception = e
+
+            # 6. Send StepDoneEvent to indicate the step is finished
+            await self.agent_io.agent_send(StepDoneEvent())
