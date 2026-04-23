@@ -39,10 +39,6 @@ from arox.core.io import (
 logger = logging.getLogger(__name__)
 
 
-class ChatRequest(BaseModel):
-    messages: list[dict]
-
-
 class SuggestionItem(BaseModel):
     id: str
     value: str
@@ -314,76 +310,6 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             in_task.cancel()
             await asyncio.gather(out_task, in_task, return_exceptions=True)
 
-    async def output_generator(self, adapter_io: AdapterIOEndpoint):
-        queue = self.event_queues.get(adapter_io)
-        if not queue:
-            yield "data: [DONE]\n\n"
-            return
-        try:
-            while True:
-                _adapter_io, event = await queue.get()
-                if isinstance(event, StepDoneEvent):
-                    yield "data: [DONE]\n\n"
-                    break
-                else:
-                    formatted_events = self._format_event(adapter_io, event)
-                    for fmt in formatted_events:
-                        yield fmt
-        except EndOfStream:
-            yield "data: [DONE]\n\n"
-
-    async def submit_user_input(self, agent, text: str):
-        if (
-            hasattr(agent, "current_chat_input_event")
-            and agent.current_chat_input_event
-            and not agent.current_chat_input_event.future.done()
-        ):
-            agent.current_chat_input_event.set_reply(json.loads(text))
-
-    async def chat(self, composer_id: str, agent_name: str, request: ChatRequest):
-        run_instance = self.run_instances.get(composer_id)
-        if not run_instance:
-            raise HTTPException(
-                status_code=404, detail=f"Composer {composer_id} not found."
-            )
-        composer = run_instance.composer
-        agent = composer.all_agents().get(agent_name)
-        if not agent:
-            raise HTTPException(
-                status_code=404, detail=f"Agent {agent_name} not found."
-            )
-        adapter_io = agent.adapter_io
-
-        messages = request.messages
-        if messages:
-            last_message = vercel_ui_types.UIMessage.model_validate(messages[-1])
-            if last_message.parts:
-                part = last_message.parts[0]
-                if isinstance(part, vercel_ui_types.TextUIPart):
-                    content = part.text
-                    logger.info(f"Got user input: {content}")
-                    await self.submit_user_input(agent, content)
-                else:
-                    logger.warning("Unsupported input type.")
-
-        return StreamingResponse(
-            self.response_generator(agent, adapter_io),
-            media_type="text/event-stream",
-        )
-
-    async def response_generator(self, agent, adapter_io: AdapterIOEndpoint):
-        try:
-            async for chunk in self.output_generator(adapter_io):
-                logger.info(chunk)
-                yield chunk
-                if "data: [DONE]\n\n" == chunk:
-                    break
-        except asyncio.CancelledError:
-            logger.info("Client disconnected, cancelling current task")
-            agent.cancel_foreground_task()
-            asyncio.create_task(self.drain_until_need_reply(adapter_io))
-            raise
-
     async def suggestions(
         self,
         composer_id: str,
@@ -490,9 +416,6 @@ class VercelStreamServer:
             self.list_composers
         )
         self.app.delete("/api/composers/{composer_id}")(self.delete_composer)
-        self.app.post("/api/composers/{composer_id}/agents/{agent_name}/chat")(
-            self.chat
-        )
         self.app.websocket("/api/composers/{composer_id}/agents/{agent_name}/ws")(
             self.ws
         )
@@ -569,9 +492,6 @@ class VercelStreamServer:
         if run_instance.task and not run_instance.task.done():
             run_instance.task.cancel()
         return {"status": "deleted"}
-
-    async def chat(self, composer_id: str, agent_name: str, request: ChatRequest):
-        return await self.io_adapter.chat(composer_id, agent_name, request)
 
     async def ws(self, websocket: WebSocket, composer_id: str, agent_name: str):
         return await self.io_adapter.ws_handler(websocket, composer_id, agent_name)

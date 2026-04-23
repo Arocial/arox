@@ -49,23 +49,8 @@ Stop and delete a composer instance.
 
 The following endpoints are per-agent, meaning you must specify both the `composer_id` and the `agent_name` (which can be the `main_agent` or one of the `subagents` from the `ComposerInfo` response).
 
-#### `POST /api/composers/{composer_id}/agents/{agent_name}/chat`
-Send a message to a specific agent and receive a streaming response (Server-Sent Events).
-
-**Request Body:**
-```json
-{
-  "messages": [
-    {
-      "role": "user",
-      "content": "Hello, agent!"
-    }
-  ]
-}
-```
-
 #### `WS /api/composers/{composer_id}/agents/{agent_name}/ws`
-Full-duplex WebSocket for async interaction with an agent. Unlike `chat`, this connection is long-lived across multiple steps — sending input and receiving events are decoupled.
+Full-duplex WebSocket for async interaction with an agent. This connection is long-lived across multiple steps — sending input and receiving events are decoupled.
 
 **Server → Client messages** (JSON, one object per frame)
 
