@@ -85,8 +85,22 @@ Get command suggestions or auto-completions for a specific agent.
 - `command` (optional): The command to get completions for (e.g., `model`).
 - `q` (optional): The current input string to filter suggestions.
 
-#### `GET /api/composers/{composer_id}/agents/{agent_name}/history`
-Get the message history for a specific agent.
+#### `GET /api/composers/{composer_id}/agents/{agent_name}/state`
+Get the current state for a specific agent: message history plus any pending input request.
+
+**Response:**
+```json
+{
+  "history": [ /* Vercel AI UI messages */ ],
+  "pending_input": {
+    "deferred_tools": { "<key>": "<question>" },
+    "normal_input": { "request": true },
+    "exception_input": { "exception": null }
+  }
+}
+```
+
+`pending_input` is `null` when no `ChatInputEvent` is currently awaiting a reply. When non-null, its shape matches `ChatInputEvent.generate_request()` and can be answered via the WebSocket `reply` message.
 
 ### Sessions
 

@@ -423,8 +423,8 @@ class VercelStreamServer:
             "/api/composers/{composer_id}/agents/{agent_name}/suggestions",
             response_model=SuggestionResponse,
         )(self.suggestions)
-        self.app.get("/api/composers/{composer_id}/agents/{agent_name}/history")(
-            self.history
+        self.app.get("/api/composers/{composer_id}/agents/{agent_name}/state")(
+            self.state
         )
         self.app.get("/api/sessions", response_model=list[SessionInfo])(
             self.list_sessions
@@ -505,7 +505,7 @@ class VercelStreamServer:
     ):
         return await self.io_adapter.suggestions(composer_id, agent_name, command, q)
 
-    async def history(self, composer_id: str, agent_name: str):
+    async def state(self, composer_id: str, agent_name: str):
         run_instance = self.io_adapter.run_instances.get(composer_id)
         if not run_instance:
             raise HTTPException(status_code=404, detail="Composer not found")
@@ -519,7 +519,9 @@ class VercelStreamServer:
 
         messages = agent.message_history
         ui_messages = VercelAIAdapter.dump_messages(messages)
-        return [msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages]
+        history = [msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages]
+
+        return {"history": history}
 
     async def list_sessions(self):
         from arox.core.session import FileSessionStore
