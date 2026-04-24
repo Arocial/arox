@@ -9,10 +9,8 @@ from typing import TYPE_CHECKING, override
 if TYPE_CHECKING:
     from arox.core.composer import Composer
 
-from anyio import EndOfStream
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from pydantic_ai import (
     FinalResultEvent,
@@ -28,7 +26,6 @@ from pydantic_ai import (
     ToolCallPart,
     ToolCallPartDelta,
 )
-from pydantic_ai.ui.vercel_ai import request_types as vercel_ui_types
 
 from arox.core.chat import ChatAgent, ChatInputEvent, StepDoneEvent
 from arox.core.io import (
@@ -292,8 +289,14 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             while True:
                 payload = await websocket.receive_json()
                 logger.info(f"WS IN: {payload}")
-                ack = self._apply_input(agent, payload)
-                await websocket.send_json({"type": "ack", **ack})
+
+                if payload.get("resume"):
+                    event = getattr(agent, "current_chat_input_event", None)
+                    if event and not event.future.done():
+                        for msg in self._event_messages(adapter_io, event):
+                            await websocket.send_json(msg)
+                else:
+                    self._apply_input(agent, payload)
 
         out_task = asyncio.create_task(pump_out())
         in_task = asyncio.create_task(pump_in())
@@ -519,7 +522,9 @@ class VercelStreamServer:
 
         messages = agent.message_history
         ui_messages = VercelAIAdapter.dump_messages(messages)
-        history = [msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages]
+        history = [
+            msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages
+        ]
 
         return {"history": history}
 
