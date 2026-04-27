@@ -9,7 +9,7 @@ An **App** is a runnable process (e.g. `arox-coder`) that owns a single **IO ada
 A **`Composer`** (`arox/core/composer.py`) assembles a working agent system against a workspace:
 
 - Exactly one **main agent** — the user-facing entry point, must subclass `MainAgent` (typically a `ChatAgent`).
-- Zero or more **subagents** — specialized agents the main agent can delegate to. They are exposed through the `SUBAGENT` capability on the main agent.
+- Zero or more **subagents** — specialized agents the main agent can delegate to. They are exposed as callable tools (and through the `SUBAGENT` capability) on the main agent.
 - A resolved `ComposerConfig` (from `arox/core/config.py`), which names the main agent, its subagents, and their per-agent configuration.
 
 The composer drives lifecycle: it constructs agents (looked up by entry-point name from `AgentConfig.type`), attaches pre/post step hooks, enters their async contexts, restores session state, then runs `main_agent.run()`.
@@ -69,5 +69,5 @@ Built-in adapters:
 1. **User input** arrives at the IO adapter and is forwarded over the main agent's `AgentIOEndpoint`.
 2. **Command check**: the `ChatAgent` tests whether the input is a slash command and, if so, executes it locally without calling the LLM.
 3. **LLM inference**: otherwise the message is appended to history (an `agent_step` event) and sent to the LLM via `pydantic_ai`.
-4. **Tool execution**: tool calls (local, MCP, or a subagent via the `SUBAGENT` capability) are dispatched and their results fed back to the LLM.
+4. **Tool execution**: tool calls (local, MCP, or a subagent) are dispatched and their results fed back to the LLM.
 5. **Response**: the final text is streamed back through the agent's IO channel and rendered by the adapter.

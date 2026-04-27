@@ -16,7 +16,7 @@ uv run mkdocs serve  # Serve docs at http://127.0.0.1:3420
 
 ### Hierarchy: App → Composer → Agents
 
-An **App** is a runnable process that owns one `IOAdapter` and hosts one or more **Composers**. Each `Composer` (`arox/core/composer.py`) wires together a **main agent** plus zero or more **subagents** against a single workspace, driven by `ComposerConfig`. The main agent runs the user-facing loop; subagents are exposed to it via the `SUBAGENT` capability so it can delegate.
+An **App** is a runnable process that owns one `IOAdapter` and hosts one or more **Composers**. Each `Composer` (`arox/core/composer.py`) wires together a **main agent** plus zero or more **subagents** against a single workspace, driven by `ComposerConfig`. The main agent runs the user-facing loop; subagents are exposed to it as callable tools (and via the `SUBAGENT` capability) so it can delegate tasks directly.
 
 Agent types and which agent to instantiate come from config (`arox/core/config.py`): `AppConfig` / `ComposerConfig` / `AgentConfig` are resolved by `load_config` from layered YAML plus CLI overrides.
 

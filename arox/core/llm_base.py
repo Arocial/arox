@@ -290,6 +290,8 @@ class LLMBaseAgent:
         result = await self.step(task)
         if result and isinstance(result.output, str):
             return result.output
+        if result and isinstance(result.output, DeferredToolRequests):
+            return f"Sub-agent {self.name} requested deferred tools, which is not supported in delegation yet."
         return None
 
     async def __aenter__(self):
