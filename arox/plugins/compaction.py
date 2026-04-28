@@ -16,28 +16,6 @@ from arox.plugins.capabilities import SUBAGENT
 
 logger = logging.getLogger(__name__)
 
-COMPACTION_PROMPT = """
-Provide a detailed prompt for continuing our conversation above. Focus on information that would be helpful for continuing the conversation, including what we did, what we're doing, which files we're working on, and what we're going to do next. The summary that you construct will be used so that another agent can read it and continue the work. When constructing the summary, try to stick to this template:
-
----
-## Goal
-[What goal(s) is the user trying to accomplish?]
-
-## Instructions
-- [What important instructions did the user give you that are relevant]
-- [If there is a plan or spec, include information about it so next agent can continue using it]
-
-## Discoveries
-[What notable things were learned during this conversation that would be useful for the next agent to know when continuing the work]
-
-## Accomplished
-[What work has been completed, what work is still in progress, and what work is left?]
-
-## Relevant files / directories
-[Construct a structured list of relevant files that have been read, edited, or created that pertain to the task at hand. If all the files in a directory are relevant, include the path to the directory.]
----
-"""
-
 DEFAULT_TOKEN_THRESHOLD = 100000
 
 COMPACTION_AGENT_NAME = "compaction"
@@ -46,10 +24,19 @@ COMPACTION_AGENT_NAME = "compaction"
 class CompactionAgent(LLMBaseAgent):
     """LLMBaseAgent specialized for summarizing conversation history."""
 
-    async def summarize(self, messages: list[ModelMessage]) -> str:
+    async def summarize(
+        self, messages: list[ModelMessage], extra_instructions: str = ""
+    ) -> str:
         logger.info("Starting context compaction...")
+        prompt = self.agent_config.task_prompt
+        if not prompt:
+            raise ValueError(
+                "CompactionAgent requires `task_prompt` to be set in agent config."
+            )
+        if extra_instructions:
+            prompt = f"{prompt}\n\nAdditional instructions: {extra_instructions}"
         result = await self._run_inference(
-            COMPACTION_PROMPT,
+            prompt,
             message_history=messages,
         )
         logger.info("Context compaction completed.")
@@ -62,9 +49,12 @@ class CompactionPlugin(Plugin):
         self.token_threshold = DEFAULT_TOKEN_THRESHOLD
         agent.add_post_step_hook(self._auto_compact_hook)
 
-    @command("compact", "Compact conversation history - /compact")
+    @command(
+        "compact",
+        "Compact conversation history - /compact [extra instructions]",
+    )
     async def compact_command(self, name: str, arg: str):
-        await self._compact()
+        await self._compact(extra_instructions=arg.strip())
 
     async def _auto_compact_hook(
         self,
@@ -91,7 +81,7 @@ class CompactionPlugin(Plugin):
                 return sub
         return None
 
-    async def _compact(self) -> None:
+    async def _compact(self, extra_instructions: str = "") -> None:
         agent = self.agent
         example_len = len(agent.example_messages)
         messages_to_compact = agent.message_history[example_len:]
@@ -116,7 +106,9 @@ class CompactionPlugin(Plugin):
         )
 
         messages_before = len(agent.message_history)
-        summary = await compaction_agent.summarize(messages_to_compact)
+        summary = await compaction_agent.summarize(
+            messages_to_compact, extra_instructions=extra_instructions
+        )
 
         new_request = ModelRequest(
             parts=[UserPromptPart(content=f"Previous conversation summary:\n{summary}")]
