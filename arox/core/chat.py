@@ -23,15 +23,27 @@ class ChatInputEvent:
         question: str
         answer: str | None = None
 
+        def is_abort(self):
+            return self.question and self.answer is None
+
     @dataclass
     class NormalInput:
         request: bool
         user_input: str | None
 
+        def is_abort(self):
+            return self.request and self.user_input is None
+
     @dataclass
     class ExceptionInput:
         exception: BaseException | None = None
         retry: bool = False
+
+        def is_abort(self):
+            return False
+
+        def is_skip(self):
+            return self.exception and not self.retry
 
     def __init__(self):
         self.deferred_tools = OrderedDict[str, self.DeferredToolInput]()
@@ -72,6 +84,18 @@ class ChatInputEvent:
             self.normal_input.user_input = reply["normal_input"]["user_input"]
 
         self.future.set_result(True)
+
+    def is_abort(self):
+        return any(
+            [
+                any(t.is_abort() for t in self.deferred_tools.values()),
+                self.normal_input.is_abort(),
+                self.exception_input.is_abort(),
+            ]
+        )
+
+    def is_skip(self):
+        return self.exception_input.is_skip()
 
 
 class ChatAgent(MainAgent):
@@ -124,6 +148,7 @@ class ChatAgent(MainAgent):
         while True:
             # 1. Prepare the event for this round
             self.current_chat_input_event = ChatInputEvent()
+            self.current_chat_input_event.normal_input.request = True
 
             if pending_exception:
                 self.current_chat_input_event.exception_input.exception = (
@@ -131,31 +156,16 @@ class ChatAgent(MainAgent):
                 )
                 pending_exception = None
 
-            if deferred_requests:
-                self.current_chat_input_event.normal_input.request = False
-            else:
-                self.current_chat_input_event.normal_input.request = True
-
             # 2. Send the event to request input
             await self.agent_io.agent_send(self.current_chat_input_event)
 
             # 3. Wait for the user's reply
             await self.current_chat_input_event.wait()
 
-            # 4. Process the reply
-            if self.current_chat_input_event.normal_input.request:
-                user_input = self.current_chat_input_event.normal_input.user_input
-                if user_input is None:
-                    break  # EOF or abort
-            else:
-                user_input = None
+            if self.current_chat_input_event.is_abort():
+                break
 
-            skip = (
-                self.current_chat_input_event.exception_input.exception
-                and not self.current_chat_input_event.exception_input.retry
-            )
-
-            if skip:
+            if self.current_chat_input_event.is_skip():
                 await self.agent_io.agent_send(StepDoneEvent())
                 continue
 
@@ -172,6 +182,7 @@ class ChatAgent(MainAgent):
                 else:
                     deferred_results = None
 
+                user_input = self.current_chat_input_event.normal_input.user_input
                 if user_input is not None:
                     self.agent_session.add_event("user_input", {"text": user_input})
                     if not user_input.strip():
