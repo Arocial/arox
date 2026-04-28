@@ -1,3 +1,5 @@
+import pytest
+
 from arox.core.config import load_config, parse_dot_config
 
 
@@ -65,3 +67,46 @@ def test_cli_overrides(tmp_path):
 
     assert config.model_ref == "cli-model"
     assert config.agent["test_agent"].type == "custom"
+
+
+def test_config_include_merges_and_overrides(tmp_path):
+    """Top-level `include` merges referenced files; host overrides them."""
+    shared = tmp_path / "shared.toml"
+    shared.write_text("""
+    model_ref = "shared-model"
+    [agent.compaction]
+    type = "compaction"
+    system_prompt = "shared"
+    task_prompt = "shared-task"
+    """)
+
+    host = tmp_path / "app.toml"
+    host.write_text("""
+    include = ["shared.toml"]
+    [agent.compaction]
+    system_prompt = "host-override"
+    """)
+
+    config = load_config([host])
+    assert config.model_ref == "shared-model"
+    comp = config.agent["compaction"]
+    assert comp.type == "compaction"
+    assert comp.system_prompt == "host-override"
+    assert comp.task_prompt == "shared-task"
+
+
+def test_config_include_circular_raises(tmp_path):
+    a = tmp_path / "a.toml"
+    b = tmp_path / "b.toml"
+    a.write_text('include = ["b.toml"]\n')
+    b.write_text('include = ["a.toml"]\n')
+
+    with pytest.raises(ValueError, match="Circular config include"):
+        load_config([a])
+
+
+def test_config_include_missing_raises(tmp_path):
+    host = tmp_path / "app.toml"
+    host.write_text('include = ["does_not_exist.toml"]\n')
+    with pytest.raises(FileNotFoundError):
+        load_config([host])

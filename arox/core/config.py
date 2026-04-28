@@ -122,7 +122,7 @@ class Config(BaseModel):
     provider: dict[str, ProviderConfig] = Field(default_factory=dict)
 
 
-def _load_config_file(path: Path) -> dict[str, Any]:
+def _read_config_file(path: Path) -> dict[str, Any]:
     suffix = path.suffix.lower()
     if suffix == ".toml":
         with open(path, "rb") as f:
@@ -132,6 +132,46 @@ def _load_config_file(path: Path) -> dict[str, Any]:
             return yaml.safe_load(f) or {}
     else:
         raise ValueError(f"Unsupported config file format: {suffix}")
+
+
+def _load_config_file(path: Path, _visited: set[Path] | None = None) -> dict[str, Any]:
+    """Load a config file and recursively resolve any top-level ``include``.
+
+    ``include`` may be a string or list of strings. Paths are resolved relative
+    to the file containing the directive. Included files are merged first; the
+    host file's keys override anything they define.
+    """
+    resolved = path.resolve()
+    visited = _visited if _visited is not None else set()
+    if resolved in visited:
+        raise ValueError(f"Circular config include detected: {resolved}")
+    visited = visited | {resolved}
+
+    raw = _read_config_file(path)
+    includes = raw.pop("include", None)
+    if includes is None:
+        return raw
+
+    if isinstance(includes, str):
+        includes = [includes]
+    if not isinstance(includes, list):
+        raise ValueError(
+            f"`include` in {path} must be a string or list of strings, "
+            f"got {type(includes).__name__}"
+        )
+
+    base_dir = resolved.parent
+    merged: dict[str, Any] = {}
+    for inc in includes:
+        inc_path = Path(inc)
+        if not inc_path.is_absolute():
+            inc_path = base_dir / inc_path
+        if not inc_path.exists():
+            raise FileNotFoundError(
+                f"Included config file not found: {inc_path} (from {path})"
+            )
+        merged = deep_merge(merged, _load_config_file(inc_path, visited))
+    return deep_merge(merged, raw)
 
 
 def _discover_config_files(base: Path, stem: str) -> list[Path]:
