@@ -12,7 +12,7 @@ from pydantic_ai.tools import DeferredToolRequests
 from arox.core.llm_base import LLMBaseAgent
 from arox.core.plugin import Plugin, command
 from arox.core.session import _serialize_messages
-from arox.plugins.capabilities import SUBAGENT
+from arox.plugins.capabilities import PERSISTENT_CONTEXT, SUBAGENT
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +114,11 @@ class CompactionPlugin(Plugin):
             parts=[UserPromptPart(content=f"Previous conversation summary:\n{summary}")]
         )
         compacted_messages = [new_request]
+
+        # Add persistent context (e.g. agents.md)
+        for get_persistent in agent.get_capability(PERSISTENT_CONTEXT):
+            compacted_messages.extend(get_persistent())
+
         agent.message_history = agent.example_messages + compacted_messages
         agent.llm_context_id = str(uuid.uuid4())
 

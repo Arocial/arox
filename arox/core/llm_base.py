@@ -538,7 +538,7 @@ class LLMBaseAgent:
             self.set_model(self.model_ref)
 
     def reset(self):
-        self.message_history = self.example_messages
+        self.message_history = list(self.example_messages)
         self.llm_context_id = str(uuid.uuid4())
         self.agent_session.add_event("reset", {"llm_context_id": self.llm_context_id})
 

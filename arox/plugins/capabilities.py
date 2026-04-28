@@ -1,6 +1,8 @@
 from collections.abc import Callable
 from typing import Any
 
+from pydantic_ai import ModelMessage
+
 from arox.core.capability import Capability
 
 # Capability for getting project files
@@ -20,3 +22,8 @@ AGENT_INFO = Capability[Callable[[], str]](
 
 # Capability for resetting agent state
 AGENT_RESET = Capability[Callable[[], None]]("agent_reset", "Resets the agent's state")
+
+# Capability for providing persistent context that should survive compaction
+PERSISTENT_CONTEXT = Capability[Callable[[], list[ModelMessage]]](
+    "persistent_context", "Provides messages that should persist across compaction"
+)

@@ -15,7 +15,12 @@ from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from rapidfuzz import fuzz
 
 from arox.core.plugin import Plugin, command, tool
-from arox.plugins.capabilities import AGENT_INFO, AGENT_RESET, PROJECT_FILES
+from arox.plugins.capabilities import (
+    AGENT_INFO,
+    AGENT_RESET,
+    PERSISTENT_CONTEXT,
+    PROJECT_FILES,
+)
 from arox.utils import DEFAULT_READ_LIMIT, truncate_content
 
 if TYPE_CHECKING:
@@ -33,9 +38,11 @@ class FilePlugin(Plugin):
         self._pending_text_files: dict[str, str] = {}
         self._pending_binary_files: dict[str, bytes] = {}
         self.session_files = []
+        self.persistent_files: dict[str, str] = {}
 
         self.agent.provide_capability(AGENT_INFO, self.get_info)
         self.agent.provide_capability(AGENT_RESET, self.reset)
+        self.agent.provide_capability(PERSISTENT_CONTEXT, self.get_persistent_context)
 
         self.reset()
 
@@ -43,18 +50,56 @@ class FilePlugin(Plugin):
         self._pending_text_files = {}
         self._pending_binary_files = {}
         self.session_files = []
+        self.persistent_files = {}
 
         # Auto read agents.md or agent.md if present (case-insensitive)
         for item in self.workspace.iterdir():
             if item.is_file() and item.name.lower() in ("agents.md", "agent.md"):
                 try:
-                    self._pending_text_files[item.name] = "".join(
-                        self._read_raw(item.name)
-                    )
+                    content = "".join(self._read_raw(item.name))
+                    self._pending_text_files[item.name] = content
+                    self.persistent_files[item.name] = content
                     self._add_to_session(item.name)
                     break
                 except Exception:
                     pass
+
+    def get_persistent_context(self) -> list[ModelMessage]:
+        return self._create_file_messages(self.persistent_files)
+
+    def _create_file_messages(self, files: dict[str, str]) -> list[ModelMessage]:
+        if not files:
+            return []
+
+        import uuid
+
+        tool_call_parts = []
+        tool_return_parts = []
+
+        for path, content in files.items():
+            tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
+            tool_call_parts.append(
+                ToolCallPart(
+                    tool_name="read",
+                    args={"path": path},
+                    tool_call_id=tool_call_id,
+                )
+            )
+
+            tool_return_parts.append(
+                ToolReturnPart(
+                    tool_name="read",
+                    content=content,
+                    tool_call_id=tool_call_id,
+                )
+            )
+
+        if tool_call_parts and tool_return_parts:
+            return [
+                ModelResponse(parts=tool_call_parts),
+                ModelRequest(parts=tool_return_parts),
+            ]
+        return []
 
     def candidates(self):
         provided_files = []
@@ -425,30 +470,5 @@ class FilePlugin(Plugin):
                 last_request.parts = parts
 
             if pending_text_files:
-                import uuid
-
-                tool_call_parts = []
-                tool_return_parts = []
-
-                for path, content in pending_text_files.items():
-                    tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
-                    tool_call_parts.append(
-                        ToolCallPart(
-                            tool_name="read",
-                            args={"path": path},
-                            tool_call_id=tool_call_id,
-                        )
-                    )
-
-                    tool_return_parts.append(
-                        ToolReturnPart(
-                            tool_name="read",
-                            content=content,
-                            tool_call_id=tool_call_id,
-                        )
-                    )
-
-                if tool_call_parts and tool_return_parts:
-                    messages.append(ModelResponse(parts=tool_call_parts))
-                    messages.append(ModelRequest(parts=tool_return_parts))
+                messages.extend(self._create_file_messages(pending_text_files))
         return messages
