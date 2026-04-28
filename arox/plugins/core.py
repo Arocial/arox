@@ -1,5 +1,6 @@
 import logging
 
+from arox.core.llm_base import DelegatableAgent
 from arox.core.plugin import Plugin, command
 from arox.plugins.capabilities import AGENT_INFO, AGENT_RESET, SUBAGENT
 
@@ -49,17 +50,16 @@ class CorePlugin(Plugin):
             if subagent:
                 break
 
-        if not subagent or getattr(subagent.agent_config, "internal", False):
+        if not isinstance(subagent, DelegatableAgent):
             await self.agent.agent_io.agent_send(
                 f"Subagent '{subagent_name}' not found."
             )
             return
 
-        if hasattr(subagent, "handle_task"):
-            result = await subagent.handle_task(task, main_agent=self.agent)
-            if result:
-                await self.agent.agent_io.agent_send(result)
-        else:
-            await self.agent.agent_io.agent_send(
-                f"Subagent '{subagent_name}' does not support tasks."
-            )
+        self.agent.agent_session.add_event(
+            "subagent_call",
+            {"subagent": subagent.name, "task": task},
+        )
+        result = await subagent.run_task(task)
+        if result:
+            await self.agent.agent_io.agent_send(result)

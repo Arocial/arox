@@ -50,7 +50,6 @@ temperature = 0
 
 [agent.compaction]
 type = "compaction"
-internal = true
 system_prompt = """
 You are an expert at summarizing technical conversations.
 """

@@ -7,7 +7,7 @@ from pathlib import Path
 from pydantic_ai import DeferredToolResults
 from pydantic_ai.tools import DeferredToolRequests
 
-from arox.core.llm_base import MainAgent
+from arox.core.llm_base import DelegatableAgent, MainAgent
 from arox.core.plugin import CommandManager
 
 logger = logging.getLogger(__name__)
@@ -98,7 +98,7 @@ class ChatInputEvent:
         return self.exception_input.is_skip()
 
 
-class ChatAgent(MainAgent):
+class ChatAgent(MainAgent, DelegatableAgent):
     def __init__(
         self,
         name,

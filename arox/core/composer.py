@@ -10,7 +10,7 @@ from pydantic_ai import FunctionToolset
 
 from arox.core.config import ComposerConfig
 from arox.core.io import AbstractIOAdapter
-from arox.core.llm_base import AgentDeps, MainAgent
+from arox.core.llm_base import AgentDeps, DelegatableAgent, MainAgent
 from arox.core.session import ComposerSession, FileSessionStore, SessionStore
 from arox.utils import import_class
 
@@ -128,7 +128,7 @@ class Composer:
         exposed_subagents = {
             name: agent
             for name, agent in self.subagents.items()
-            if not agent_configs[name].internal
+            if isinstance(agent, DelegatableAgent)
         }
 
         if exposed_subagents:
@@ -147,7 +147,11 @@ class Composer:
                 if not agent:
                     return f"Error: Subagent '{subagent_name}' not found. Available subagents: {', '.join(exposed_subagents.keys())}"
 
-                result = await agent.handle_task(task, main_agent=main_agent)
+                main_agent.agent_session.add_event(
+                    "subagent_call",
+                    {"subagent": agent.name, "task": task},
+                )
+                result = await agent.run_task(task)
                 return result or "Task completed with no output."
 
             main_agent.add_local_tool(delegate_to_subagent)

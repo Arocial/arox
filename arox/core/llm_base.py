@@ -281,19 +281,6 @@ class LLMBaseAgent:
         """
         return self._capabilities.get(capability, [])
 
-    async def handle_task(self, task: str, main_agent: "LLMBaseAgent", **kwargs) -> Any:
-        """Handle a task delegated from the main agent."""
-        main_agent.agent_session.add_event(
-            "subagent_call",
-            {"subagent": self.name, "task": task},
-        )
-        result = await self.step(task)
-        if result and isinstance(result.output, str):
-            return result.output
-        if result and isinstance(result.output, DeferredToolRequests):
-            return f"Sub-agent {self.name} requested deferred tools, which is not supported in delegation yet."
-        return None
-
     async def __aenter__(self):
         tg = asyncio.TaskGroup()
         await self._stack.enter_async_context(tg)
@@ -570,3 +557,24 @@ class MainAgent(LLMBaseAgent, ABC):
     @abstractmethod
     async def run(self):
         pass
+
+
+class DelegatableAgent(LLMBaseAgent, ABC):
+    """Marker mixin for subagents that can be delegated tasks.
+
+    Subagents inheriting from this class are exposed to the main agent as a
+    callable tool and via the `/agent` slash command. The default `run_task`
+    drives the agent through a single `step` and returns its textual output.
+    """
+
+    async def run_task(self, task: str) -> str | None:
+        """Run a single delegated task and return its textual result."""
+        result = await self.step(task)
+        if result and isinstance(result.output, str):
+            return result.output
+        if result and isinstance(result.output, DeferredToolRequests):
+            return (
+                f"Sub-agent {self.name} requested deferred tools, "
+                "which is not supported in delegation yet."
+            )
+        return None
