@@ -5,12 +5,11 @@ from pydantic_ai import (
     AgentRunResult,
     ModelMessage,
     ModelRequest,
-    ModelSettings,
     UserPromptPart,
 )
 from pydantic_ai.tools import DeferredToolRequests
 
-from arox.core.llm_base import AgentDeps, LLMBaseAgent
+from arox.core.llm_base import LLMBaseAgent
 from arox.core.plugin import Plugin, command
 from arox.core.session import _serialize_messages
 from arox.plugins.capabilities import SUBAGENT
@@ -49,13 +48,9 @@ class CompactionAgent(LLMBaseAgent):
 
     async def summarize(self, messages: list[ModelMessage]) -> str:
         logger.info("Starting context compaction...")
-        result = await self.pydantic_agent.run(
+        result = await self._run_inference(
             COMPACTION_PROMPT,
-            model=self.model,
-            instructions=f"{self.system_prompt}\n{self.additional_prompt}",
             message_history=messages,
-            model_settings=ModelSettings(**self.model_params),
-            deps=AgentDeps(agent_io=self.agent_io),
         )
         logger.info("Context compaction completed.")
         return str(result.output)
