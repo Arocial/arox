@@ -5,7 +5,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic_ai.settings import ModelSettings
 
 from arox.utils import deep_merge
 
@@ -77,8 +78,11 @@ class ProviderConfig(BaseModel):
 
 
 class ModelConfig(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     provider_model: str = ""
-    params: dict[str, Any] = Field(default_factory=dict)
+    params: ModelSettings = Field(default_factory=ModelSettings)
+    compaction_threshold: int | float | None = None
 
 
 class AgentConfig(BaseModel):
@@ -114,6 +118,7 @@ class AppConfig(BaseModel):
 class Config(BaseModel):
     model_ref: str = "deepseek:deepseek-chat"
     fallback_model_ref: str | list[str] = Field(default_factory=list)
+    compaction_threshold: int | float = 100000
     app: AppConfig = Field(default_factory=AppConfig)
     mcp_servers: dict[str, Any] = Field(default_factory=dict)
     composer: dict[str, ComposerConfig] = Field(default_factory=dict)

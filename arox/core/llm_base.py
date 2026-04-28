@@ -299,11 +299,11 @@ class LLMBaseAgent:
             self.local_toolset = FunctionToolset()
         self.local_toolset.add_function(func, **kwargs)
 
-    def _resolve_model(self, model_ref: str) -> tuple[Any, dict[str, Any], str]:
+    def _resolve_model(self, model_ref: str):
+        from arox.core.config import ModelConfig
+
         model_config = self.parsed_config.model.get(model_ref)
         if not model_config:
-            from arox.core.config import ModelConfig
-
             model_config = ModelConfig(provider_model=model_ref)
         elif not model_config.provider_model:
             model_config.provider_model = model_ref
@@ -322,11 +322,13 @@ class LLMBaseAgent:
                 else "",
             ),
         )
-        return model, model_config.params, provider_model
+        return model, model_config, provider_model
 
     def set_model(self, model_ref: str):
-        model, model_params, provider_model = self._resolve_model(model_ref)
-        merged_model_params = utils.deep_merge(self.agent_model_params, model_params)
+        model, model_config, provider_model = self._resolve_model(model_ref)
+        merged_model_params = utils.deep_merge(
+            self.agent_model_params, dict(model_config.params)
+        )
 
         additional_prompt = ""
         for model_prompt in self.model_aware_prompts:
@@ -334,6 +336,7 @@ class LLMBaseAgent:
                 additional_prompt = model_prompt["prompt"]
 
         self.model_ref = model_ref
+        self.model_config = model_config
         self.model_params = merged_model_params
         self.provider_model = provider_model
         self.additional_prompt = additional_prompt

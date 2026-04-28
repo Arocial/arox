@@ -16,8 +16,6 @@ from arox.plugins.capabilities import PERSISTENT_CONTEXT, SUBAGENT
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_TOKEN_THRESHOLD = 100000
-
 COMPACTION_AGENT_NAME = "compaction"
 
 
@@ -46,8 +44,35 @@ class CompactionAgent(LLMBaseAgent):
 class CompactionPlugin(Plugin):
     def __init__(self, agent: LLMBaseAgent):
         super().__init__(agent)
-        self.token_threshold = DEFAULT_TOKEN_THRESHOLD
         agent.add_post_step_hook(self._auto_compact_hook)
+
+    def _resolve_token_threshold(self) -> int | None:
+        """Resolve effective token threshold for the agent's current model.
+
+        Order of precedence: model-level `compaction_threshold`, then global
+        `compaction_threshold`. Float values in (0, 1] are treated as a ratio
+        of `ModelSettings.max_tokens`; otherwise the value is absolute.
+        """
+        agent = self.agent
+        model_cfg = getattr(agent, "model_config", None)
+        threshold: int | float | None = None
+        if model_cfg is not None and model_cfg.compaction_threshold is not None:
+            threshold = model_cfg.compaction_threshold
+        else:
+            threshold = getattr(agent.parsed_config, "compaction_threshold", None)
+        if threshold is None:
+            return None
+        if isinstance(threshold, float) and 0 < threshold <= 1:
+            max_tokens = (agent.model_params or {}).get("max_tokens")
+            if not max_tokens:
+                logger.warning(
+                    "Compaction threshold %s is a ratio but model has no "
+                    "max_tokens configured; skipping auto-compaction.",
+                    threshold,
+                )
+                return None
+            return int(threshold * max_tokens)
+        return int(threshold)
 
     @command(
         "compact",
@@ -64,13 +89,17 @@ class CompactionPlugin(Plugin):
     ) -> None:
         if not result:
             return
+        threshold = self._resolve_token_threshold()
+        if threshold is None:
+            return
         usage = result.usage()
         tokens = getattr(usage, "input_tokens", None) if usage else None
         if tokens is None and usage is not None:
             tokens = getattr(usage, "request_tokens", None)
-        if tokens and tokens > self.token_threshold:
+        if tokens and tokens > threshold:
             logger.info(
-                f"Context size ({tokens} tokens) exceeds threshold. Triggering automatic compaction."
+                f"Context size ({tokens} tokens) exceeds threshold ({threshold}). "
+                "Triggering automatic compaction."
             )
             await self._compact()
 
