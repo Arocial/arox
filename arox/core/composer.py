@@ -125,21 +125,27 @@ class Composer:
 
         main_agent.provide_capability(SUBAGENT, get_subagent)
 
-        if self.subagents:
+        exposed_subagents = {
+            name: agent
+            for name, agent in self.subagents.items()
+            if not agent_configs[name].internal
+        }
+
+        if exposed_subagents:
             subagent_descriptions = "\n".join(
                 f"- {name}: {agent_configs[name].description or 'No description'}"
-                for name in self.subagents
+                for name in exposed_subagents
             )
 
             async def delegate_to_subagent(subagent_name: str, task: str) -> str:
                 f"""Delegate a task to a specific subagent.
-                
+
                 Available subagents:
                 {subagent_descriptions}
                 """
-                agent = self.subagents.get(subagent_name)
+                agent = exposed_subagents.get(subagent_name)
                 if not agent:
-                    return f"Error: Subagent '{subagent_name}' not found. Available subagents: {', '.join(self.subagents.keys())}"
+                    return f"Error: Subagent '{subagent_name}' not found. Available subagents: {', '.join(exposed_subagents.keys())}"
 
                 result = await agent.handle_task(task, main_agent=main_agent)
                 return result or "Task completed with no output."

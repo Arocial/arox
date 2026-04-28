@@ -49,7 +49,7 @@ class CorePlugin(Plugin):
             if subagent:
                 break
 
-        if not subagent:
+        if not subagent or getattr(subagent.agent_config, "internal", False):
             await self.agent.agent_io.agent_send(
                 f"Subagent '{subagent_name}' not found."
             )

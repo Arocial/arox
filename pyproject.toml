@@ -41,7 +41,7 @@ arox-general = "arox.apps.chat:main"
 
 [project.entry-points."arox.agents"]
 chat = "arox.core.chat:ChatAgent"
-compaction = "arox.apps.compaction:CompactionAgent"
+compaction = "arox.plugins.compaction:CompactionAgent"
 
 [project.entry-points."arox.io_adapters"]
 text = "arox.ui.text_io:TextIOAdapter"
@@ -54,9 +54,9 @@ core = "arox.plugins.core:CorePlugin"
 file = "arox.plugins.file:FilePlugin"
 repo = "arox.plugins.repo:RepoPlugin"
 shell = "arox.plugins.shell:ShellPlugin"
+compaction = "arox.plugins.compaction:CompactionPlugin"
 
 [project.entry-points."arox.hooks"]
-auto_compaction = "arox.apps.compaction:auto_compaction_hook"
 
 [tool.setuptools.packages.find]
 where = ["."]

@@ -4,14 +4,14 @@ The **Coder** app is the primary application built on top of the Arox framework.
 
 ## Overview
 
-The Coder app uses a `Composer` to assemble a main `ChatAgent` (the "coder") along with a subagent that handles specific background tasks, such as compacting conversation history.
+The Coder app uses a `Composer` to assemble a main `ChatAgent` (the "coder") configured with a set of plugins, including one that compacts long conversation history to keep the context window manageable.
 
 ## Architecture
 
 The Coder app consists of the following components:
 
 - **Main Agent (`coder`)**: A `ChatAgent` that interacts directly with the user. It is equipped with tools for reading and writing files, executing shell commands, and interacting with the codebase.
-- **Subagent (`compaction`)**: A specialized agent that summarizes long technical conversations to manage the context window size and improve LLM performance.
+- **Compaction Plugin**: A plugin attached to the main agent that summarizes long technical conversations (manually via `/compact` or automatically when the context grows past a threshold) to manage the context window size and improve LLM performance.
 
 ## Features
 
@@ -27,7 +27,7 @@ The Coder app consists of the following components:
   - `/list_tools`: List all available tools.
   - `/reset`: Reset the conversation history.
   - `/info`: Display information about the current agent and model.
-  - `/compaction`: Trigger the compaction agent manually.
+  - `/compact`: Trigger conversation compaction manually.
 
 ## Configuration
 
