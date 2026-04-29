@@ -77,7 +77,35 @@ class CompactionPlugin(Plugin):
         "Compact conversation history - /compact [extra instructions]",
     )
     async def compact_command(self, name: str, arg: str):
-        await self._compact(extra_instructions=arg.strip())
+        agent = self.agent
+        example_len = len(agent.example_messages)
+        messages_to_compact = agent.message_history[example_len:]
+
+        if not messages_to_compact:
+            await agent.agent_io.agent_send("No history to compact.")
+            return
+
+        messages_before = len(agent.message_history)
+        compacted_messages = await self._compact(
+            messages_to_compact, extra_instructions=arg.strip()
+        )
+
+        if compacted_messages is messages_to_compact:
+            return
+
+        agent.message_history = agent.example_messages + compacted_messages
+        agent.llm_context_id = str(uuid.uuid4())
+
+        if agent.agent_session:
+            agent.agent_session.add_event(
+                "compaction",
+                {
+                    "messages_before": messages_before,
+                    "messages_after": len(agent.message_history),
+                    "compacted_messages": _serialize_messages(compacted_messages),
+                    "llm_context_id": agent.llm_context_id,
+                },
+            )
 
     async def history_processor(  # type: ignore[override]
         self,
@@ -94,10 +122,8 @@ class CompactionPlugin(Plugin):
                 f"Context size ({tokens} tokens) exceeds threshold ({threshold}). "
                 "Triggering automatic compaction."
             )
-            old_history_len = len(self.agent.message_history)
-            await self._compact()
-            new_messages = messages[old_history_len:]
-            return self.agent.message_history + new_messages
+            return await self._compact(messages)
+
         return messages
 
     def _find_compaction_agent(self) -> CompactionAgent | None:
@@ -107,14 +133,13 @@ class CompactionPlugin(Plugin):
                 return sub
         return None
 
-    async def _compact(self, extra_instructions: str = "") -> None:
+    async def _compact(
+        self, messages: list[ModelMessage], extra_instructions: str = ""
+    ) -> list[ModelMessage]:
         agent = self.agent
-        example_len = len(agent.example_messages)
-        messages_to_compact = agent.message_history[example_len:]
 
-        if not messages_to_compact:
-            await agent.agent_io.agent_send("No history to compact.")
-            return
+        if not messages:
+            return messages
 
         compaction_agent = self._find_compaction_agent()
         if not compaction_agent:
@@ -125,38 +150,24 @@ class CompactionPlugin(Plugin):
                 "CompactionPlugin could not find a CompactionAgent subagent named '%s'.",
                 COMPACTION_AGENT_NAME,
             )
-            return
+            return messages
 
         await agent.agent_io.agent_send(
             "Context size is large. Compacting conversation history..."
         )
 
-        messages_before = len(agent.message_history)
         summary = await compaction_agent.summarize(
-            messages_to_compact, extra_instructions=extra_instructions
+            messages, extra_instructions=extra_instructions
         )
 
         new_request = ModelRequest(
             parts=[UserPromptPart(content=f"Previous conversation summary:\n{summary}")]
         )
-        compacted_messages = [new_request]
+        compacted_messages: list[ModelMessage] = [new_request]
 
         # Add persistent context (e.g. agents.md)
         for get_persistent in agent.get_capability(PERSISTENT_CONTEXT):
             compacted_messages.extend(get_persistent())
 
-        agent.message_history = agent.example_messages + compacted_messages
-        agent.llm_context_id = str(uuid.uuid4())
-
-        if agent.agent_session:
-            agent.agent_session.add_event(
-                "compaction",
-                {
-                    "messages_before": messages_before,
-                    "messages_after": len(agent.message_history),
-                    "compacted_messages": _serialize_messages(compacted_messages),
-                    "llm_context_id": agent.llm_context_id,
-                },
-            )
-
         await agent.agent_io.agent_send("Conversation history compacted successfully.")
+        return compacted_messages
