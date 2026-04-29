@@ -50,23 +50,21 @@ class AgentSession(BaseModel):
         self.events.append(event)
         return event
 
-    def rebuild_message_history(
-        self, example_messages: Sequence[ModelMessage]
-    ) -> list[ModelMessage]:
+    def rebuild_message_history(self) -> list[ModelMessage]:
         """Rebuild message_history from events.
 
         Walks events in order:
         - agent_step: appends new_messages
-        - compaction: resets to example_messages + compacted_messages
+        - compaction: resets to compacted_messages
         """
-        history = list(example_messages)
+        history: list[ModelMessage] = []
         for event in self.events:
             if event.event_type == "agent_step":
                 raw = event.data.get("new_messages", [])
                 history.extend(_deserialize_messages(raw))
             elif event.event_type == "compaction":
                 raw = event.data.get("compacted_messages", [])
-                history = list(example_messages) + _deserialize_messages(raw)
+                history = _deserialize_messages(raw)
         return history
 
     def rebuild_llm_context_id(self) -> str | None:

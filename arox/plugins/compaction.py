@@ -78,8 +78,7 @@ class CompactionPlugin(Plugin):
     )
     async def compact_command(self, name: str, arg: str):
         agent = self.agent
-        example_len = len(agent.example_messages)
-        messages_to_compact = agent.message_history[example_len:]
+        messages_to_compact = list(agent.message_history)
 
         if not messages_to_compact:
             await agent.agent_io.agent_send("No history to compact.")
@@ -93,7 +92,7 @@ class CompactionPlugin(Plugin):
         if compacted_messages is messages_to_compact:
             return
 
-        agent.message_history = agent.example_messages + compacted_messages
+        agent.message_history = compacted_messages
         agent.llm_context_id = str(uuid.uuid4())
 
         if agent.agent_session:

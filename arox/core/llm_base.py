@@ -45,7 +45,7 @@ from arox import utils
 from arox.core.config import AgentConfig, Config
 from arox.core.hooks import PostStepHook, PreStepHook
 from arox.core.io import AbstractIOAdapter, AgentIOEndpoint, create_io_channel
-from arox.core.session import AgentSession, _deserialize_messages, _serialize_messages
+from arox.core.session import AgentSession, _serialize_messages
 from arox.core.skills import build_skill_catalog, discover_skills
 
 logger = logging.getLogger(__name__)
@@ -362,11 +362,6 @@ class LLMBaseAgent:
         if skills:
             self.skill_catalog = build_skill_catalog(skills)
 
-        self.example_messages = []
-        examples_data = self.agent_config.examples
-        if examples_data:
-            self.example_messages = _deserialize_messages(examples_data)
-
         self.model_ref = self.agent_config.model_ref or self.parsed_config.model_ref
         fallback = (
             self.agent_config.fallback_model_ref
@@ -531,9 +526,7 @@ class LLMBaseAgent:
 
     def restore_session(self, agent_session: AgentSession):
         self.agent_session = agent_session
-        self.message_history = agent_session.rebuild_message_history(
-            self.example_messages
-        )
+        self.message_history = agent_session.rebuild_message_history()
         restored_id = agent_session.rebuild_llm_context_id()
         if restored_id:
             self.llm_context_id = restored_id
@@ -541,7 +534,7 @@ class LLMBaseAgent:
             self.set_model(self.model_ref)
 
     def reset(self):
-        self.message_history = list(self.example_messages)
+        self.message_history = []
         self.llm_context_id = str(uuid.uuid4())
         self.agent_session.add_event("reset", {"llm_context_id": self.llm_context_id})
 

@@ -51,10 +51,8 @@ class TestAgentSession:
 
     def test_rebuild_empty(self):
         agent_session = AgentSession(agent_name="main")
-        examples = [ModelRequest(parts=[UserPromptPart(content="example")])]
-        history = agent_session.rebuild_message_history(examples)
-        assert len(history) == 1
-        assert history[0] is examples[0]
+        history = agent_session.rebuild_message_history()
+        assert history == []
 
     def test_rebuild_from_steps(self):
         agent_session = AgentSession(agent_name="main")
@@ -75,7 +73,7 @@ class TestAgentSession:
             {"new_messages": _serialize_messages(messages_step2)},
         )
 
-        history = agent_session.rebuild_message_history([])
+        history = agent_session.rebuild_message_history()
         assert len(history) == 4
         assert isinstance(history[0], ModelRequest)
         part = history[0].parts[0]
@@ -129,19 +127,15 @@ class TestAgentSession:
             },
         )
 
-        examples = [ModelRequest(parts=[UserPromptPart(content="example")])]
-        history = agent_session.rebuild_message_history(examples)
-        # example + compacted summary + new step
-        assert len(history) == 4
+        history = agent_session.rebuild_message_history()
+        # compacted summary + new step
+        assert len(history) == 3
         part0 = history[0].parts[0]
         assert isinstance(part0, UserPromptPart)
-        assert part0.content == "example"
+        assert part0.content == "summary of conversation"
         part1 = history[1].parts[0]
         assert isinstance(part1, UserPromptPart)
-        assert part1.content == "summary of conversation"
-        part2 = history[2].parts[0]
-        assert isinstance(part2, UserPromptPart)
-        assert part2.content == "new msg"
+        assert part1.content == "new msg"
 
     def test_rebuild_llm_context_id_none_without_events(self):
         agent_session = AgentSession(agent_name="main")
@@ -172,7 +166,7 @@ class TestAgentSession:
         agent_session.add_event("user_input", {"text": "hello"})
         agent_session.add_event("command", {"command": "/reset"})
         agent_session.add_event("error", {"error": "something"})
-        history = agent_session.rebuild_message_history([])
+        history = agent_session.rebuild_message_history()
         assert len(history) == 0
 
 
@@ -238,7 +232,7 @@ class TestFileSessionStore:
         assert agent_s.events[1].event_type == "agent_step"
 
         # Verify message rebuild works after load
-        history = agent_s.rebuild_message_history([])
+        history = agent_s.rebuild_message_history()
         assert len(history) == 2
 
     @pytest.mark.asyncio
