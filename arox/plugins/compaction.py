@@ -2,12 +2,11 @@ import logging
 import uuid
 
 from pydantic_ai import (
-    AgentRunResult,
     ModelMessage,
     ModelRequest,
+    RunContext,
     UserPromptPart,
 )
-from pydantic_ai.tools import DeferredToolRequests
 
 from arox.core.llm_base import LLMBaseAgent
 from arox.core.plugin import Plugin, command
@@ -44,7 +43,6 @@ class CompactionAgent(LLMBaseAgent):
 class CompactionPlugin(Plugin):
     def __init__(self, agent: LLMBaseAgent):
         super().__init__(agent)
-        agent.add_post_step_hook(self._auto_compact_hook)
 
     def _resolve_token_threshold(self) -> int | None:
         """Resolve effective token threshold for the agent's current model.
@@ -81,27 +79,26 @@ class CompactionPlugin(Plugin):
     async def compact_command(self, name: str, arg: str):
         await self._compact(extra_instructions=arg.strip())
 
-    async def _auto_compact_hook(
+    async def history_processor(  # type: ignore[override]
         self,
-        agent: LLMBaseAgent,
-        input_content: str | None,
-        result: AgentRunResult[DeferredToolRequests | str] | None,
-    ) -> None:
-        if not result:
-            return
+        ctx: RunContext[None],
+        messages: list[ModelMessage],
+    ) -> list[ModelMessage]:
         threshold = self._resolve_token_threshold()
         if threshold is None:
-            return
-        usage = result.usage()
-        tokens = getattr(usage, "input_tokens", None) if usage else None
-        if tokens is None and usage is not None:
-            tokens = getattr(usage, "request_tokens", None)
-        if tokens and tokens > threshold:
+            return messages
+
+        tokens = ctx.usage.total_tokens
+        if tokens > threshold:
             logger.info(
                 f"Context size ({tokens} tokens) exceeds threshold ({threshold}). "
                 "Triggering automatic compaction."
             )
+            old_history_len = len(self.agent.message_history)
             await self._compact()
+            new_messages = messages[old_history_len:]
+            return self.agent.message_history + new_messages
+        return messages
 
     def _find_compaction_agent(self) -> CompactionAgent | None:
         for get_subagent in self.agent.get_capability(SUBAGENT):
