@@ -16,12 +16,11 @@ class _Pong(ReplyEvent):
     payload: str = ""
 
 
-async def _drain(endpoint, recv_name, on_event):
+async def _drain(endpoint, on_event):
     """Continuously receive on ``endpoint`` and forward non-reply events."""
-    receive = getattr(endpoint, recv_name)
     while True:
         try:
-            event = await receive()
+            event = await endpoint.receive()
         except Exception:
             return
         await on_event(event)
@@ -33,21 +32,17 @@ async def test_request_reply_agent_to_adapter():
     async with agent_io, adapter_io:
         adapter_inbox: asyncio.Queue = asyncio.Queue()
         agent_inbox: asyncio.Queue = asyncio.Queue()
-        adapter_drain = asyncio.create_task(
-            _drain(adapter_io, "adapter_receive", adapter_inbox.put)
-        )
-        agent_drain = asyncio.create_task(
-            _drain(agent_io, "agent_receive", agent_inbox.put)
-        )
+        adapter_drain = asyncio.create_task(_drain(adapter_io, adapter_inbox.put))
+        agent_drain = asyncio.create_task(_drain(agent_io, agent_inbox.put))
 
         async def adapter_handler():
             req = await adapter_inbox.get()
             assert isinstance(req, _Ping)
             assert req.payload == "hi"
-            await adapter_io.adapter_send(_Pong(req_id=req.req_id, payload="ok"))
+            await adapter_io.send(_Pong(req_id=req.req_id, payload="ok"))
 
         handler_task = asyncio.create_task(adapter_handler())
-        reply = await agent_io.agent_send(_Ping(payload="hi"))
+        reply = await agent_io.send(_Ping(payload="hi"))
         await handler_task
 
         adapter_drain.cancel()
@@ -65,20 +60,16 @@ async def test_request_reply_adapter_to_agent():
     async with agent_io, adapter_io:
         adapter_inbox: asyncio.Queue = asyncio.Queue()
         agent_inbox: asyncio.Queue = asyncio.Queue()
-        adapter_drain = asyncio.create_task(
-            _drain(adapter_io, "adapter_receive", adapter_inbox.put)
-        )
-        agent_drain = asyncio.create_task(
-            _drain(agent_io, "agent_receive", agent_inbox.put)
-        )
+        adapter_drain = asyncio.create_task(_drain(adapter_io, adapter_inbox.put))
+        agent_drain = asyncio.create_task(_drain(agent_io, agent_inbox.put))
 
         async def agent_handler():
             req = await agent_inbox.get()
             assert isinstance(req, _Ping)
-            await agent_io.agent_send(_Pong(req_id=req.req_id, payload="from-agent"))
+            await agent_io.send(_Pong(req_id=req.req_id, payload="from-agent"))
 
         handler_task = asyncio.create_task(agent_handler())
-        reply = await adapter_io.adapter_send(_Ping(payload="hi"))
+        reply = await adapter_io.send(_Ping(payload="hi"))
         await handler_task
 
         adapter_drain.cancel()
@@ -98,9 +89,9 @@ async def test_fire_and_forget_send_returns_none():
 
     agent_io, adapter_io = create_io_channel()
     async with agent_io, adapter_io:
-        result = await adapter_io.adapter_send(Plain(value=42))
+        result = await adapter_io.send(Plain(value=42))
         assert result is None
-        received = await asyncio.wait_for(agent_io.agent_receive(), timeout=1.0)
+        received = await asyncio.wait_for(agent_io.receive(), timeout=1.0)
         assert isinstance(received, Plain)
         assert received.value == 42
 
@@ -113,9 +104,9 @@ async def test_unknown_reply_is_dropped():
 
     agent_io, adapter_io = create_io_channel()
     async with agent_io, adapter_io:
-        await adapter_io.adapter_send(_Pong(req_id="ghost", payload=""))
-        await adapter_io.adapter_send(Plain())
-        received = await asyncio.wait_for(agent_io.agent_receive(), timeout=1.0)
+        await adapter_io.send(_Pong(req_id="ghost", payload=""))
+        await adapter_io.send(Plain())
+        received = await asyncio.wait_for(agent_io.receive(), timeout=1.0)
         assert isinstance(received, Plain)
 
 
@@ -124,7 +115,7 @@ async def test_send_cancelled_clears_pending():
     agent_io, adapter_io = create_io_channel()
     async with agent_io, adapter_io:
         ping = _Ping(payload="x")
-        send_task = asyncio.create_task(agent_io.agent_send(ping))
+        send_task = asyncio.create_task(agent_io.send(ping))
         await asyncio.sleep(0)
         assert ping.req_id in agent_io._pending
 

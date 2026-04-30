@@ -48,7 +48,7 @@ from arox.core.hooks import PostStepHook, PreStepHook
 from arox.core.io import (
     AbstractIOAdapter,
     AdapterEvent,
-    AgentIOEndpoint,
+    IOEndpoint,
     SetModelEvent,
     create_io_channel,
 )
@@ -188,7 +188,7 @@ def _complete_pending_tool_calls(messages: list[ModelMessage]) -> None:
 
 @dataclass
 class AgentDeps:
-    agent_io: AgentIOEndpoint
+    agent_io: IOEndpoint
 
 
 class LLMBaseAgent:
@@ -274,7 +274,7 @@ class LLMBaseAgent:
     async def _adapter_event_loop(self) -> None:
         while True:
             try:
-                event = await self.agent_io.agent_receive()
+                event = await self.agent_io.receive()
             except (EndOfStream, ClosedResourceError):
                 return
             if not isinstance(event, AdapterEvent):
@@ -301,7 +301,7 @@ class LLMBaseAgent:
         self, ctx: RunContext["AgentDeps"], events: AsyncIterable[AgentStreamEvent]
     ):
         async for event in events:
-            await ctx.deps.agent_io.agent_send(event)
+            await ctx.deps.agent_io.send(event)
 
     def load_plugins(self):
         plugin_classes = self.agent_config.plugins
@@ -396,9 +396,7 @@ class LLMBaseAgent:
         self.model = model
 
     async def show_agent_info(self):
-        await self.agent_io.agent_send(
-            f"Using model {self.provider_model} for {self.name}"
-        )
+        await self.agent_io.send(f"Using model {self.provider_model} for {self.name}")
 
     def parse_configs(self):
         # Load default metadata using configargparse
@@ -479,7 +477,7 @@ class LLMBaseAgent:
             for idx, ref in enumerate(refs_to_try):
                 if ref != self.model_ref:
                     self.set_model(ref)
-                    await self.agent_io.agent_send(
+                    await self.agent_io.send(
                         f"Primary model failed, falling back to {self.provider_model}"
                     )
                 is_last = idx == len(refs_to_try) - 1

@@ -18,7 +18,7 @@ from pydantic_ai import (
 from arox.core.chat import ChatInputEvent
 from arox.core.io import (
     AbstractIOAdapter,
-    AdapterIOEndpoint,
+    IOEndpoint,
 )
 
 logger = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
         return True
 
     @override
-    async def handle_event(self, adapter_io: AdapterIOEndpoint, event):
+    async def handle_event(self, adapter_io: IOEndpoint, event):
         async with self.read_lock:
             await self._handle_output(event)
 

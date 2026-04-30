@@ -177,7 +177,7 @@ class Composer:
             if loaded:
                 self.session = loaded
                 restored = True
-                await self.main_agent.agent_io.agent_send(
+                await self.main_agent.agent_io.send(
                     f"Session restored: {self.session.id}"
                 )
 

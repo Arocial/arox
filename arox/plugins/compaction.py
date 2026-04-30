@@ -81,7 +81,7 @@ class CompactionPlugin(Plugin):
         messages_to_compact = list(agent.message_history)
 
         if not messages_to_compact:
-            await agent.agent_io.agent_send("No history to compact.")
+            await agent.agent_io.send("No history to compact.")
             return
 
         messages_before = len(agent.message_history)
@@ -142,7 +142,7 @@ class CompactionPlugin(Plugin):
 
         compaction_agent = self._find_compaction_agent()
         if not compaction_agent:
-            await agent.agent_io.agent_send(
+            await agent.agent_io.send(
                 "Compaction agent not configured; skipping compaction."
             )
             logger.warning(
@@ -151,7 +151,7 @@ class CompactionPlugin(Plugin):
             )
             return messages
 
-        await agent.agent_io.agent_send(
+        await agent.agent_io.send(
             "Context size is large. Compacting conversation history..."
         )
 
@@ -168,5 +168,5 @@ class CompactionPlugin(Plugin):
         for get_persistent in agent.get_capability(PERSISTENT_CONTEXT):
             compacted_messages.extend(get_persistent())
 
-        await agent.agent_io.agent_send("Conversation history compacted successfully.")
+        await agent.agent_io.send("Conversation history compacted successfully.")
         return compacted_messages

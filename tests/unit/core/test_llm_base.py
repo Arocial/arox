@@ -224,7 +224,7 @@ system_prompt = "Hi."
 
     async with agent:
         ev = CustomEvent()
-        await agent.adapter_io.adapter_send(ev)
+        await agent.adapter_io.send(ev)
         # Yield until the receiver loop consumes and dispatches.
         for _ in range(50):
             if received:
@@ -261,7 +261,7 @@ system_prompt = "Hi."
     agent.set_model = spy  # type: ignore[method-assign]
 
     async with agent:
-        await agent.adapter_io.adapter_send(SetModelEvent(model_ref="test"))
+        await agent.adapter_io.send(SetModelEvent(model_ref="test"))
         for _ in range(50):
             if calls:
                 break

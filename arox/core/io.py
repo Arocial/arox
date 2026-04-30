@@ -23,8 +23,8 @@ logger = logging.getLogger(__name__)
 class AdapterEvent:
     """Base class for events sent from the adapter to an agent.
 
-    Adapter -> agent direction (``adapter_send`` -> ``agent_receive``).
-    Subclass for control events (e.g. set model) and reply events.
+    Adapter -> agent direction. Subclass for control events (e.g. set
+    model) and reply events.
     """
 
 
@@ -37,8 +37,8 @@ class SetModelEvent(AdapterEvent):
 class RequestEvent:
     """Marker base class for events that expect a matching :class:`ReplyEvent`.
 
-    When passed to ``agent_send`` / ``adapter_send``, the call awaits a reply
-    with the same ``req_id`` and returns it. ``RequestEvent`` is direction-
+    When passed to :meth:`IOEndpoint.send`, the call awaits a reply with
+    the same ``req_id`` and returns it. ``RequestEvent`` is direction-
     agnostic; instances may also subclass :class:`AdapterEvent`.
     """
 
@@ -55,11 +55,10 @@ class ReplyEvent:
 class _BaseIOEndpoint:
     """Shared send/receive plumbing with request/reply correlation.
 
-    Subclasses bind concrete public method names (``agent_*`` or
-    ``adapter_*``) to the underscore primitives below. Reply correlation
-    relies on someone calling :meth:`_receive` concurrently with senders
-    awaiting their requests; in the agent runtime this is the adapter event
-    loop and the adapter's ``_process_io`` task respectively.
+    Reply correlation relies on someone calling :meth:`_receive`
+    concurrently with senders awaiting their requests; in the agent runtime
+    this is the adapter event loop and the adapter's ``_process_io`` task
+    respectively.
     """
 
     def __init__(self, tx, rx):
@@ -110,32 +109,22 @@ class _BaseIOEndpoint:
         await self._stack.aclose()
 
 
-class AgentIOEndpoint(_BaseIOEndpoint):
-    async def agent_send(self, event):
+class IOEndpoint(_BaseIOEndpoint):
+    async def send(self, event):
         if isinstance(event, str):
             await self.tx.send(PartStartEvent(part=TextPart(content=event), index=-1))
             await self.tx.send(PartEndEvent(part=TextPart(content=event), index=-1))
             return None
         return await self._send(event)
 
-    async def agent_receive(self):
+    async def receive(self):
         return await self._receive()
 
 
-class AdapterIOEndpoint(_BaseIOEndpoint):
-    async def adapter_send(self, event):
-        return await self._send(event)
-
-    async def adapter_receive(self):
-        return await self._receive()
-
-
-def create_io_channel() -> tuple[AgentIOEndpoint, AdapterIOEndpoint]:
+def create_io_channel() -> tuple[IOEndpoint, IOEndpoint]:
     agent_tx, adapter_rx = create_memory_object_stream[Any](math.inf)
     adapter_tx, agent_rx = create_memory_object_stream[Any](math.inf)
-    return AgentIOEndpoint(agent_tx, agent_rx), AdapterIOEndpoint(
-        adapter_tx, adapter_rx
-    )
+    return IOEndpoint(agent_tx, agent_rx), IOEndpoint(adapter_tx, adapter_rx)
 
 
 class AbstractIOAdapter(ABC):
@@ -147,16 +136,16 @@ class AbstractIOAdapter(ABC):
     async def register_composer(self, composer: "Composer"):
         self.composers[composer.id] = composer
 
-    async def _process_io(self, adapter_io: AdapterIOEndpoint):
+    async def _process_io(self, adapter_io: IOEndpoint):
         try:
             while True:
-                event = await adapter_io.adapter_receive()
+                event = await adapter_io.receive()
                 await self.handle_event(adapter_io, event)
         except (EndOfStream, ClosedResourceError):
             pass
 
     @abstractmethod
-    async def handle_event(self, adapter_io: AdapterIOEndpoint, event: Any):
+    async def handle_event(self, adapter_io: IOEndpoint, event: Any):
         pass
 
     async def __aenter__(self):

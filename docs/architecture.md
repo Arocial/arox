@@ -29,14 +29,14 @@ IO is split into two layers: a per-agent channel and an app-level adapter.
 
 ### Per-agent channel
 
-Every agent holds its own **`AgentIOEndpoint`** (`agent.agent_io`), created by `create_io_channel()` in `arox/core/io.py`. The endpoint is backed by a pair of in-memory streams and exposes `agent_send` / `agent_receive`. Because the main agent and each subagent each have their own channel, their output can be routed, rendered, or stored independently.
+Every agent holds its own **`IOEndpoint`** (`agent.agent_io`), created by `create_io_channel()` in `arox/core/io.py` together with a paired adapter-side `IOEndpoint`. Endpoints are backed by a pair of in-memory streams and expose `send` / `receive`. Because the main agent and each subagent each have their own channel, their output can be routed, rendered, or stored independently. `RequestEvent` / `ReplyEvent` add request/reply correlation: passing a `RequestEvent` to `send` awaits the matching `ReplyEvent` and returns it.
 
 ### App-level adapter
 
 One **`AbstractIOAdapter`** (`arox/ui/`) is instantiated per App and shared across all composers in it. The adapter:
 
 - Registers composers via `register_composer`.
-- Consumes each agent's matching `AdapterIOEndpoint`.
+- Consumes each agent's matching adapter-side `IOEndpoint`.
 - Renders events to the concrete UI.
 
 Built-in adapters:
@@ -66,7 +66,7 @@ Built-in adapters:
 
 ## Data flow
 
-1. **User input** arrives at the IO adapter and is forwarded over the main agent's `AgentIOEndpoint`.
+1. **User input** arrives at the IO adapter and is forwarded over the main agent's `IOEndpoint`.
 2. **Command check**: the `ChatAgent` tests whether the input is a slash command and, if so, executes it locally without calling the LLM.
 3. **LLM inference**: otherwise the message is appended to history (an `agent_step` event) and sent to the LLM via `pydantic_ai`.
 4. **Tool execution**: tool calls (local, MCP, or a subagent) are dispatched and their results fed back to the LLM.

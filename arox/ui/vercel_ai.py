@@ -30,7 +30,7 @@ from pydantic_ai import (
 from arox.core.chat import ChatAgent, ChatInputEvent, StepDoneEvent
 from arox.core.io import (
     AbstractIOAdapter,
-    AdapterIOEndpoint,
+    IOEndpoint,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,11 +95,11 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         self.run_instances: dict[str, ComposerRun] = {}
 
     @override
-    async def handle_event(self, adapter_io: AdapterIOEndpoint, event):
+    async def handle_event(self, adapter_io: IOEndpoint, event):
         queue = self.event_queues.setdefault(adapter_io, asyncio.Queue())
         await queue.put((adapter_io, event))
 
-    async def drain_until_need_reply(self, adapter_io: AdapterIOEndpoint):
+    async def drain_until_need_reply(self, adapter_io: IOEndpoint):
         queue = self.event_queues.get(adapter_io)
         if not queue:
             return
@@ -111,7 +111,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         except Exception as e:
             logger.error(f"Error draining events: {e}")
 
-    def _event_messages(self, adapter_io: AdapterIOEndpoint, event) -> list[dict]:
+    def _event_messages(self, adapter_io: IOEndpoint, event) -> list[dict]:
         messages: list[dict] = []
 
         if isinstance(event, PartStartEvent):
@@ -237,7 +237,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
         return messages
 
-    def _format_event(self, adapter_io: AdapterIOEndpoint, event) -> list[str]:
+    def _format_event(self, adapter_io: IOEndpoint, event) -> list[str]:
         return [
             f"data: {json.dumps(m)}\n\n"
             for m in self._event_messages(adapter_io, event)

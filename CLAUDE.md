@@ -29,8 +29,8 @@ Agent types and which agent to instantiate come from config (`arox/core/config.p
 
 IO is split into two layers: per-agent channels and app-level adapters.
 
-- **Per-agent channel** (`arox/core/io.py`): `create_io_channel()` returns an `(AgentIOEndpoint, AdapterIOEndpoint)` pair backed by two in-memory streams. Every agent holds its own `agent_io: AgentIOEndpoint` and uses `agent_send` / `agent_receive` to talk to the UI — both the main agent and each subagent have independent channels, so their output can be routed/rendered separately.
-- **App-level adapter** (`arox/ui/`, base `AbstractIOAdapter`): one adapter per App, shared across composers. It registers composers, consumes each agent's `AdapterIOEndpoint`, and renders events to the concrete UI. Available adapters:
+- **Per-agent channel** (`arox/core/io.py`): `create_io_channel()` returns a pair of `IOEndpoint` instances backed by two in-memory streams. Every agent holds its own `agent_io: IOEndpoint` and uses `send` / `receive` to talk to the UI — both the main agent and each subagent have independent channels, so their output can be routed/rendered separately. `RequestEvent` / `ReplyEvent` provide request/reply correlation on top of `send` / `receive`.
+- **App-level adapter** (`arox/ui/`, base `AbstractIOAdapter`): one adapter per App, shared across composers. It registers composers, consumes each agent's adapter-side `IOEndpoint`, and renders events to the concrete UI. Available adapters:
   - `TextIOAdapter` — rich terminal via `prompt-toolkit`
   - `VercelStreamIOAdapter` — web frontend via Vercel AI SDK (FastAPI/SSE)
   - `TelegramIOAdapter`, `FeishuIOAdapter` — chat bots

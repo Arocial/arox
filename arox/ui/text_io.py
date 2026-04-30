@@ -21,7 +21,7 @@ from arox.core.chat import ChatAgent, ChatInputEvent, StepDoneEvent
 from arox.core.composer import Composer
 from arox.core.io import (
     AbstractIOAdapter,
-    AdapterIOEndpoint,
+    IOEndpoint,
 )
 from arox.core.plugin import CommandCompleter
 from arox.utils import UserInputGenerator
@@ -128,5 +128,5 @@ class TextIOAdapter(AbstractIOAdapter):
             print(f"\nUnexpected event type: {event.__class__.__name__}\n")
 
     @override
-    async def handle_event(self, adapter_io: AdapterIOEndpoint, event):
+    async def handle_event(self, adapter_io: IOEndpoint, event):
         await self._handle_output(event)

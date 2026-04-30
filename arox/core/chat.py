@@ -157,7 +157,7 @@ class ChatAgent(MainAgent, DelegatableAgent):
                 pending_exception = None
 
             # 2. Send the event to request input
-            await self.agent_io.agent_send(self.current_chat_input_event)
+            await self.agent_io.send(self.current_chat_input_event)
 
             # 3. Wait for the user's reply
             await self.current_chat_input_event.wait()
@@ -166,7 +166,7 @@ class ChatAgent(MainAgent, DelegatableAgent):
                 break
 
             if self.current_chat_input_event.is_skip():
-                await self.agent_io.agent_send(StepDoneEvent())
+                await self.agent_io.send(StepDoneEvent())
                 continue
 
             # 5. Execute the step
@@ -186,14 +186,14 @@ class ChatAgent(MainAgent, DelegatableAgent):
                 if user_input is not None:
                     self.agent_session.add_event("user_input", {"text": user_input})
                     if not user_input.strip():
-                        await self.agent_io.agent_send(StepDoneEvent())
+                        await self.agent_io.send(StepDoneEvent())
                         continue
                     is_command = await self.command_manager.try_execute_command(
                         user_input
                     )
                     if is_command:
                         self.agent_session.add_event("command", {"command": user_input})
-                        await self.agent_io.agent_send(StepDoneEvent())
+                        await self.agent_io.send(StepDoneEvent())
                         continue
 
                 step_task = asyncio.create_task(
@@ -208,7 +208,7 @@ class ChatAgent(MainAgent, DelegatableAgent):
                         deferred_requests = None
                 except asyncio.CancelledError:
                     logger.info("Step cancelled.")
-                    await self.agent_io.agent_send("\n[Step cancelled]\n")
+                    await self.agent_io.send("\n[Step cancelled]\n")
                     deferred_requests = None
                 finally:
                     self.foreground_task = None
@@ -221,4 +221,4 @@ class ChatAgent(MainAgent, DelegatableAgent):
                 pending_exception = e
 
             # 6. Send StepDoneEvent to indicate the step is finished
-            await self.agent_io.agent_send(StepDoneEvent())
+            await self.agent_io.send(StepDoneEvent())
