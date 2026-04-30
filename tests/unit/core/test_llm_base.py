@@ -11,7 +11,7 @@ from pydantic_ai.messages import (
 )
 
 from arox.core.app import app_setup
-from arox.core.io import AbstractIOAdapter
+from arox.core.io import AbstractIOAdapter, AdapterEvent, SetModelEvent
 from arox.core.llm_base import LLMBaseAgent, _complete_pending_tool_calls
 
 
@@ -195,3 +195,79 @@ system_prompt = "Hi there."
 
     assert "skill1" in agent.system_prompt
     assert "skill2" in agent.system_prompt
+
+
+@pytest.mark.asyncio
+async def test_adapter_event_dispatches_to_handler(tmp_path):
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("""
+model_ref = "test"
+[agent.test_agent]
+system_prompt = "Hi."
+""")
+    parsed_config = app_setup(
+        config_files=[config_file],
+        cli_args={"workspace": str(tmp_path)},
+    )
+
+    class CustomEvent(AdapterEvent):
+        pass
+
+    received: list[AdapterEvent] = []
+
+    agent = LLMBaseAgent("test_agent", parsed_config, io_adapter=_StubIOAdapter())
+
+    async def handler(event):
+        received.append(event)
+
+    agent.register_adapter_event_handler(CustomEvent, handler)
+
+    async with agent:
+        ev = CustomEvent()
+        await agent.adapter_io.adapter_send(ev)
+        # Yield until the receiver loop consumes and dispatches.
+        for _ in range(50):
+            if received:
+                break
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0.01)
+
+    assert received == [ev]
+
+
+@pytest.mark.asyncio
+async def test_set_model_event_updates_model_ref(tmp_path):
+    config_file = tmp_path / "config.toml"
+    config_file.write_text("""
+model_ref = "test"
+[agent.test_agent]
+system_prompt = "Hi."
+""")
+    parsed_config = app_setup(
+        config_files=[config_file],
+        cli_args={"workspace": str(tmp_path)},
+    )
+
+    agent = LLMBaseAgent("test_agent", parsed_config, io_adapter=_StubIOAdapter())
+
+    calls: list[str] = []
+    original_set_model = agent.set_model
+
+    def spy(ref):
+        calls.append(ref)
+        original_set_model(ref)
+
+    agent.set_model = spy  # type: ignore[method-assign]
+
+    async with agent:
+        await agent.adapter_io.adapter_send(SetModelEvent(model_ref="test"))
+        for _ in range(50):
+            if calls:
+                break
+            import asyncio as _asyncio
+
+            await _asyncio.sleep(0.01)
+
+    assert calls == ["test"]
+    assert agent.model_ref == "test"

@@ -3,6 +3,7 @@ import contextlib
 import logging
 import math
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from anyio import ClosedResourceError, EndOfStream, create_memory_object_stream
@@ -16,6 +17,19 @@ if TYPE_CHECKING:
     from arox.core.composer import Composer
 
 logger = logging.getLogger(__name__)
+
+
+class AdapterEvent:
+    """Base class for events sent from the adapter to an agent.
+
+    Adapter -> agent direction (``adapter_send`` -> ``agent_receive``).
+    Subclass for control events (e.g. set model) and reply events.
+    """
+
+
+@dataclass
+class SetModelEvent(AdapterEvent):
+    model_ref: str
 
 
 class AgentIOEndpoint:

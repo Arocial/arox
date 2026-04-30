@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import fastmcp
+from anyio import ClosedResourceError, EndOfStream
 from httpx import AsyncClient, HTTPStatusError, Timeout, TransportError
 from pydantic_ai import (
     AbstractToolset,
@@ -44,7 +45,13 @@ from tenacity import (
 from arox import utils
 from arox.core.config import AgentConfig, Config
 from arox.core.hooks import PostStepHook, PreStepHook
-from arox.core.io import AbstractIOAdapter, AgentIOEndpoint, create_io_channel
+from arox.core.io import (
+    AbstractIOAdapter,
+    AdapterEvent,
+    AgentIOEndpoint,
+    SetModelEvent,
+    create_io_channel,
+)
 from arox.core.session import AgentSession, _serialize_messages
 from arox.core.skills import build_skill_catalog, discover_skills
 
@@ -242,8 +249,53 @@ class LLMBaseAgent:
         self.agent_io, self.adapter_io = create_io_channel()
         self.io_adapter = io_adapter
 
+        self._adapter_event_handlers: dict[
+            type[AdapterEvent], Callable[[AdapterEvent], Any]
+        ] = {}
+        self.register_adapter_event_handler(SetModelEvent, self._handle_set_model_event)
+
         self._stack = contextlib.AsyncExitStack()
         self.reset()
+
+    def register_adapter_event_handler(
+        self,
+        event_type: type[AdapterEvent],
+        handler: Callable[[Any], Any],
+    ) -> None:
+        """Register a handler for an :class:`AdapterEvent` subclass.
+
+        Handlers may be sync or async; the receiver loop awaits coroutines.
+        """
+        self._adapter_event_handlers[event_type] = handler
+
+    async def _handle_set_model_event(self, event: SetModelEvent) -> None:
+        self.set_model(event.model_ref)
+
+    async def _adapter_event_loop(self) -> None:
+        while True:
+            try:
+                event = await self.agent_io.agent_receive()
+            except (EndOfStream, ClosedResourceError):
+                return
+            if not isinstance(event, AdapterEvent):
+                logger.warning(
+                    "Ignoring non-AdapterEvent on adapter->agent channel: %r",
+                    type(event).__name__,
+                )
+                continue
+            handler = self._adapter_event_handlers.get(type(event))
+            if handler is None:
+                logger.warning(
+                    "No handler registered for AdapterEvent %s",
+                    type(event).__name__,
+                )
+                continue
+            try:
+                result = handler(event)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                logger.exception("Error handling AdapterEvent %s", type(event).__name__)
 
     async def handle_event(
         self, ctx: RunContext["AgentDeps"], events: AsyncIterable[AgentStreamEvent]
@@ -287,6 +339,7 @@ class LLMBaseAgent:
         tg.create_task(self.io_adapter._process_io(self.adapter_io))
         await self._stack.enter_async_context(self.agent_io)
         await self._stack.enter_async_context(self.adapter_io)
+        tg.create_task(self._adapter_event_loop())
         if self.mcp_client:
             await self._stack.enter_async_context(self.mcp_client)
         return self
