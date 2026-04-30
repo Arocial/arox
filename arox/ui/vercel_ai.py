@@ -97,10 +97,15 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         self.tool_ids = {}
         self.read_lock = asyncio.Lock()
         self.event_queues = {}
+        self.pending_inputs: dict[IOEndpoint, ChatInputEvent] = {}
         self.run_instances: dict[str, ComposerRun] = {}
 
     @override
     async def handle_event(self, adapter_io: IOEndpoint, event):
+        if isinstance(event, ChatInputEvent):
+            self.pending_inputs[adapter_io] = event
+        elif isinstance(event, StepDoneEvent):
+            self.pending_inputs.pop(adapter_io, None)
         queue = self.event_queues.setdefault(adapter_io, asyncio.Queue())
         await queue.put((adapter_io, event))
 
@@ -257,21 +262,22 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
         reply = payload.get("reply")
         if reply is not None:
-            event = agent.agent_io.find_pending_request(ChatInputEvent)
-            if event is not None:
-                deferred = reply.get("deferred_tools") or {}
-                exception_input = reply.get("exception_input") or {}
-                normal_input = reply.get("normal_input") or {}
-                await agent.adapter_io.send(
-                    ChatInputReply(
-                        req_id=event.req_id,
-                        deferred_answers=dict(deferred),
-                        user_input=normal_input.get("user_input"),
-                        retry=bool(exception_input.get("retry", False)),
-                    )
+            req_id = reply.get("req_id")
+            if not req_id:
+                return {"status": "no_req_id"}
+            deferred = reply.get("deferred_tools") or {}
+            exception_input = reply.get("exception_input") or {}
+            normal_input = reply.get("normal_input") or {}
+            await agent.adapter_io.send(
+                ChatInputReply(
+                    req_id=req_id,
+                    deferred_answers=dict(deferred),
+                    user_input=normal_input.get("user_input"),
+                    retry=bool(exception_input.get("retry", False)),
                 )
-                return {"status": "ok"}
-            return {"status": "no_pending_input"}
+            )
+            self.pending_inputs.pop(agent.adapter_io, None)
+            return {"status": "ok"}
 
         return {"status": "noop"}
 
@@ -306,7 +312,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 logger.info(f"WS IN: {payload}")
 
                 if payload.get("resume"):
-                    event = agent.agent_io.find_pending_request(ChatInputEvent)
+                    event = self.pending_inputs.get(adapter_io)
                     if event is not None:
                         for msg in self._event_messages(adapter_io, event):
                             await websocket.send_json(msg)

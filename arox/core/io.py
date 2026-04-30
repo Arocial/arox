@@ -66,29 +66,17 @@ class _BaseIOEndpoint:
         self.rx = rx
         self._stack = contextlib.AsyncExitStack()
         self._pending: dict[str, asyncio.Future[ReplyEvent]] = {}
-        self._pending_requests: dict[str, RequestEvent] = {}
-
-    def find_pending_request(
-        self, event_type: type[RequestEvent]
-    ) -> RequestEvent | None:
-        """Return the first in-flight request matching ``event_type``, if any."""
-        for event in self._pending_requests.values():
-            if isinstance(event, event_type):
-                return event
-        return None
 
     async def _send(self, event: Any) -> Any:
         if isinstance(event, RequestEvent):
             loop = asyncio.get_running_loop()
             fut: asyncio.Future[ReplyEvent] = loop.create_future()
             self._pending[event.req_id] = fut
-            self._pending_requests[event.req_id] = event
             try:
                 await self.tx.send(event)
                 return await fut
             finally:
                 self._pending.pop(event.req_id, None)
-                self._pending_requests.pop(event.req_id, None)
         await self.tx.send(event)
         return None
 

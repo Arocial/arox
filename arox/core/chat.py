@@ -52,6 +52,7 @@ class ChatInputEvent(RequestEvent):
 
     def generate_request(self) -> dict:
         return {
+            "req_id": self.req_id,
             "deferred_tools": {k: t.question for k, t in self.deferred_tools.items()},
             "normal_input": {"request": self.normal_input.request},
             "exception_input": {

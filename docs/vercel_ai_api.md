@@ -60,7 +60,7 @@ Arox adds a few non-standard frames on the same channel:
 
 | type | fields | meaning |
 |---|---|---|
-| `data-input-request` | `data` | agent is waiting for user input; `data` carries `deferred_tools`, `normal_input`, `exception_input` |
+| `data-input-request` | `data` | agent is waiting for user input; `data` carries `req_id`, `deferred_tools`, `normal_input`, `exception_input` |
 | `step-done` | — | current step fully drained; next step may follow on the same connection |
 | `ack` | `status` | acknowledgment of a client-sent message (see below) |
 
@@ -68,13 +68,16 @@ Arox adds a few non-standard frames on the same channel:
 
 ```json
 // submit a reply to a pending data-input-request
-{ "reply": { "normal_input": { "user_input": "hello" } } }
+{ "reply": { "req_id": "<uuid from data-input-request>", "normal_input": { "user_input": "hello" } } }
+
+// resume after reconnecting: re-send the currently pending data-input-request, if any
+{ "resume": true }
 
 // cancel the agent's currently running foreground step
 { "cancel": true }
 ```
 
-The `reply` object matches the structure of `ChatInputEvent.set_reply` (fields `deferred_tools`, `normal_input`, `exception_input`). The server responds with `{"type": "ack", "status": "ok" | "cancelled" | "no_pending_input" | "noop"}`.
+The `reply` object's `req_id` MUST match the `req_id` carried in the `data-input-request` it answers; remaining fields (`deferred_tools`, `normal_input`, `exception_input`) mirror the matching fields of the request. The server responds with `{"type": "ack", "status": "ok" | "cancelled" | "no_req_id" | "noop"}`.
 
 The connection stays open until either side closes it. Closing the client disconnects the stream but does **not** cancel any in-flight step — send `{"cancel": true}` first if needed.
 
@@ -91,16 +94,11 @@ Get the current state for a specific agent: message history plus any pending inp
 **Response:**
 ```json
 {
-  "history": [ /* Vercel AI UI messages */ ],
-  "pending_input": {
-    "deferred_tools": { "<key>": "<question>" },
-    "normal_input": { "request": true },
-    "exception_input": { "exception": null }
-  }
+  "history": [ /* Vercel AI UI messages */ ]
 }
 ```
 
-`pending_input` is `null` when no `ChatInputEvent` is currently awaiting a reply. When non-null, its shape matches `ChatInputEvent.generate_request()` and can be answered via the WebSocket `reply` message.
+To recover any pending input prompt after reconnecting, send `{"resume": true}` over the WebSocket — the server will re-emit the currently pending `data-input-request`, if any.
 
 ### Sessions
 
