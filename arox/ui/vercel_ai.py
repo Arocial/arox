@@ -27,7 +27,12 @@ from pydantic_ai import (
     ToolCallPartDelta,
 )
 
-from arox.core.chat import ChatAgent, ChatInputEvent, StepDoneEvent
+from arox.core.chat import (
+    ChatAgent,
+    ChatInputEvent,
+    ChatInputReply,
+    StepDoneEvent,
+)
 from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
@@ -243,7 +248,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             for m in self._event_messages(adapter_io, event)
         ]
 
-    def _apply_input(self, agent, payload: dict) -> dict:
+    async def _apply_input(self, agent, payload: dict) -> dict:
         if payload.get("cancel"):
             cancel = getattr(agent, "cancel_foreground_task", None)
             if callable(cancel):
@@ -252,9 +257,21 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
         reply = payload.get("reply")
         if reply is not None:
-            event = getattr(agent, "current_chat_input_event", None)
-            if event and not event.future.done():
-                event.set_reply(reply)
+            event: ChatInputEvent | None = getattr(
+                agent, "current_chat_input_event", None
+            )
+            if event and event.req_id in agent.agent_io._pending:
+                deferred = reply.get("deferred_tools") or {}
+                exception_input = reply.get("exception_input") or {}
+                normal_input = reply.get("normal_input") or {}
+                await agent.adapter_io.send(
+                    ChatInputReply(
+                        req_id=event.req_id,
+                        deferred_answers=dict(deferred),
+                        user_input=normal_input.get("user_input"),
+                        retry=bool(exception_input.get("retry", False)),
+                    )
+                )
                 return {"status": "ok"}
             return {"status": "no_pending_input"}
 
@@ -292,11 +309,11 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
                 if payload.get("resume"):
                     event = getattr(agent, "current_chat_input_event", None)
-                    if event and not event.future.done():
+                    if event and event.req_id in agent.agent_io._pending:
                         for msg in self._event_messages(adapter_io, event):
                             await websocket.send_json(msg)
                 else:
-                    self._apply_input(agent, payload)
+                    await self._apply_input(agent, payload)
 
         out_task = asyncio.create_task(pump_out())
         in_task = asyncio.create_task(pump_in())

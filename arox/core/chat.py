@@ -1,12 +1,13 @@
 import asyncio
 import logging
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pydantic_ai import DeferredToolResults
 from pydantic_ai.tools import DeferredToolRequests
 
+from arox.core.io import ReplyEvent, RequestEvent
 from arox.core.llm_base import DelegatableAgent, MainAgent
 from arox.core.plugin import CommandManager
 
@@ -17,52 +18,39 @@ class StepDoneEvent:
     pass
 
 
-class ChatInputEvent:
-    @dataclass
-    class DeferredToolInput:
-        question: str
-        answer: str | None = None
+@dataclass
+class _DeferredToolQuestion:
+    question: str
 
-        def is_abort(self):
-            return self.question and self.answer is None
 
-    @dataclass
-    class NormalInput:
-        request: bool
-        user_input: str | None
+@dataclass
+class _NormalInputRequest:
+    request: bool = False
 
-        def is_abort(self):
-            return self.request and self.user_input is None
 
-    @dataclass
-    class ExceptionInput:
-        exception: BaseException | None = None
-        retry: bool = False
+@dataclass
+class _ExceptionInputRequest:
+    exception: BaseException | None = None
 
-        def is_abort(self):
-            return False
 
-        def is_skip(self):
-            return self.exception and not self.retry
+@dataclass
+class ChatInputEvent(RequestEvent):
+    DeferredToolInput = _DeferredToolQuestion
+    NormalInput = _NormalInputRequest
+    ExceptionInput = _ExceptionInputRequest
 
-    def __init__(self):
-        self.deferred_tools = OrderedDict[str, self.DeferredToolInput]()
-        self.normal_input = self.NormalInput(False, "")
-        self.exception_input = self.ExceptionInput()
+    deferred_tools: OrderedDict[str, _DeferredToolQuestion] = field(
+        default_factory=OrderedDict
+    )
+    normal_input: _NormalInputRequest = field(default_factory=_NormalInputRequest)
+    exception_input: _ExceptionInputRequest = field(
+        default_factory=_ExceptionInputRequest
+    )
 
-        loop = asyncio.get_running_loop()
-        self.future = loop.create_future()
+    def add_deferred_tool(self, question: str, key: str) -> None:
+        self.deferred_tools[key] = _DeferredToolQuestion(question)
 
-    def add_deferred_tool(self, question: str, key: str):
-        self.deferred_tools[key] = self.DeferredToolInput(question)
-
-    def get_deferred_tool_input(self, key):
-        return self.deferred_tools[key].answer
-
-    async def wait(self):
-        await self.future
-
-    def generate_request(self):
+    def generate_request(self) -> dict:
         return {
             "deferred_tools": {k: t.question for k, t in self.deferred_tools.items()},
             "normal_input": {"request": self.normal_input.request},
@@ -73,29 +61,21 @@ class ChatInputEvent:
             },
         }
 
-    def set_reply(self, reply: dict):
-        if "deferred_tools" in reply:
-            for k, v in reply["deferred_tools"].items():
-                if k in self.deferred_tools:
-                    self.deferred_tools[k].answer = v
-        if "exception_input" in reply:
-            self.exception_input.retry = reply["exception_input"]["retry"]
-        if "normal_input" in reply:
-            self.normal_input.user_input = reply["normal_input"]["user_input"]
 
-        self.future.set_result(True)
+@dataclass
+class ChatInputReply(ReplyEvent):
+    deferred_answers: dict[str, str | None] = field(default_factory=dict)
+    user_input: str | None = None
+    retry: bool = False
 
-    def is_abort(self):
-        return any(
-            [
-                any(t.is_abort() for t in self.deferred_tools.values()),
-                self.normal_input.is_abort(),
-                self.exception_input.is_abort(),
-            ]
-        )
+    def is_abort(self, request: ChatInputEvent) -> bool:
+        for key, tool in request.deferred_tools.items():
+            if tool.question and self.deferred_answers.get(key) is None:
+                return True
+        return bool(request.normal_input.request and self.user_input is None)
 
-    def is_skip(self):
-        return self.exception_input.is_skip()
+    def is_skip(self, request: ChatInputEvent) -> bool:
+        return request.exception_input.exception is not None and not self.retry
 
 
 class ChatAgent(MainAgent, DelegatableAgent):
@@ -131,15 +111,6 @@ class ChatAgent(MainAgent, DelegatableAgent):
                 self.command_manager.register_commands(cmds)
         return plugins
 
-    async def add_tool_input_request(self, question, key):
-        assert self.current_chat_input_event is not None
-        self.current_chat_input_event.add_deferred_tool(question, key)
-
-    async def get_tool_input_result(self, key):
-        assert self.current_chat_input_event is not None
-        await self.current_chat_input_event.wait()
-        return self.current_chat_input_event.get_deferred_tool_input(key)
-
     async def run(self):
         """Start the agent with optional input generator"""
         deferred_requests: DeferredToolRequests | None = None
@@ -147,25 +118,21 @@ class ChatAgent(MainAgent, DelegatableAgent):
 
         while True:
             # 1. Prepare the event for this round
-            self.current_chat_input_event = ChatInputEvent()
-            self.current_chat_input_event.normal_input.request = True
+            event = ChatInputEvent()
+            event.normal_input.request = True
+            self.current_chat_input_event = event
 
             if pending_exception:
-                self.current_chat_input_event.exception_input.exception = (
-                    pending_exception
-                )
+                event.exception_input.exception = pending_exception
                 pending_exception = None
 
-            # 2. Send the event to request input
-            await self.agent_io.send(self.current_chat_input_event)
+            # 2. Send the request and wait for the matching reply
+            reply: ChatInputReply = await self.agent_io.send(event)
 
-            # 3. Wait for the user's reply
-            await self.current_chat_input_event.wait()
-
-            if self.current_chat_input_event.is_abort():
+            if reply.is_abort(event):
                 break
 
-            if self.current_chat_input_event.is_skip():
+            if reply.is_skip(event):
                 await self.agent_io.send(StepDoneEvent())
                 continue
 
@@ -182,7 +149,7 @@ class ChatAgent(MainAgent, DelegatableAgent):
                 else:
                     deferred_results = None
 
-                user_input = self.current_chat_input_event.normal_input.user_input
+                user_input = reply.user_input
                 if user_input is not None:
                     self.agent_session.add_event("user_input", {"text": user_input})
                     if not user_input.strip():

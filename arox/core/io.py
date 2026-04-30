@@ -110,14 +110,14 @@ class _BaseIOEndpoint:
 
 
 class IOEndpoint(_BaseIOEndpoint):
-    async def send(self, event):
+    async def send(self, event: Any) -> Any:
         if isinstance(event, str):
             await self.tx.send(PartStartEvent(part=TextPart(content=event), index=-1))
             await self.tx.send(PartEndEvent(part=TextPart(content=event), index=-1))
             return None
         return await self._send(event)
 
-    async def receive(self):
+    async def receive(self) -> Any:
         return await self._receive()
 
 

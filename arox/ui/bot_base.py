@@ -15,7 +15,7 @@ from pydantic_ai import (
     ThinkingPartDelta,
 )
 
-from arox.core.chat import ChatInputEvent
+from arox.core.chat import ChatInputEvent, ChatInputReply
 from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
@@ -43,9 +43,9 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
     @override
     async def handle_event(self, adapter_io: IOEndpoint, event):
         async with self.read_lock:
-            await self._handle_output(event)
+            await self._handle_output(adapter_io, event)
 
-    async def _handle_output(self, event):
+    async def _handle_output(self, adapter_io: IOEndpoint, event):
         if not await self.before_handle_output():
             return
 
@@ -78,20 +78,25 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
             if not self.input_queue:
                 logger.error("input_queue is not initialized")
                 return
-            reply = {}
-            if event.deferred_tools:
-                reply["deferred_tools"] = {}
-                for key, tool in event.deferred_tools.items():
-                    await self.send_message(f"❓ {tool.question}")
-                    line = await self.input_queue.get()
-                    reply["deferred_tools"][key] = line
+            deferred_answers: dict[str, str | None] = {}
+            user_input: str | None = None
+            retry = False
+            for key, tool in event.deferred_tools.items():
+                await self.send_message(f"❓ {tool.question}")
+                deferred_answers[key] = await self.input_queue.get()
             if event.exception_input.exception is not None:
                 await self.send_message(
                     f"⚠️ An error occurred: {event.exception_input.exception}\nDo you want to continue? (y/n)"
                 )
                 line = await self.input_queue.get()
-                reply["exception_input"] = {"retry": line.strip().lower() == "y"}
+                retry = line.strip().lower() == "y"
             if event.normal_input.request:
-                line = await self.input_queue.get()
-                reply["normal_input"] = {"user_input": line}
-            event.set_reply(reply)
+                user_input = await self.input_queue.get()
+            await adapter_io.send(
+                ChatInputReply(
+                    req_id=event.req_id,
+                    deferred_answers=deferred_answers,
+                    user_input=user_input,
+                    retry=retry,
+                )
+            )
