@@ -106,7 +106,7 @@ class CompactionPlugin(Plugin):
                 },
             )
 
-    async def history_processor(  # type: ignore[override]
+    async def history_processor(
         self,
         ctx: RunContext[None],
         messages: list[ModelMessage],

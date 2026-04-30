@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from prompt_toolkit.completion import Completer, Completion
+from pydantic_ai import ModelMessage, RunContext
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +196,11 @@ class Plugin:
                 )
         return tls
 
-    async def history_processor(self, messages: list[Any]) -> list[Any]:
+    async def history_processor(
+        self,
+        ctx: RunContext[None],
+        messages: list[ModelMessage],
+    ) -> list[ModelMessage]:
         """Process message history before sending to the model."""
         return messages
 

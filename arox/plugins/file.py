@@ -9,6 +9,7 @@ from pydantic_ai import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    RunContext,
     UserPromptPart,
 )
 from pydantic_ai.messages import ToolCallPart, ToolReturnPart
@@ -447,7 +448,7 @@ class FilePlugin(Plugin):
             return "\nNo chat files currently loaded."
 
     async def history_processor(
-        self, messages: list[ModelMessage]
+        self, ctx: RunContext[None], messages: list[ModelMessage]
     ) -> list[ModelMessage]:
         if messages and isinstance(messages[-1], ModelRequest):
             pending_text_files, pending_binary = self.consume_pending()

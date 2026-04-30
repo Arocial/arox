@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import git
-from pydantic_ai import ModelMessage, ModelRequest, UserPromptPart
+from pydantic_ai import ModelMessage, ModelRequest, RunContext, UserPromptPart
 
 from arox.core.plugin import Plugin, command
 from arox.plugins.capabilities import PROJECT_FILES
@@ -63,7 +63,7 @@ class RepoPlugin(Plugin):
             self.add_project_files()
 
     async def history_processor(
-        self, messages: list[ModelMessage]
+        self, ctx: RunContext[None], messages: list[ModelMessage]
     ) -> list[ModelMessage]:
         if messages and isinstance(messages[-1], ModelRequest):
             if self._pending_project_file_list:
