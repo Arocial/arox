@@ -257,10 +257,8 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
         reply = payload.get("reply")
         if reply is not None:
-            event: ChatInputEvent | None = getattr(
-                agent, "current_chat_input_event", None
-            )
-            if event and event.req_id in agent.agent_io._pending:
+            event = agent.agent_io.find_pending_request(ChatInputEvent)
+            if event is not None:
                 deferred = reply.get("deferred_tools") or {}
                 exception_input = reply.get("exception_input") or {}
                 normal_input = reply.get("normal_input") or {}
@@ -308,8 +306,8 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 logger.info(f"WS IN: {payload}")
 
                 if payload.get("resume"):
-                    event = getattr(agent, "current_chat_input_event", None)
-                    if event and event.req_id in agent.agent_io._pending:
+                    event = agent.agent_io.find_pending_request(ChatInputEvent)
+                    if event is not None:
                         for msg in self._event_messages(adapter_io, event):
                             await websocket.send_json(msg)
                 else:

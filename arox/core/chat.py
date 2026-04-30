@@ -89,7 +89,6 @@ class ChatAgent(MainAgent, DelegatableAgent):
     ):
         self.command_manager = CommandManager(self)
         self.foreground_task: asyncio.Task | None = None
-        self.current_chat_input_event: ChatInputEvent | None = None
         super().__init__(
             name,
             parsed_config,
@@ -120,7 +119,6 @@ class ChatAgent(MainAgent, DelegatableAgent):
             # 1. Prepare the event for this round
             event = ChatInputEvent()
             event.normal_input.request = True
-            self.current_chat_input_event = event
 
             if pending_exception:
                 event.exception_input.exception = pending_exception
