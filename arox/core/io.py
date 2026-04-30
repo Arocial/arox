@@ -2,8 +2,9 @@ import asyncio
 import contextlib
 import logging
 import math
+import uuid
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from anyio import ClosedResourceError, EndOfStream, create_memory_object_stream
@@ -32,50 +33,101 @@ class SetModelEvent(AdapterEvent):
     model_ref: str
 
 
-class AgentIOEndpoint:
+@dataclass
+class RequestEvent:
+    """Marker base class for events that expect a matching :class:`ReplyEvent`.
+
+    When passed to ``agent_send`` / ``adapter_send``, the call awaits a reply
+    with the same ``req_id`` and returns it. ``RequestEvent`` is direction-
+    agnostic; instances may also subclass :class:`AdapterEvent`.
+    """
+
+    req_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+
+
+@dataclass
+class ReplyEvent:
+    """Reply to a :class:`RequestEvent`. ``req_id`` must match the request."""
+
+    req_id: str
+
+
+class _BaseIOEndpoint:
+    """Shared send/receive plumbing with request/reply correlation.
+
+    Subclasses bind concrete public method names (``agent_*`` or
+    ``adapter_*``) to the underscore primitives below. Reply correlation
+    relies on someone calling :meth:`_receive` concurrently with senders
+    awaiting their requests; in the agent runtime this is the adapter event
+    loop and the adapter's ``_process_io`` task respectively.
+    """
+
     def __init__(self, tx, rx):
         self.tx = tx
         self.rx = rx
         self._stack = contextlib.AsyncExitStack()
+        self._pending: dict[str, asyncio.Future[ReplyEvent]] = {}
 
+    async def _send(self, event: Any) -> Any:
+        if isinstance(event, RequestEvent):
+            loop = asyncio.get_running_loop()
+            fut: asyncio.Future[ReplyEvent] = loop.create_future()
+            self._pending[event.req_id] = fut
+            try:
+                await self.tx.send(event)
+                return await fut
+            finally:
+                self._pending.pop(event.req_id, None)
+        await self.tx.send(event)
+        return None
+
+    async def _receive(self) -> Any:
+        while True:
+            event = await self.rx.receive()
+            if isinstance(event, ReplyEvent):
+                fut = self._pending.pop(event.req_id, None)
+                if fut is not None and not fut.done():
+                    fut.set_result(event)
+                else:
+                    logger.warning(
+                        "Reply for unknown or expired req_id %s (%s)",
+                        event.req_id,
+                        type(event).__name__,
+                    )
+                continue
+            return event
+
+    async def __aenter__(self):
+        await self._stack.enter_async_context(self.tx)
+        await self._stack.enter_async_context(self.rx)
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        for fut in self._pending.values():
+            if not fut.done():
+                fut.cancel()
+        self._pending.clear()
+        await self._stack.aclose()
+
+
+class AgentIOEndpoint(_BaseIOEndpoint):
     async def agent_send(self, event):
         if isinstance(event, str):
             await self.tx.send(PartStartEvent(part=TextPart(content=event), index=-1))
             await self.tx.send(PartEndEvent(part=TextPart(content=event), index=-1))
-        else:
-            await self.tx.send(event)
+            return None
+        return await self._send(event)
 
     async def agent_receive(self):
-        return await self.rx.receive()
-
-    async def __aenter__(self):
-        await self._stack.enter_async_context(self.tx)
-        await self._stack.enter_async_context(self.rx)
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self._stack.aclose()
+        return await self._receive()
 
 
-class AdapterIOEndpoint:
-    def __init__(self, tx, rx):
-        self.tx = tx
-        self.rx = rx
-        self._stack = contextlib.AsyncExitStack()
-
-    async def adapter_send(self, reply):
-        await self.tx.send(reply)
+class AdapterIOEndpoint(_BaseIOEndpoint):
+    async def adapter_send(self, event):
+        return await self._send(event)
 
     async def adapter_receive(self):
-        return await self.rx.receive()
-
-    async def __aenter__(self):
-        await self._stack.enter_async_context(self.tx)
-        await self._stack.enter_async_context(self.rx)
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self._stack.aclose()
+        return await self._receive()
 
 
 def create_io_channel() -> tuple[AgentIOEndpoint, AdapterIOEndpoint]:
