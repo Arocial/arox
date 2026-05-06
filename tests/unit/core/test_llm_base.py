@@ -11,8 +11,9 @@ from pydantic_ai.messages import (
 )
 
 from arox.core.app import app_setup
-from arox.core.io import AbstractIOAdapter, AdapterEvent, SetModelEvent
+from arox.core.io import AbstractIOAdapter, RequestEvent
 from arox.core.llm_base import LLMBaseAgent, _complete_pending_tool_calls
+from arox.plugins.core import SetModelEvent
 
 
 class _StubIOAdapter(AbstractIOAdapter):
@@ -198,7 +199,7 @@ system_prompt = "Hi there."
 
 
 @pytest.mark.asyncio
-async def test_adapter_event_dispatches_to_handler(tmp_path):
+async def test_request_event_dispatches_to_handler(tmp_path):
     config_file = tmp_path / "config.toml"
     config_file.write_text("""
 model_ref = "test"
@@ -210,28 +211,21 @@ system_prompt = "Hi."
         cli_args={"workspace": str(tmp_path)},
     )
 
-    class CustomEvent(AdapterEvent):
+    class CustomEvent(RequestEvent):
         pass
 
-    received: list[AdapterEvent] = []
+    received: list[RequestEvent] = []
 
     agent = LLMBaseAgent("test_agent", parsed_config, io_adapter=_StubIOAdapter())
 
     async def handler(event):
         received.append(event)
 
-    agent.register_adapter_event_handler(CustomEvent, handler)
+    agent.register_request_handler(CustomEvent, handler)
 
     async with agent:
         ev = CustomEvent()
         await agent.adapter_io.send(ev)
-        # Yield until the receiver loop consumes and dispatches.
-        for _ in range(50):
-            if received:
-                break
-            import asyncio as _asyncio
-
-            await _asyncio.sleep(0.01)
 
     assert received == [ev]
 
@@ -261,13 +255,10 @@ system_prompt = "Hi."
     agent.set_model = spy  # type: ignore[method-assign]
 
     async with agent:
+        agent.register_request_handler(
+            SetModelEvent, lambda e: agent.set_model(e.model_ref)
+        )
         await agent.adapter_io.send(SetModelEvent(model_ref="test"))
-        for _ in range(50):
-            if calls:
-                break
-            import asyncio as _asyncio
-
-            await _asyncio.sleep(0.01)
 
     assert calls == ["test"]
     assert agent.model_ref == "test"

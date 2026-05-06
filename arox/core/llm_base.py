@@ -47,9 +47,9 @@ from arox.core.config import AgentConfig, Config
 from arox.core.hooks import PostStepHook, PreStepHook
 from arox.core.io import (
     AbstractIOAdapter,
-    AdapterEvent,
     IOEndpoint,
-    SetModelEvent,
+    ReplyEvent,
+    RequestEvent,
     create_io_channel,
 )
 from arox.core.session import AgentSession, _serialize_messages
@@ -235,6 +235,9 @@ class LLMBaseAgent:
 
         self.parse_configs()
 
+        self._request_handlers: dict[
+            type[RequestEvent], Callable[[RequestEvent], Any]
+        ] = {}
         self.plugins = self.load_plugins()
         history_processors = [plugin.history_processor for plugin in self.plugins]
 
@@ -249,53 +252,56 @@ class LLMBaseAgent:
         self.agent_io, self.adapter_io = create_io_channel()
         self.io_adapter = io_adapter
 
-        self._adapter_event_handlers: dict[
-            type[AdapterEvent], Callable[[AdapterEvent], Any]
-        ] = {}
-        self.register_adapter_event_handler(SetModelEvent, self._handle_set_model_event)
-
         self._stack = contextlib.AsyncExitStack()
         self.reset()
 
-    def register_adapter_event_handler(
+    def register_request_handler(
         self,
-        event_type: type[AdapterEvent],
+        event_type: type[RequestEvent],
         handler: Callable[[Any], Any],
     ) -> None:
-        """Register a handler for an :class:`AdapterEvent` subclass.
+        """Register a handler for a :class:`RequestEvent` subclass.
 
         Handlers may be sync or async; the receiver loop awaits coroutines.
+        If the handler returns a ReplyEvent, it will be sent back. Otherwise,
+        a default ReplyEvent is sent.
         """
-        self._adapter_event_handlers[event_type] = handler
+        self._request_handlers[event_type] = handler
 
-    async def _handle_set_model_event(self, event: SetModelEvent) -> None:
-        self.set_model(event.model_ref)
-
-    async def _adapter_event_loop(self) -> None:
+    async def _request_loop(self) -> None:
         while True:
             try:
                 event = await self.agent_io.receive()
             except (EndOfStream, ClosedResourceError):
                 return
-            if not isinstance(event, AdapterEvent):
+            if isinstance(event, RequestEvent):
+                handler = self._request_handlers.get(type(event))
+                if handler is None:
+                    logger.warning(
+                        "No handler registered for RequestEvent %s",
+                        type(event).__name__,
+                    )
+                    await self.agent_io.send(ReplyEvent(req_id=event.req_id))
+                    continue
+                try:
+                    result = handler(event)
+                    if asyncio.iscoroutine(result):
+                        result = await result
+
+                    if isinstance(result, ReplyEvent):
+                        result.req_id = event.req_id
+                        await self.agent_io.send(result)
+                    else:
+                        await self.agent_io.send(ReplyEvent(req_id=event.req_id))
+                except Exception:
+                    logger.exception(
+                        "Error handling RequestEvent %s", type(event).__name__
+                    )
+            else:
                 logger.warning(
-                    "Ignoring non-AdapterEvent on adapter->agent channel: %r",
+                    "Ignoring non-RequestEvent on adapter->agent channel: %r",
                     type(event).__name__,
                 )
-                continue
-            handler = self._adapter_event_handlers.get(type(event))
-            if handler is None:
-                logger.warning(
-                    "No handler registered for AdapterEvent %s",
-                    type(event).__name__,
-                )
-                continue
-            try:
-                result = handler(event)
-                if asyncio.iscoroutine(result):
-                    await result
-            except Exception:
-                logger.exception("Error handling AdapterEvent %s", type(event).__name__)
 
     async def handle_event(
         self, ctx: RunContext["AgentDeps"], events: AsyncIterable[AgentStreamEvent]
@@ -339,7 +345,7 @@ class LLMBaseAgent:
         tg.create_task(self.io_adapter._process_io(self.adapter_io))
         await self._stack.enter_async_context(self.agent_io)
         await self._stack.enter_async_context(self.adapter_io)
-        tg.create_task(self._adapter_event_loop())
+        tg.create_task(self._request_loop())
         if self.mcp_client:
             await self._stack.enter_async_context(self.mcp_client)
         return self

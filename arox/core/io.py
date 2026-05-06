@@ -20,26 +20,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class AdapterEvent:
-    """Base class for events sent from the adapter to an agent.
-
-    Adapter -> agent direction. Subclass for control events (e.g. set
-    model) and reply events.
-    """
-
-
-@dataclass
-class SetModelEvent(AdapterEvent):
-    model_ref: str
-
-
 @dataclass
 class RequestEvent:
     """Marker base class for events that expect a matching :class:`ReplyEvent`.
 
     When passed to :meth:`IOEndpoint.send`, the call awaits a reply with
     the same ``req_id`` and returns it. ``RequestEvent`` is direction-
-    agnostic; instances may also subclass :class:`AdapterEvent`.
+    agnostic.
     """
 
     req_id: str = field(default_factory=lambda: str(uuid.uuid4()))
