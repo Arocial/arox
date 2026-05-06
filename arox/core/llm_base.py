@@ -238,6 +238,9 @@ class LLMBaseAgent:
         self._request_handlers: dict[
             type[RequestEvent], Callable[[RequestEvent], Any]
         ] = {}
+        from arox.core.plugin import CommandManager
+
+        self.command_manager = CommandManager(self)
         self.plugins = self.load_plugins()
         history_processors = [plugin.history_processor for plugin in self.plugins]
 
@@ -325,6 +328,11 @@ class LLMBaseAgent:
                     self.add_local_tool(func, **tool_def)
                 else:
                     self.add_local_tool(tool_def.func, **tool_def.kwargs)
+
+            # Register commands
+            cmds = plugin.commands()
+            if cmds:
+                self.command_manager.register_commands(cmds)
         return plugins
 
     def provide_capability(self, capability: Any, provider: Any):

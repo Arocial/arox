@@ -9,7 +9,6 @@ from pydantic_ai.tools import DeferredToolRequests
 
 from arox.core.io import ReplyEvent, RequestEvent
 from arox.core.llm_base import DelegatableAgent, MainAgent
-from arox.core.plugin import CommandManager
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +87,6 @@ class ChatAgent(MainAgent, DelegatableAgent):
         local_toolset=None,
         workspace: Path | str | None = None,
     ):
-        self.command_manager = CommandManager(self)
         self.foreground_task: asyncio.Task | None = None
         super().__init__(
             name,
@@ -101,15 +99,6 @@ class ChatAgent(MainAgent, DelegatableAgent):
     def cancel_foreground_task(self):
         if self.foreground_task:
             self.foreground_task.cancel()
-
-    def load_plugins(self):
-        plugins = super().load_plugins()
-        for plugin in plugins:
-            # Register commands
-            cmds = plugin.commands()
-            if cmds:
-                self.command_manager.register_commands(cmds)
-        return plugins
 
     async def run(self):
         """Start the agent with optional input generator"""
@@ -152,13 +141,6 @@ class ChatAgent(MainAgent, DelegatableAgent):
                 if user_input is not None:
                     self.agent_session.add_event("user_input", {"text": user_input})
                     if not user_input.strip():
-                        await self.agent_io.send(StepDoneEvent())
-                        continue
-                    is_command = await self.command_manager.try_execute_command(
-                        user_input
-                    )
-                    if is_command:
-                        self.agent_session.add_event("command", {"command": user_input})
                         await self.agent_io.send(StepDoneEvent())
                         continue
 

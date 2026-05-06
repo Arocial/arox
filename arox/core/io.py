@@ -123,6 +123,14 @@ class AbstractIOAdapter(ABC):
     async def register_composer(self, composer: "Composer"):
         self.composers[composer.id] = composer
 
+    def _find_agent(self, adapter_io: IOEndpoint):
+        """Locate the agent that owns ``adapter_io`` across registered composers."""
+        for composer in self.composers.values():
+            for agent in composer.all_agents().values():
+                if getattr(agent, "adapter_io", None) is adapter_io:
+                    return agent
+        return None
+
     async def _process_io(self, adapter_io: IOEndpoint):
         try:
             while True:

@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 import logging
 from collections.abc import Callable
@@ -7,7 +8,28 @@ from typing import Any
 from prompt_toolkit.completion import Completer, Completion
 from pydantic_ai import ModelMessage, RunContext
 
+from arox.core.io import ReplyEvent, RequestEvent
+
 logger = logging.getLogger(__name__)
+
+
+@dataclass(kw_only=True)
+class CommandEvent(RequestEvent):
+    """Base class for slash / control command events.
+
+    Adapters turn user-initiated commands (slash strings, structured
+    payloads) into concrete subclasses via :meth:`CommandManager.parse_slash_command`
+    or :meth:`CommandManager.deserialize_event`, then run them through
+    :meth:`CommandManager.execute` to obtain a :class:`CommandReply` which
+    the adapter renders.
+    """
+
+
+@dataclass(kw_only=True)
+class CommandReply(ReplyEvent):
+    """Reply produced by :meth:`CommandManager.execute`."""
+
+    output: str | None = None
 
 
 @dataclass
@@ -44,16 +66,6 @@ def command(name: str | list[str], description: str = ""):
     return decorator
 
 
-def parse_cmdline(cmdline):
-    if not cmdline.startswith("/"):
-        return None, None
-
-    cmd = cmdline.split(" ", 1)
-    c_name = cmd[0][1:]
-    c_arg = cmd[1] if len(cmd) > 1 else None
-    return c_name, c_arg
-
-
 class CommandCompleter(Completer):
     """Main completer that delegates to specific command completers"""
 
@@ -64,9 +76,11 @@ class CommandCompleter(Completer):
         yield from self._get_completions(document.text)
 
     def _get_completions(self, text):
-        name, args = parse_cmdline(text)
-        if not name:
+        if not text.startswith("/"):
             return
+        parts = text[1:].split(" ", 1)
+        name = parts[0]
+        args = parts[1] if len(parts) > 1 else None
         if args is None:  # Complete command names
             candidates = self.command_manager.command_names()
             for candidate in candidates:
@@ -91,8 +105,12 @@ class Command:
     def slashes(self) -> list[str]:
         return [self.command]
 
-    async def execute(self, name: str, arg: str):
-        """Execute command with given input"""
+    async def to_event(self, name: str, arg: str | None) -> CommandEvent | None:
+        """Turn ``(name, arg)`` into a concrete :class:`CommandEvent`.
+
+        Return ``None`` if the command produced no event (e.g. completed
+        synchronously, or had nothing to dispatch).
+        """
         raise NotImplementedError
 
     def get_completions(self, name, args):
@@ -101,32 +119,106 @@ class Command:
 
 class CommandManager:
     def __init__(self, agent):
-        self.command_map = {}
+        self.command_map: dict[str, Command] = {}
         self.agent = agent
         self.completer = CommandCompleter(self)
+        self._handlers: dict[type[CommandEvent], Callable[[Any], Any]] = {}
 
     def register_commands(self, commands: list[Command]):
         for command in commands:
             for s in command.slashes():
                 self.command_map[s] = command
 
-    async def try_execute_command(self, user_input: str) -> bool:
-        c_name, c_arg = parse_cmdline(user_input)
-        if not c_name:
-            return False
+    def register_handler(
+        self,
+        event_type: type[CommandEvent],
+        handler: Callable[[Any], Any],
+    ) -> None:
+        """Register a handler for a :class:`CommandEvent` subclass.
 
-        command = self.command_map.get(c_name)
-        if command:
-            try:
-                if inspect.iscoroutinefunction(command.execute):
-                    await command.execute(c_name, c_arg)
-                else:
-                    command.execute(c_name, c_arg)
-            except Exception as e:
-                await self.agent.agent_io.send(f"Error executing command {c_name}: {e}")
-        else:
-            await self.agent.agent_io.send(f"Command not found: {user_input}")
-        return True
+        Handlers may be sync or async. They should return a string (rendered
+        as :attr:`CommandReply.output`), a :class:`CommandReply`, or ``None``.
+        """
+        self._handlers[event_type] = handler
+
+    async def parse_slash_command(self, line: str) -> CommandEvent | None:
+        """Parse a raw ``/<name> [arg]`` line into a :class:`CommandEvent`.
+
+        Returns ``None`` if ``line`` is not a slash command, or if the named
+        command is unknown / produced no event.
+        """
+        if not line.startswith("/"):
+            return None
+        parts = line[1:].split(" ", 1)
+        name = parts[0]
+        arg = parts[1] if len(parts) > 1 else None
+
+        command = self.command_map.get(name)
+        if command is None:
+            logger.warning("Command not found: /%s", name)
+            return None
+        try:
+            self.agent.agent_session.add_event("command", {"command": name, "arg": arg})
+            result = command.to_event(name, arg)
+            if inspect.iscoroutine(result):
+                result = await result
+            if result is not None and not isinstance(result, CommandEvent):
+                logger.warning(
+                    "Command %s returned non-CommandEvent value %r; ignoring",
+                    name,
+                    type(result).__name__,
+                )
+                return None
+            return result
+        except Exception:
+            logger.exception("Error parsing command /%s", name)
+            return None
+
+    def deserialize_event(self, payload: dict[str, Any]) -> CommandEvent | None:
+        """Reconstruct a :class:`CommandEvent` from a structured ``{"type", ...}`` dict.
+
+        Looks up the event class by ``payload["type"]`` against the names of
+        registered handler event types, and constructs it from the remaining
+        fields. Returns ``None`` if the type is missing or unknown.
+        """
+        type_name = payload.get("type")
+        if not type_name:
+            return None
+        for evt_cls in self._handlers:
+            if evt_cls.__name__ == type_name:
+                data = {k: v for k, v in payload.items() if k != "type"}
+                try:
+                    return evt_cls(**data)
+                except TypeError:
+                    logger.exception(
+                        "Failed to construct %s from payload %r", type_name, payload
+                    )
+                    return None
+        logger.warning("Unknown CommandEvent type %s", type_name)
+        return None
+
+    async def execute(self, event: CommandEvent) -> CommandReply:
+        """Run the handler for ``event`` and return a :class:`CommandReply`."""
+        handler = self._handlers.get(type(event))
+        if handler is None:
+            logger.warning(
+                "No handler registered for CommandEvent %s",
+                type(event).__name__,
+            )
+            return CommandReply(req_id=event.req_id)
+        try:
+            result = handler(event)
+            if asyncio.iscoroutine(result):
+                result = await result
+            if isinstance(result, CommandReply):
+                result.req_id = event.req_id
+                return result
+            if isinstance(result, str):
+                return CommandReply(req_id=event.req_id, output=result)
+            return CommandReply(req_id=event.req_id)
+        except Exception as e:
+            logger.exception("Error executing CommandEvent %s", type(event).__name__)
+            return CommandReply(req_id=event.req_id, output=f"Error: {e}")
 
     def get_completions(self, name: str, args: str):
         command = self.command_map.get(name)
@@ -148,11 +240,10 @@ class PluginCommandWrapper(Command):
     def slashes(self) -> list[str]:
         return self.names
 
-    async def execute(self, name: str, arg: str):
+    async def to_event(self, name: str, arg: str | None) -> CommandEvent | None:
         if inspect.iscoroutinefunction(self.func):
-            await self.func(name, arg)
-        else:
-            self.func(name, arg)
+            return await self.func(name, arg)
+        return self.func(name, arg)
 
     def get_completions(self, name, args):
         # If the wrapped function has a get_completions method, call it

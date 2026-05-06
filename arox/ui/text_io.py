@@ -43,9 +43,8 @@ class TextIOAdapter(AbstractIOAdapter):
         await super().register_composer(composer)
 
         main_agent = composer.main_agent
-        if isinstance(main_agent, ChatAgent):
-            completer = CommandCompleter(main_agent.command_manager)
-            self.user_input = UserInputGenerator(completer=completer)
+        completer = CommandCompleter(main_agent.command_manager)
+        self.user_input = UserInputGenerator(completer=completer)
 
     async def __aenter__(self):
         def sigint_handler(signum, frame):
@@ -121,11 +120,25 @@ class TextIOAdapter(AbstractIOAdapter):
                     retry = False
                     await self._flush_stdin()
             if event.normal_input.request:
-                try:
-                    user_input = await self.user_input()
-                except (EOFError, KeyboardInterrupt):
-                    user_input = None
-                    await self._flush_stdin()
+                agent = self._find_agent(adapter_io)
+                while True:
+                    try:
+                        line = await self.user_input()
+                    except (EOFError, KeyboardInterrupt):
+                        user_input = None
+                        await self._flush_stdin()
+                        break
+                    if line.startswith("/") and agent is not None:
+                        cmd_event = await agent.command_manager.parse_slash_command(
+                            line
+                        )
+                        if cmd_event is not None:
+                            reply = await agent.command_manager.execute(cmd_event)
+                            if reply.output:
+                                print(reply.output)
+                        continue
+                    user_input = line
+                    break
             await adapter_io.send(
                 ChatInputReply(
                     req_id=event.req_id,

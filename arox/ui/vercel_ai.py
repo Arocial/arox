@@ -28,7 +28,6 @@ from pydantic_ai import (
 )
 
 from arox.core.chat import (
-    ChatAgent,
     ChatInputEvent,
     ChatInputReply,
     StepDoneEvent,
@@ -260,6 +259,24 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 cancel()
             return {"status": "cancelled"}
 
+        cmd = payload.get("command")
+        if cmd is not None:
+            event = agent.command_manager.deserialize_event(cmd)
+            if event is None:
+                return {"status": "unknown_command"}
+            reply = await agent.command_manager.execute(event)
+            if reply.output:
+                text_part = TextPart(content=reply.output)
+                await self.handle_event(
+                    agent.adapter_io,
+                    PartStartEvent(part=text_part, index=-1),
+                )
+                await self.handle_event(
+                    agent.adapter_io,
+                    PartEndEvent(part=text_part, index=-1),
+                )
+            return {"status": "ok", "output": reply.output}
+
         reply = payload.get("reply")
         if reply is not None:
             req_id = reply.get("req_id")
@@ -352,10 +369,9 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             raise HTTPException(
                 status_code=404, detail=f"Agent {agent_name} not found."
             )
-        if not isinstance(agent, ChatAgent):
+        command_manager = getattr(agent, "command_manager", None)
+        if command_manager is None:
             return SuggestionResponse(items=[])
-
-        command_manager = agent.command_manager
         items = []
 
         if not command:
