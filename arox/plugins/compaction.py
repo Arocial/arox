@@ -43,6 +43,7 @@ class CompactionAgent(LLMBaseAgent):
 class CompactionPlugin(Plugin):
     def __init__(self, agent: LLMBaseAgent):
         super().__init__(agent)
+        self._last_total_tokens = 0
 
     def _resolve_token_threshold(self) -> int | None:
         """Resolve effective token threshold for the agent's current model.
@@ -115,10 +116,13 @@ class CompactionPlugin(Plugin):
         if threshold is None:
             return messages
 
-        tokens = ctx.usage.total_tokens
+        current_total = ctx.usage.total_tokens
+        tokens = current_total - self._last_total_tokens
+        self._last_total_tokens = current_total
+
         if tokens > threshold:
             logger.info(
-                f"Context size ({tokens} tokens) exceeds threshold ({threshold}). "
+                f"Last request size ({tokens} tokens) exceeds threshold ({threshold}). "
                 "Triggering automatic compaction."
             )
             return await self._compact(messages)
