@@ -63,7 +63,7 @@ class CompactionPlugin(Plugin):
         if isinstance(threshold, float) and 0 < threshold <= 1:
             max_tokens = (agent.model_params or {}).get("max_tokens")
             if not max_tokens:
-                logger.warning(
+                logger.debug(
                     "Compaction threshold %s is a ratio but model has no "
                     "max_tokens configured; skipping auto-compaction.",
                     threshold,

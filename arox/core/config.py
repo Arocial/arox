@@ -117,7 +117,7 @@ class AppConfig(BaseModel):
 class Config(BaseModel):
     model_ref: str = "deepseek:deepseek-chat"
     fallback_model_ref: str | list[str] = Field(default_factory=list)
-    compaction_threshold: int | float = 100000
+    compaction_threshold: int | float = 0.7
     app: AppConfig = Field(default_factory=AppConfig)
     mcp_servers: dict[str, Any] = Field(default_factory=dict)
     composer: dict[str, ComposerConfig] = Field(default_factory=dict)
