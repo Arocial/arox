@@ -91,7 +91,21 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
                 line = await self.input_queue.get()
                 retry = line.strip().lower() == "y"
             if event.normal_input.request:
-                user_input = await self.input_queue.get()
+                agent = self._find_agent(adapter_io)
+                while True:
+                    line = await self.input_queue.get()
+                    if (
+                        isinstance(line, str)
+                        and line.startswith("/")
+                        and agent is not None
+                    ):
+                        cmd_reply = await agent.command_manager.try_handle_slash(line)
+                        if cmd_reply is not None:
+                            if cmd_reply.output:
+                                await self.send_message(cmd_reply.output)
+                            continue
+                    user_input = line
+                    break
             await adapter_io.send(
                 ChatInputReply(
                     req_id=event.req_id,
