@@ -3,7 +3,7 @@ import inspect
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, ClassVar
 
 from prompt_toolkit.completion import Completer, Completion
 from pydantic_ai import ModelMessage, RunContext
@@ -17,12 +17,18 @@ logger = logging.getLogger(__name__)
 class CommandEvent(RequestEvent):
     """Base class for slash / control command events.
 
-    Adapters turn user-initiated commands (slash strings, structured
-    payloads) into concrete subclasses via :meth:`CommandManager.parse_slash_command`
-    or :meth:`CommandManager.deserialize_event`, then run them through
-    :meth:`CommandManager.execute` to obtain a :class:`CommandReply` which
-    the adapter renders.
+    Subclasses declare the slash names they answer to via :attr:`slashes`
+    and (optionally) override :meth:`from_slash` to parse ``(name, arg)``
+    into a populated event. The default :meth:`from_slash` calls ``cls()``
+    and works for events with no required fields.
     """
+
+    slashes: ClassVar[tuple[str, ...]] = ()
+    description: ClassVar[str] = ""
+
+    @classmethod
+    def from_slash(cls, name: str, arg: str | None) -> "CommandEvent | None":
+        return cls()
 
 
 @dataclass(kw_only=True)
@@ -54,133 +60,112 @@ def tool(dynamic_context: Callable[[], dict[str, Any]] | None = None, **kwargs):
     return decorator
 
 
-def command(name: str | list[str], description: str = ""):
-    """Decorator to register a method as a command."""
+def on(event_cls: type[CommandEvent], completer: str | None = None):
+    """Decorator marking a plugin method as the handler for ``event_cls``.
+
+    ``completer``, if given, is the name of a method on the same plugin
+    used to provide tab-completions for the slash names declared on
+    ``event_cls``.
+    """
 
     def decorator(func):
-        func.__is_command__ = True
-        func.__command_names__ = [name] if isinstance(name, str) else name
-        func.__command_description__ = description
+        func.__on_event__ = event_cls
+        func.__on_completer__ = completer
         return func
 
     return decorator
 
 
 class CommandCompleter(Completer):
-    """Main completer that delegates to specific command completers"""
-
-    def __init__(self, manager):
+    def __init__(self, manager: "CommandManager"):
         self.command_manager = manager
 
     def get_completions(self, document, complete_event):
-        yield from self._get_completions(document.text)
-
-    def _get_completions(self, text):
+        text = document.text
         if not text.startswith("/"):
             return
         parts = text[1:].split(" ", 1)
         name = parts[0]
         args = parts[1] if len(parts) > 1 else None
-        if args is None:  # Complete command names
-            candidates = self.command_manager.command_names()
-            for candidate in candidates:
+        if args is None:
+            for candidate in self.command_manager.command_map.keys():
                 if name in candidate:
                     yield Completion(
                         candidate, start_position=-len(name), display=candidate
                     )
             return
-
         yield from self.command_manager.get_completions(name, args)
-
-
-class Command:
-    """Base class for agent commands"""
-
-    command: str = ""
-    description: str = ""
-
-    def __init__(self, agent):
-        self.agent = agent
-
-    def slashes(self) -> list[str]:
-        return [self.command]
-
-    async def to_event(self, name: str, arg: str | None) -> CommandEvent | None:
-        """Turn ``(name, arg)`` into a concrete :class:`CommandEvent`.
-
-        Return ``None`` if the command produced no event (e.g. completed
-        synchronously, or had nothing to dispatch).
-        """
-        raise NotImplementedError
-
-    def get_completions(self, name, args):
-        yield from []
 
 
 class CommandManager:
     def __init__(self, agent):
-        self.command_map: dict[str, Command] = {}
         self.agent = agent
         self.completer = CommandCompleter(self)
         self._handlers: dict[type[CommandEvent], Callable[[Any], Any]] = {}
+        self._slash_map: dict[str, type[CommandEvent]] = {}
+        self._completers: dict[str, Callable] = {}
 
-    def register_commands(self, commands: list[Command]):
-        for command in commands:
-            for s in command.slashes():
-                self.command_map[s] = command
-
-    def register_handler(
+    def register(
         self,
-        event_type: type[CommandEvent],
+        event_cls: type[CommandEvent],
         handler: Callable[[Any], Any],
+        completer: Callable | None = None,
     ) -> None:
-        """Register a handler for a :class:`CommandEvent` subclass.
+        """Register ``event_cls`` together with its handler (and optional completer).
 
-        Handlers may be sync or async. They should return a string (rendered
-        as :attr:`CommandReply.output`), a :class:`CommandReply`, or ``None``.
+        Wires up slash parsing (via ``event_cls.slashes`` +
+        ``event_cls.from_slash``), structured deserialization (via
+        ``event_cls.__name__``), and execution dispatch in one call.
         """
-        self._handlers[event_type] = handler
+        self._handlers[event_cls] = handler
+        for slash in event_cls.slashes:
+            if slash in self._slash_map:
+                logger.warning(
+                    "Slash /%s already registered to %s; overwriting with %s",
+                    slash,
+                    self._slash_map[slash].__name__,
+                    event_cls.__name__,
+                )
+            self._slash_map[slash] = event_cls
+            if completer is not None:
+                self._completers[slash] = completer
+
+    @property
+    def command_map(self) -> dict[str, type[CommandEvent]]:
+        """Public view of slash → event class, used by adapters for suggestions."""
+        return self._slash_map
 
     async def parse_slash_command(self, line: str) -> CommandEvent | None:
-        """Parse a raw ``/<name> [arg]`` line into a :class:`CommandEvent`.
-
-        Returns ``None`` if ``line`` is not a slash command, or if the named
-        command is unknown / produced no event.
-        """
+        """Parse a raw ``/<name> [arg]`` line into a :class:`CommandEvent`."""
         if not line.startswith("/"):
             return None
         parts = line[1:].split(" ", 1)
         name = parts[0]
         arg = parts[1] if len(parts) > 1 else None
 
-        command = self.command_map.get(name)
-        if command is None:
+        event_cls = self._slash_map.get(name)
+        if event_cls is None:
             logger.warning("Command not found: /%s", name)
             return None
         try:
             self.agent.agent_session.add_event("command", {"command": name, "arg": arg})
-            result = command.to_event(name, arg)
-            if inspect.iscoroutine(result):
-                result = await result
-            if result is not None and not isinstance(result, CommandEvent):
+            event = event_cls.from_slash(name, arg)
+            if inspect.iscoroutine(event):
+                event = await event
+            if event is not None and not isinstance(event, CommandEvent):
                 logger.warning(
-                    "Command %s returned non-CommandEvent value %r; ignoring",
-                    name,
-                    type(result).__name__,
+                    "%s.from_slash returned non-CommandEvent value %r; ignoring",
+                    event_cls.__name__,
+                    type(event).__name__,
                 )
                 return None
-            return result
+            return event
         except Exception:
             logger.exception("Error parsing command /%s", name)
             return None
 
     def deserialize_event(self, payload: dict[str, Any]) -> CommandEvent | None:
-        """Reconstruct a :class:`CommandEvent` from a structured ``{"type", ...}`` dict.
-
-        Looks up the event class by ``payload["type"]`` against the names of
-        registered handler event types, and constructs it from the remaining
-        fields. Returns ``None`` if the type is missing or unknown.
-        """
+        """Reconstruct a :class:`CommandEvent` from a ``{"type", ...}`` dict."""
         type_name = payload.get("type")
         if not type_name:
             return None
@@ -221,64 +206,31 @@ class CommandManager:
             return CommandReply(req_id=event.req_id, output=f"Error: {e}")
 
     def get_completions(self, name: str, args: str):
-        command = self.command_map.get(name)
-        if not command:
+        completer = self._completers.get(name)
+        if completer is None:
             return
-        yield from command.get_completions(name, args)
-
-    def command_names(self):
-        return self.command_map.keys()
-
-
-class PluginCommandWrapper(Command):
-    def __init__(self, agent, func, names, description):
-        super().__init__(agent)
-        self.func = func
-        self.names = names
-        self.description = description
-
-    def slashes(self) -> list[str]:
-        return self.names
-
-    async def to_event(self, name: str, arg: str | None) -> CommandEvent | None:
-        if inspect.iscoroutinefunction(self.func):
-            return await self.func(name, arg)
-        return self.func(name, arg)
-
-    def get_completions(self, name, args):
-        # If the wrapped function has a get_completions method, call it
-        # Or if the plugin has a get_completions method, call it
-        if hasattr(self.func, "get_completions"):
-            yield from self.func.get_completions(name, args)
-        elif hasattr(self.func.__self__, "get_completions"):
-            yield from self.func.__self__.get_completions(name, args)
-        else:
-            yield from []
+        yield from completer(name, args)
 
 
 class Plugin:
     def __init__(self, agent):
         self.agent = agent
 
-    def commands(self) -> list[Command]:
-        """Return a list of Command instances."""
-        cmds = []
-        for name, method in inspect.getmembers(self, predicate=inspect.ismethod):
-            if getattr(method, "__is_command__", False):
-                cmds.append(
-                    PluginCommandWrapper(
-                        self.agent,
-                        method,
-                        getattr(method, "__command_names__", []),
-                        getattr(method, "__command_description__", ""),
-                    )
-                )
-        return cmds
+    def commands(self) -> list[tuple[type[CommandEvent], Callable, Callable | None]]:
+        """Return ``(event_cls, handler, completer)`` triples for ``@on``-decorated methods."""
+        out = []
+        for _, method in inspect.getmembers(self, predicate=inspect.ismethod):
+            evt = getattr(method, "__on_event__", None)
+            if evt is None:
+                continue
+            comp_attr = getattr(method, "__on_completer__", None)
+            completer = getattr(self, comp_attr) if comp_attr else None
+            out.append((evt, method, completer))
+        return out
 
     def tools(self) -> list[ToolDef]:
-        """Return a list of ToolDef instances."""
         tls = []
-        for name, method in inspect.getmembers(self, predicate=inspect.ismethod):
+        for _, method in inspect.getmembers(self, predicate=inspect.ismethod):
             if getattr(method, "__is_tool__", False):
                 tls.append(
                     ToolDef(func=method, kwargs=getattr(method, "__tool_kwargs__", {}))

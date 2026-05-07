@@ -1,17 +1,24 @@
 import logging
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 import git
 from pydantic_ai import ModelMessage, ModelRequest, RunContext, UserPromptPart
 
-from arox.core.plugin import Plugin, command
+from arox.core.plugin import CommandEvent, Plugin, on
 from arox.plugins.capabilities import PROJECT_FILES
 
 if TYPE_CHECKING:
     from arox.core.llm_base import LLMBaseAgent
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(kw_only=True)
+class AddFileListEvent(CommandEvent):
+    slashes: ClassVar[tuple[str, ...]] = ("add_file_list",)
+    description: ClassVar[str] = "Add tracked files list to context - /add_file_list"
 
 
 class RepoPlugin(Plugin):
@@ -54,13 +61,9 @@ class RepoPlugin(Plugin):
     def add_project_files(self):
         self._pending_project_file_list = True
 
-    @command(
-        ["add_file_list"],
-        "Add tracked files list to context - /add_file_list",
-    )
-    async def repo_command(self, name: str, arg: str):
-        if name == "add_file_list":
-            self.add_project_files()
+    @on(AddFileListEvent)
+    async def handle_add_file_list(self, event: AddFileListEvent):
+        self.add_project_files()
 
     async def history_processor(
         self, ctx: RunContext[None], messages: list[ModelMessage]

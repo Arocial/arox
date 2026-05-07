@@ -1,7 +1,8 @@
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from prompt_toolkit.completion import Completion
 from pydantic_ai import (
@@ -15,7 +16,7 @@ from pydantic_ai import (
 from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from rapidfuzz import fuzz
 
-from arox.core.plugin import Plugin, command, tool
+from arox.core.plugin import CommandEvent, Plugin, on, tool
 from arox.plugins.capabilities import (
     AGENT_INFO,
     AGENT_RESET,
@@ -30,6 +31,18 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _alnum_regex = re.compile(r"(?ui)\W")
+
+
+@dataclass(kw_only=True)
+class FileAddEvent(CommandEvent):
+    slashes: ClassVar[tuple[str, ...]] = ("add",)
+    description: ClassVar[str] = "Add files to context - /add <file1> [file2...]"
+
+    files: list[str]
+
+    @classmethod
+    def from_slash(cls, name, arg):
+        return cls(files=arg.split() if arg else [])
 
 
 class FilePlugin(Plugin):
@@ -399,17 +412,12 @@ class FilePlugin(Plugin):
 
         return None
 
-    @command(
-        ["add"],
-        "Add files to context - /add <file1> [file2...]",
-    )
-    async def file_command(self, name: str, arg: str):
-        if name == "add":
-            files = arg.split() if arg else []
-            if not files:
-                await self.agent.agent_io.send("Please specify files.")
-                return
-            await self.read_by_user(files)
+    @on(FileAddEvent, completer="get_completions")
+    async def handle_file_add(self, event: "FileAddEvent"):
+        if not event.files:
+            await self.agent.agent_io.send("Please specify files.")
+            return
+        await self.read_by_user(event.files)
 
     def get_completions(self, name, args):
         if not args:

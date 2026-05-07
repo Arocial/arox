@@ -1,5 +1,7 @@
 import logging
 import uuid
+from dataclasses import dataclass
+from typing import ClassVar
 
 from pydantic_ai import (
     ModelMessage,
@@ -9,13 +11,27 @@ from pydantic_ai import (
 )
 
 from arox.core.llm_base import LLMBaseAgent
-from arox.core.plugin import Plugin, command
+from arox.core.plugin import CommandEvent, Plugin, on
 from arox.core.session import _serialize_messages
 from arox.plugins.capabilities import PERSISTENT_CONTEXT, SUBAGENT
 
 logger = logging.getLogger(__name__)
 
 COMPACTION_AGENT_NAME = "compaction"
+
+
+@dataclass(kw_only=True)
+class CompactEvent(CommandEvent):
+    slashes: ClassVar[tuple[str, ...]] = ("compact",)
+    description: ClassVar[str] = (
+        "Compact conversation history - /compact [extra instructions]"
+    )
+
+    extra_instructions: str = ""
+
+    @classmethod
+    def from_slash(cls, name, arg):
+        return cls(extra_instructions=(arg or "").strip())
 
 
 class CompactionAgent(LLMBaseAgent):
@@ -73,11 +89,8 @@ class CompactionPlugin(Plugin):
             return int(threshold * max_tokens)
         return int(threshold)
 
-    @command(
-        "compact",
-        "Compact conversation history - /compact [extra instructions]",
-    )
-    async def compact_command(self, name: str, arg: str):
+    @on(CompactEvent)
+    async def handle_compact(self, event: CompactEvent):
         agent = self.agent
         messages_to_compact = list(agent.message_history)
 
@@ -87,7 +100,7 @@ class CompactionPlugin(Plugin):
 
         messages_before = len(agent.message_history)
         compacted_messages = await self._compact(
-            messages_to_compact, extra_instructions=arg.strip()
+            messages_to_compact, extra_instructions=event.extra_instructions
         )
 
         if compacted_messages is messages_to_compact:

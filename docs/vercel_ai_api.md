@@ -70,6 +70,9 @@ Arox adds a few non-standard frames on the same channel:
 // submit a reply to a pending data-input-request
 { "reply": { "req_id": "<uuid from data-input-request>", "normal_input": { "user_input": "hello" } } }
 
+// invoke a slash / control command without going through the LLM
+{ "command": { "type": "SetModelEvent", "model_ref": "claude-opus-4-7" } }
+
 // resume after reconnecting: re-send the currently pending data-input-request, if any
 { "resume": true }
 
@@ -77,7 +80,11 @@ Arox adds a few non-standard frames on the same channel:
 { "cancel": true }
 ```
 
-The `reply` object's `req_id` MUST match the `req_id` carried in the `data-input-request` it answers; remaining fields (`deferred_tools`, `normal_input`, `exception_input`) mirror the matching fields of the request. The server responds with `{"type": "ack", "status": "ok" | "cancelled" | "no_req_id" | "noop"}`.
+The `reply` object's `req_id` MUST match the `req_id` carried in the `data-input-request` it answers; remaining fields (`deferred_tools`, `normal_input`, `exception_input`) mirror the matching fields of the request.
+
+The `command` payload is a structured `CommandEvent`: `type` is the event class name (e.g. `SetModelEvent`, `InfoEvent`, `ResetEvent`, `AgentCallEvent`, `FileAddEvent`, `CompactEvent`, `AddFileListEvent`), and the remaining fields populate that event's dataclass. The server runs the command locally and streams any reply text back as ordinary text frames; the ack carries `{"status": "ok" | "unknown_command", "output": "..."}`.
+
+The server responds to every client message with `{"type": "ack", "status": "ok" | "cancelled" | "unknown_command" | "no_req_id" | "noop", ...}`.
 
 The connection stays open until either side closes it. Closing the client disconnects the stream but does **not** cancel any in-flight step — send `{"cancel": true}` first if needed.
 
@@ -85,8 +92,10 @@ The connection stays open until either side closes it. Closing the client discon
 Get command suggestions or auto-completions for a specific agent.
 
 **Query Parameters:**
-- `command` (optional): The command to get completions for (e.g., `model`).
-- `q` (optional): The current input string to filter suggestions.
+- `command` (optional): The slash name to get argument completions for (e.g., `model`, `add`). When omitted, returns the list of all registered slash commands.
+- `q` (optional): Filter / current input string. Without `command`, filters slash names; with `command`, used as the in-progress argument fragment.
+
+**Response:** `{"items": [{"id", "value", "label", "description"}, ...]}`. When listing slash commands, `description` is taken from the `CommandEvent` subclass's `description` ClassVar.
 
 #### `GET /api/composers/{composer_id}/agents/{agent_name}/state`
 Get the current state for a specific agent: message history plus any pending input request.
