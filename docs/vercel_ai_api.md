@@ -103,9 +103,12 @@ Get the current state for a specific agent: message history plus any pending inp
 **Response:**
 ```json
 {
-  "history": [ /* Vercel AI UI messages */ ]
+  "history": [ /* Vercel AI UI messages */ ],
+  "model": "claude-opus-4-7"
 }
 ```
+
+`model` is the current `provider_model` on the agent (the same value `/info` reports), or `null` if unset.
 
 To recover any pending input prompt after reconnecting, send `{"resume": true}` over the WebSocket — the server will re-emit the currently pending `data-input-request`, if any.
 

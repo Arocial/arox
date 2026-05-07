@@ -252,6 +252,30 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             for m in self._event_messages(adapter_io, event)
         ]
 
+    async def _render_command_output(self, agent, output: str | None) -> None:
+        """Stream a command's text output through the normal event pipeline."""
+        if not output:
+            return
+        text_part = TextPart(content=output)
+        await self.handle_event(
+            agent.adapter_io,
+            PartStartEvent(part=text_part, index=-1),
+        )
+        await self.handle_event(
+            agent.adapter_io,
+            PartEndEvent(part=text_part, index=-1),
+        )
+
+    async def _reissue_pending_input(self, agent) -> None:
+        """Re-emit the current pending ChatInputEvent so the client sees a
+        fresh ``data-input-request``. Used after handling a command that did
+        not consume the agent's pending input."""
+        event = self.pending_inputs.get(agent.adapter_io)
+        if event is None:
+            return
+        queue = self.event_queues.setdefault(agent.adapter_io, asyncio.Queue())
+        await queue.put((agent.adapter_io, event))
+
     async def _apply_input(self, agent, payload: dict) -> dict:
         if payload.get("cancel"):
             cancel = getattr(agent, "cancel_foreground_task", None)
@@ -265,16 +289,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             if event is None:
                 return {"status": "unknown_command"}
             reply = await agent.command_manager.execute(event)
-            if reply.output:
-                text_part = TextPart(content=reply.output)
-                await self.handle_event(
-                    agent.adapter_io,
-                    PartStartEvent(part=text_part, index=-1),
-                )
-                await self.handle_event(
-                    agent.adapter_io,
-                    PartEndEvent(part=text_part, index=-1),
-                )
+            await self._render_command_output(agent, reply.output)
             return {"status": "ok", "output": reply.output}
 
         reply = payload.get("reply")
@@ -285,11 +300,25 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             deferred = reply.get("deferred_tools") or {}
             exception_input = reply.get("exception_input") or {}
             normal_input = reply.get("normal_input") or {}
+            user_input = normal_input.get("user_input")
+
+            # Intercept slash commands typed into the composer so they don't
+            # round-trip through the LLM. Mirrors the structured "command"
+            # branch above and TextIOAdapter's slash handling.
+            if isinstance(user_input, str) and user_input.startswith("/"):
+                cmd_reply = await agent.command_manager.try_handle_slash(user_input)
+                if cmd_reply is not None:
+                    await self._render_command_output(agent, cmd_reply.output)
+                    # The agent is still blocked on its current ChatInputEvent;
+                    # re-emit it so the client can submit again.
+                    await self._reissue_pending_input(agent)
+                    return {"status": "ok", "output": cmd_reply.output}
+
             await agent.adapter_io.send(
                 ChatInputReply(
                     req_id=req_id,
                     deferred_answers=dict(deferred),
-                    user_input=normal_input.get("user_input"),
+                    user_input=user_input,
                     retry=bool(exception_input.get("retry", False)),
                 )
             )
@@ -563,7 +592,10 @@ class VercelStreamServer:
             msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages
         ]
 
-        return {"history": history}
+        return {
+            "history": history,
+            "model": getattr(agent, "provider_model", None),
+        }
 
     async def list_sessions(self):
         from arox.core.session import FileSessionStore

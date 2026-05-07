@@ -129,13 +129,9 @@ class TextIOAdapter(AbstractIOAdapter):
                         await self._flush_stdin()
                         break
                     if line.startswith("/") and agent is not None:
-                        cmd_event = await agent.command_manager.parse_slash_command(
-                            line
-                        )
-                        if cmd_event is not None:
-                            reply = await agent.command_manager.execute(cmd_event)
-                            if reply.output:
-                                print(reply.output)
+                        cmd_reply = await agent.command_manager.try_handle_slash(line)
+                        if cmd_reply is not None and cmd_reply.output:
+                            print(cmd_reply.output)
                         continue
                     user_input = line
                     break

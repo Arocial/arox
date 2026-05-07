@@ -88,7 +88,7 @@ class CommandCompleter(Completer):
         name = parts[0]
         args = parts[1] if len(parts) > 1 else None
         if args is None:
-            for candidate in self.command_manager.command_map.keys():
+            for candidate in self.command_manager.command_map:
                 if name in candidate:
                     yield Completion(
                         candidate, start_position=-len(name), display=candidate
@@ -163,6 +163,21 @@ class CommandManager:
         except Exception:
             logger.exception("Error parsing command /%s", name)
             return None
+
+    async def try_handle_slash(self, line: str) -> CommandReply | None:
+        """Parse and execute ``line`` if it's a slash command.
+
+        Returns the :class:`CommandReply` on success, or ``None`` if ``line``
+        is not a slash command or could not be parsed (e.g. unknown command).
+        Shared entry point for IO adapters that need to intercept slash
+        commands typed into a normal input field.
+        """
+        if not line.startswith("/"):
+            return None
+        event = await self.parse_slash_command(line)
+        if event is None:
+            return None
+        return await self.execute(event)
 
     def deserialize_event(self, payload: dict[str, Any]) -> CommandEvent | None:
         """Reconstruct a :class:`CommandEvent` from a ``{"type", ...}`` dict."""
