@@ -6,8 +6,7 @@ from pydantic_ai.models.test import TestModel
 
 from arox.core.app import app_setup
 from arox.core.chat import ChatAgent
-from arox.ui.text_io import TextIOAdapter
-from arox.utils import UserInputGenerator
+from arox.ui.text_io import TextIOAdapter, UserInputGenerator
 
 
 def multiply(a: int, b: int) -> int:

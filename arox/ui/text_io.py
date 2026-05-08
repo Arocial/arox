@@ -1,8 +1,13 @@
 import asyncio
 import logging
 import signal
-from typing import override
+from typing import Any, override
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.completion import Completer, Completion
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding.key_bindings import KeyBindings
 from pydantic_ai import (
     FinalResultEvent,
     FunctionToolCallEvent,
@@ -23,15 +28,76 @@ from arox.core.chat import (
     ChatInputReply,
     StepDoneEvent,
 )
+from arox.core.completion import CompletionRouter, parse_request
 from arox.core.composer import Composer
 from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
 )
-from arox.core.plugin import CommandCompleter
-from arox.utils import UserInputGenerator
 
 logger = logging.getLogger(__name__)
+
+
+class UserInputGenerator:
+    def __init__(self, completer=None, input=None, output=None):
+        self.history = FileHistory(".arox_history")
+        self.kb = KeyBindings()
+
+        @self.kb.add("enter")
+        def _(event):  # Enter to submit
+            event.current_buffer.validate_and_handle()
+
+        @self.kb.add("escape", "enter")  # Alt+Enter newline
+        @self.kb.add("escape", "O", "M")  # Shift+Enter (at least in my konsole)
+        def _(event):
+            event.current_buffer.insert_text("\n")
+
+        self.session = PromptSession(
+            prompt_continuation="> ",
+            multiline=True,
+            key_bindings=self.kb,
+            history=self.history,
+            auto_suggest=AutoSuggestFromHistory(),
+            mouse_support=False,
+            completer=completer,
+            input=input,
+            output=output,
+        )
+
+    async def __call__(self):
+        return await self.session.prompt_async("\nUser (Ctrl+D to quit): ")
+
+
+class CommandCompleter(Completer):
+    """prompt-toolkit ``Completer`` adapter on top of :class:`CompletionRouter`.
+
+    Owns no completion logic itself — it builds a :class:`CompletionRequest`
+    from the buffer's ``Document`` and translates the router's
+    :class:`CompletionItem` results back into prompt-toolkit ``Completion``
+    objects, computing ``start_position`` from each item's
+    ``replace_range``.
+    """
+
+    def __init__(self, router: "CompletionRouter", *, agent: Any | None = None):
+        self.router = router
+        self.agent = agent
+
+    def get_completions(self, document, complete_event):
+        text = document.text
+        if not text or text[0] not in ("/", "@"):
+            return
+        req = parse_request(text, cursor=document.cursor_position, agent=self.agent)
+        for item in self.router.complete(req):
+            start, _end = item.replace_range or req.current_token_range
+            # start_position is relative to the cursor; document.cursor_position
+            # is the absolute cursor in `text`.
+            start_position = start - document.cursor_position
+            yield Completion(
+                item.value,
+                start_position=start_position,
+                display=item.label or item.value,
+                display_meta=item.description or "",
+            )
 
 
 class TextIOAdapter(AbstractIOAdapter):

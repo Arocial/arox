@@ -1,10 +1,6 @@
 from typing import Any
 
 from jinja2 import Template
-from prompt_toolkit import PromptSession
-from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-from prompt_toolkit.history import FileHistory
-from prompt_toolkit.key_binding.key_bindings import KeyBindings
 
 DEFAULT_READ_LIMIT = 2000
 MAX_LINE_LENGTH = 2000
@@ -50,36 +46,6 @@ def deep_merge(source, overrides):
 def render_template(template, **kwargs):
     template = Template(template)
     return template.render(**kwargs)
-
-
-class UserInputGenerator:
-    def __init__(self, completer=None, input=None, output=None):
-        self.history = FileHistory(".arox_history")
-        self.kb = KeyBindings()
-
-        @self.kb.add("enter")
-        def _(event):  # Enter to submit
-            event.current_buffer.validate_and_handle()
-
-        @self.kb.add("escape", "enter")  # Alt+Enter newline
-        @self.kb.add("escape", "O", "M")  # Shift+Enter (at least in my konsole)
-        def _(event):
-            event.current_buffer.insert_text("\n")
-
-        self.session = PromptSession(
-            prompt_continuation="> ",
-            multiline=True,
-            key_bindings=self.kb,
-            history=self.history,
-            auto_suggest=AutoSuggestFromHistory(),
-            mouse_support=False,
-            completer=completer,
-            input=input,
-            output=output,
-        )
-
-    async def __call__(self):
-        return await self.session.prompt_async("\nUser (Ctrl+D to quit): ")
 
 
 def truncate_content(

@@ -5,13 +5,11 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
-from prompt_toolkit.completion import Completer, Completion
 from pydantic_ai import ModelMessage, RunContext
 
 from arox.core.completion import (
     CompletionProvider,
     CompletionRouter,
-    parse_request,
 )
 from arox.core.io import ReplyEvent, RequestEvent
 
@@ -81,43 +79,10 @@ def on(event_cls: type[CommandEvent], completer: str | None = None):
     return decorator
 
 
-class CommandCompleter(Completer):
-    """prompt-toolkit ``Completer`` adapter on top of :class:`CompletionRouter`.
-
-    Owns no completion logic itself — it builds a :class:`CompletionRequest`
-    from the buffer's ``Document`` and translates the router's
-    :class:`CompletionItem` results back into prompt-toolkit ``Completion``
-    objects, computing ``start_position`` from each item's
-    ``replace_range``.
-    """
-
-    def __init__(self, router: "CompletionRouter", *, agent: Any | None = None):
-        self.router = router
-        self.agent = agent
-
-    def get_completions(self, document, complete_event):
-        text = document.text
-        if not text or text[0] not in ("/", "@"):
-            return
-        req = parse_request(text, cursor=document.cursor_position, agent=self.agent)
-        for item in self.router.complete(req):
-            start, _end = item.replace_range or req.current_token_range
-            # start_position is relative to the cursor; document.cursor_position
-            # is the absolute cursor in `text`.
-            start_position = start - document.cursor_position
-            yield Completion(
-                item.value,
-                start_position=start_position,
-                display=item.label or item.value,
-                display_meta=item.description or "",
-            )
-
-
 class CommandManager:
     def __init__(self, agent):
         self.agent = agent
         self.router = CompletionRouter()
-        self.completer = CommandCompleter(self.router, agent=agent)
         self._handlers: dict[type[CommandEvent], Callable[[Any], Any]] = {}
         self._slash_map: dict[str, type[CommandEvent]] = {}
 
