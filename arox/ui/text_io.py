@@ -43,7 +43,9 @@ class TextIOAdapter(AbstractIOAdapter):
         await super().register_composer(composer)
 
         main_agent = composer.main_agent
-        completer = CommandCompleter(main_agent.command_manager)
+        completer = CommandCompleter(
+            main_agent.command_manager.router, agent=main_agent
+        )
         self.user_input = UserInputGenerator(completer=completer)
 
     async def __aenter__(self):

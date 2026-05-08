@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
-from prompt_toolkit.completion import Completion
 from pydantic_ai import (
     BinaryContent,
     ModelMessage,
@@ -16,6 +15,7 @@ from pydantic_ai import (
 from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from rapidfuzz import fuzz
 
+from arox.core.completion import CompletionItem, CompletionRequest
 from arox.core.plugin import CommandEvent, Plugin, on, tool
 from arox.plugins.capabilities import (
     AGENT_INFO,
@@ -419,25 +419,14 @@ class FilePlugin(Plugin):
             return
         await self.read_by_user(event.files)
 
-    def get_completions(self, name, args):
-        if not args:
-            current_word = ""
-        else:
-            parts = args.split()
-            if args.endswith(" "):
-                current_word = ""
-            else:
-                current_word = parts[-1] if parts else ""
-
-        if name == "add":
-            candidates = self.candidates()
-        else:
-            candidates = []
-
-        for candidate in candidates:
+    def get_completions(self, req: CompletionRequest):
+        current_word = req.current_token
+        for candidate in self.candidates():
             if current_word in candidate:
-                yield Completion(
-                    candidate, start_position=-len(current_word), display=candidate
+                yield CompletionItem(
+                    value=candidate,
+                    label=candidate,
+                    group="add",
                 )
 
     async def get_info(self) -> str:

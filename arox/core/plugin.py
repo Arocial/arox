@@ -8,6 +8,11 @@ from typing import Any, ClassVar
 from prompt_toolkit.completion import Completer, Completion
 from pydantic_ai import ModelMessage, RunContext
 
+from arox.core.completion import (
+    CompletionProvider,
+    CompletionRouter,
+    parse_request,
+)
 from arox.core.io import ReplyEvent, RequestEvent
 
 logger = logging.getLogger(__name__)
@@ -77,45 +82,59 @@ def on(event_cls: type[CommandEvent], completer: str | None = None):
 
 
 class CommandCompleter(Completer):
-    def __init__(self, manager: "CommandManager"):
-        self.command_manager = manager
+    """prompt-toolkit ``Completer`` adapter on top of :class:`CompletionRouter`.
+
+    Owns no completion logic itself — it builds a :class:`CompletionRequest`
+    from the buffer's ``Document`` and translates the router's
+    :class:`CompletionItem` results back into prompt-toolkit ``Completion``
+    objects, computing ``start_position`` from each item's
+    ``replace_range``.
+    """
+
+    def __init__(self, router: "CompletionRouter", *, agent: Any | None = None):
+        self.router = router
+        self.agent = agent
 
     def get_completions(self, document, complete_event):
         text = document.text
-        if not text.startswith("/"):
+        if not text or text[0] not in ("/", "@"):
             return
-        parts = text[1:].split(" ", 1)
-        name = parts[0]
-        args = parts[1] if len(parts) > 1 else None
-        if args is None:
-            for candidate in self.command_manager.command_map:
-                if name in candidate:
-                    yield Completion(
-                        candidate, start_position=-len(name), display=candidate
-                    )
-            return
-        yield from self.command_manager.get_completions(name, args)
+        req = parse_request(text, cursor=document.cursor_position, agent=self.agent)
+        for item in self.router.complete(req):
+            start, _end = item.replace_range or req.current_token_range
+            # start_position is relative to the cursor; document.cursor_position
+            # is the absolute cursor in `text`.
+            start_position = start - document.cursor_position
+            yield Completion(
+                item.value,
+                start_position=start_position,
+                display=item.label or item.value,
+                display_meta=item.description or "",
+            )
 
 
 class CommandManager:
     def __init__(self, agent):
         self.agent = agent
-        self.completer = CommandCompleter(self)
+        self.router = CompletionRouter()
+        self.completer = CommandCompleter(self.router, agent=agent)
         self._handlers: dict[type[CommandEvent], Callable[[Any], Any]] = {}
         self._slash_map: dict[str, type[CommandEvent]] = {}
-        self._completers: dict[str, Callable] = {}
 
     def register(
         self,
         event_cls: type[CommandEvent],
         handler: Callable[[Any], Any],
-        completer: Callable | None = None,
+        completer: CompletionProvider | None = None,
     ) -> None:
         """Register ``event_cls`` together with its handler (and optional completer).
 
         Wires up slash parsing (via ``event_cls.slashes`` +
         ``event_cls.from_slash``), structured deserialization (via
         ``event_cls.__name__``), and execution dispatch in one call.
+
+        ``completer``, when given, is a :class:`CompletionProvider` invoked
+        for argument completion of every slash declared on ``event_cls``.
         """
         self._handlers[event_cls] = handler
         for slash in event_cls.slashes:
@@ -127,8 +146,9 @@ class CommandManager:
                     event_cls.__name__,
                 )
             self._slash_map[slash] = event_cls
-            if completer is not None:
-                self._completers[slash] = completer
+            self.router.register_slash(
+                slash, description=event_cls.description, sub=completer
+            )
 
     @property
     def command_map(self) -> dict[str, type[CommandEvent]]:
@@ -219,12 +239,6 @@ class CommandManager:
         except Exception as e:
             logger.exception("Error executing CommandEvent %s", type(event).__name__)
             return CommandReply(req_id=event.req_id, output=f"Error: {e}")
-
-    def get_completions(self, name: str, args: str):
-        completer = self._completers.get(name)
-        if completer is None:
-            return
-        yield from completer(name, args)
 
 
 class Plugin:

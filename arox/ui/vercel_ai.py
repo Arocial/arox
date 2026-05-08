@@ -32,6 +32,7 @@ from arox.core.chat import (
     ChatInputReply,
     StepDoneEvent,
 )
+from arox.core.completion import parse_request
 from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
@@ -401,39 +402,27 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         command_manager = getattr(agent, "command_manager", None)
         if command_manager is None:
             return SuggestionResponse(items=[])
-        items = []
 
-        if not command:
-            for cmd_name, cmd_obj in command_manager.command_map.items():
-                if q and q.lower() not in cmd_name.lower():
-                    continue
-                items.append(
-                    SuggestionItem(
-                        id=cmd_name,
-                        value=f"/{cmd_name}",
-                        label=f"/{cmd_name}",
-                        description=cmd_obj.description,
-                    )
-                )
+        # Synthesize the equivalent text+cursor a TUI buffer would have so
+        # both UIs route through the same CompletionRouter. ``command`` is
+        # the slash already committed (None when user is still picking one);
+        # ``q`` is whatever they're currently typing.
+        if command:
+            text = f"/{command} {q or ''}"
         else:
-            args = q if q else ""
-            completions = command_manager.get_completions(command, args)
-            if completions:
-                for idx, completion in enumerate(completions):
-                    display_text = getattr(completion, "display_text", completion.text)
-                    description = getattr(completion, "display_meta_text", None)
-                    if not description:
-                        description = None
+            text = f"/{q or ''}"
+        req = parse_request(text, agent=agent)
+        results = command_manager.router.complete(req)
 
-                    items.append(
-                        SuggestionItem(
-                            id=f"comp-{command}-{idx}",
-                            value=completion.text,
-                            label=display_text,
-                            description=description,
-                        )
-                    )
-
+        items = [
+            SuggestionItem(
+                id=f"{it.group or 'item'}:{it.value}",
+                value=it.value,
+                label=it.label or it.value,
+                description=it.description,
+            )
+            for it in results
+        ]
         return SuggestionResponse(items=items)
 
 
