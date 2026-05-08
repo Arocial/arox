@@ -78,7 +78,9 @@ class CommandCompleter(Completer):
     ``replace_range``.
     """
 
-    def __init__(self, completion_router: "CompletionRouter", *, agent: Any | None = None):
+    def __init__(
+        self, completion_router: "CompletionRouter", *, agent: Any | None = None
+    ):
         self.completion_router = completion_router
         self.agent = agent
 

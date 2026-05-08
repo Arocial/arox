@@ -2,6 +2,7 @@ import logging
 from dataclasses import dataclass
 from typing import ClassVar
 
+from arox.core.completion import CompletionItem, CompletionRequest
 from arox.core.llm_base import DelegatableAgent
 from arox.core.plugin import CommandEvent, Plugin, on
 from arox.plugins.capabilities import AGENT_INFO, AGENT_RESET, SUBAGENT
@@ -51,12 +52,25 @@ class AgentCallEvent(CommandEvent):
 
 
 class CorePlugin(Plugin):
-    @on(SetModelEvent)
+    @on(SetModelEvent, completer="complete_model_ref")
     async def handle_set_model(self, event: SetModelEvent) -> str:
         if not event.model_ref:
             return "Please specify a model name"
         self.agent.set_model(event.model_ref)
         return f"Model switched to {event.model_ref}"
+
+    def complete_model_ref(self, req: CompletionRequest):
+        typed = req.current_token.lower()
+        for ref in self.agent.parsed_config.available_models:
+            if typed and typed not in ref.lower():
+                continue
+            score = 2.0 if ref.lower().startswith(typed) else 1.0 if typed else 0.0
+            yield CompletionItem(
+                value=ref,
+                label=ref,
+                group="model",
+                score=score,
+            )
 
     @on(InfoEvent)
     async def handle_info(self, event: InfoEvent) -> str:
