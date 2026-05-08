@@ -28,7 +28,7 @@ class CompletionItem:
     """A single completion candidate.
 
     ``replace_range`` is in absolute positions over ``CompletionRequest.text``.
-    If unset, the router fills it with the bounds of ``current_token``.
+    If unset, the completion_router fills it with the bounds of ``current_token``.
     """
 
     value: str

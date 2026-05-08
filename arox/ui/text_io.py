@@ -72,14 +72,14 @@ class CommandCompleter(Completer):
     """prompt-toolkit ``Completer`` adapter on top of :class:`CompletionRouter`.
 
     Owns no completion logic itself — it builds a :class:`CompletionRequest`
-    from the buffer's ``Document`` and translates the router's
+    from the buffer's ``Document`` and translates the completion_router's
     :class:`CompletionItem` results back into prompt-toolkit ``Completion``
     objects, computing ``start_position`` from each item's
     ``replace_range``.
     """
 
-    def __init__(self, router: "CompletionRouter", *, agent: Any | None = None):
-        self.router = router
+    def __init__(self, completion_router: "CompletionRouter", *, agent: Any | None = None):
+        self.completion_router = completion_router
         self.agent = agent
 
     def get_completions(self, document, complete_event):
@@ -87,7 +87,7 @@ class CommandCompleter(Completer):
         if not text or text[0] not in ("/", "@"):
             return
         req = parse_request(text, cursor=document.cursor_position, agent=self.agent)
-        for item in self.router.complete(req):
+        for item in self.completion_router.complete(req):
             start, _end = item.replace_range or req.current_token_range
             # start_position is relative to the cursor; document.cursor_position
             # is the absolute cursor in `text`.
@@ -110,7 +110,7 @@ class TextIOAdapter(AbstractIOAdapter):
 
         main_agent = composer.main_agent
         completer = CommandCompleter(
-            main_agent.command_manager.router, agent=main_agent
+            main_agent.command_manager.completion_router, agent=main_agent
         )
         self.user_input = UserInputGenerator(completer=completer)
 

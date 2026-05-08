@@ -82,7 +82,7 @@ def on(event_cls: type[CommandEvent], completer: str | None = None):
 class CommandManager:
     def __init__(self, agent):
         self.agent = agent
-        self.router = CompletionRouter()
+        self.completion_router = CompletionRouter()
         self._handlers: dict[type[CommandEvent], Callable[[Any], Any]] = {}
         self._slash_map: dict[str, type[CommandEvent]] = {}
 
@@ -111,7 +111,7 @@ class CommandManager:
                     event_cls.__name__,
                 )
             self._slash_map[slash] = event_cls
-            self.router.register_slash(
+            self.completion_router.register_slash(
                 slash, description=event_cls.description, sub=completer
             )
 

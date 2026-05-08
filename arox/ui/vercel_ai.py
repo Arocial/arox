@@ -412,7 +412,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         else:
             text = f"/{q or ''}"
         req = parse_request(text, agent=agent)
-        results = command_manager.router.complete(req)
+        results = command_manager.completion_router.complete(req)
 
         items = [
             SuggestionItem(
