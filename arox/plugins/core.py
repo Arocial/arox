@@ -4,7 +4,7 @@ from typing import ClassVar
 
 from arox.core.completion import CompletionItem, CompletionRequest
 from arox.core.llm_base import DelegatableAgent
-from arox.core.plugin import CommandEvent, Plugin, on
+from arox.core.plugin import CommandEvent, CommandSpec, Plugin
 from arox.plugins.capabilities import AGENT_INFO, AGENT_RESET, SUBAGENT
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,14 @@ class AgentCallEvent(CommandEvent):
 
 
 class CorePlugin(Plugin):
-    @on(SetModelEvent, completer="complete_model_ref")
+    def commands(self):
+        return [
+            CommandSpec(SetModelEvent, self.handle_set_model, self.complete_model_ref),
+            CommandSpec(InfoEvent, self.handle_info),
+            CommandSpec(ResetEvent, self.handle_reset),
+            CommandSpec(AgentCallEvent, self.handle_agent_call),
+        ]
+
     async def handle_set_model(self, event: SetModelEvent) -> str:
         if not event.model_ref:
             return "Please specify a model name"
@@ -72,7 +79,6 @@ class CorePlugin(Plugin):
                 score=score,
             )
 
-    @on(InfoEvent)
     async def handle_info(self, event: InfoEvent) -> str:
         lines = [f"Current model: {getattr(self.agent, 'provider_model', 'Unknown')}"]
         for provider in self.agent.get_capability(AGENT_INFO):
@@ -81,14 +87,12 @@ class CorePlugin(Plugin):
                 lines.append(info)
         return "\n".join(lines)
 
-    @on(ResetEvent)
     async def handle_reset(self, event: ResetEvent) -> str:
         self.agent.reset()
         for provider in self.agent.get_capability(AGENT_RESET):
             provider()
         return "Reset complete."
 
-    @on(AgentCallEvent)
     async def handle_agent_call(self, event: AgentCallEvent) -> str | None:
         if not event.subagent_name:
             return "Usage: /agent <name> [task]"

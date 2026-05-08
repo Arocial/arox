@@ -330,8 +330,10 @@ class LLMBaseAgent:
                     self.add_local_tool(tool_def.func, **tool_def.kwargs)
 
             # Register commands
-            for evt_cls, handler, completer in plugin.commands():
-                self.command_manager.register(evt_cls, handler, completer)
+            for spec in plugin.commands():
+                self.command_manager.register(
+                    spec.event_cls, spec.handler, spec.completer
+                )
         return plugins
 
     def provide_capability(self, capability: Any, provider: Any):

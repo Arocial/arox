@@ -11,7 +11,7 @@ from pydantic_ai import (
 )
 
 from arox.core.llm_base import LLMBaseAgent
-from arox.core.plugin import CommandEvent, Plugin, on
+from arox.core.plugin import CommandEvent, CommandSpec, Plugin
 from arox.core.session import _serialize_messages
 from arox.plugins.capabilities import PERSISTENT_CONTEXT, SUBAGENT
 
@@ -89,7 +89,9 @@ class CompactionPlugin(Plugin):
             return int(threshold * max_tokens)
         return int(threshold)
 
-    @on(CompactEvent)
+    def commands(self):
+        return [CommandSpec(CompactEvent, self.handle_compact)]
+
     async def handle_compact(self, event: CompactEvent):
         agent = self.agent
         messages_to_compact = list(agent.message_history)

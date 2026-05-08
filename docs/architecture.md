@@ -58,7 +58,7 @@ Built-in adapters:
 
 - **Plugins** (`arox/core/plugin.py`): the primary unit of extension. A plugin bundles:
     - `tools()` — Python functions exposed to the LLM (`@tool`). Arox also natively supports **MCP** tools via `fastmcp`, registered alongside local tools.
-    - `commands()` — slash / control commands for the human, declared as `CommandEvent` subclasses + `@on(EventCls)`-decorated handler methods, dispatched by `CommandManager`. Commands run locally without calling the LLM, saving time and tokens.
+    - `commands()` — slash / control commands for the human. Plugins override `commands()` to return `CommandSpec(event_cls, handler, completer)` bindings that `CommandManager` dispatches. Commands run locally without calling the LLM, saving time and tokens.
     - `history_processor()` — async hook that modifies message history before each LLM call.
 - **Capabilities** (`arox/core/capability.py`): typed tokens for loose coupling. Producers call `agent.provide_capability(cap, impl)`; consumers call `agent.get_capability(cap)`. Built-in capabilities live in `arox/plugins/capabilities.py` (e.g. `SUBAGENT`, `FileEditCapability`).
 - **Skills** (`arox/core/skills.py`): discovered from `.arox/skills/` in the workspace and injected into the agent's system prompt as a catalog. `AgentConfig.skills` restricts which skills are visible to a given agent.

@@ -1,7 +1,7 @@
 import asyncio
 import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
@@ -47,6 +47,15 @@ class ToolDef:
     kwargs: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class CommandSpec:
+    """Binding between a :class:`CommandEvent` subclass and its handler."""
+
+    event_cls: type[CommandEvent]
+    handler: Callable[[Any], Any]
+    completer: CompletionProvider | None = None
+
+
 def tool(dynamic_context: Callable[[], dict[str, Any]] | None = None, **kwargs):
     """Decorator to register a method as a tool."""
 
@@ -58,22 +67,6 @@ def tool(dynamic_context: Callable[[], dict[str, Any]] | None = None, **kwargs):
 
             context = dynamic_context()
             func.__doc__ = utils.render_template(func.__doc__, **context)
-        return func
-
-    return decorator
-
-
-def on(event_cls: type[CommandEvent], completer: str | None = None):
-    """Decorator marking a plugin method as the handler for ``event_cls``.
-
-    ``completer``, if given, is the name of a method on the same plugin
-    used to provide tab-completions for the slash names declared on
-    ``event_cls``.
-    """
-
-    def decorator(func):
-        func.__on_event__ = event_cls
-        func.__on_completer__ = completer
         return func
 
     return decorator
@@ -135,8 +128,6 @@ class CommandManager:
         try:
             self.agent.agent_session.add_event("command", {"command": name, "arg": arg})
             event = event_cls.from_slash(name, arg)
-            if inspect.iscoroutine(event):
-                event = await event
             if event is not None and not isinstance(event, CommandEvent):
                 logger.warning(
                     "%s.from_slash returned non-CommandEvent value %r; ignoring",
@@ -210,17 +201,13 @@ class Plugin:
     def __init__(self, agent):
         self.agent = agent
 
-    def commands(self) -> list[tuple[type[CommandEvent], Callable, Callable | None]]:
-        """Return ``(event_cls, handler, completer)`` triples for ``@on``-decorated methods."""
-        out = []
-        for _, method in inspect.getmembers(self, predicate=inspect.ismethod):
-            evt = getattr(method, "__on_event__", None)
-            if evt is None:
-                continue
-            comp_attr = getattr(method, "__on_completer__", None)
-            completer = getattr(self, comp_attr) if comp_attr else None
-            out.append((evt, method, completer))
-        return out
+    def commands(self) -> Sequence[CommandSpec]:
+        """Return :class:`CommandSpec` bindings to register.
+
+        Override in subclasses to wire :class:`CommandEvent` subclasses to
+        plugin handler methods (and optional completion providers).
+        """
+        return []
 
     def tools(self) -> list[ToolDef]:
         tls = []

@@ -16,7 +16,7 @@ from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from rapidfuzz import fuzz
 
 from arox.core.completion import CompletionItem, CompletionRequest
-from arox.core.plugin import CommandEvent, Plugin, on, tool
+from arox.core.plugin import CommandEvent, CommandSpec, Plugin, tool
 from arox.plugins.capabilities import (
     AGENT_INFO,
     AGENT_RESET,
@@ -412,7 +412,9 @@ class FilePlugin(Plugin):
 
         return None
 
-    @on(FileAddEvent, completer="get_completions")
+    def commands(self):
+        return [CommandSpec(FileAddEvent, self.handle_file_add, self.get_completions)]
+
     async def handle_file_add(self, event: "FileAddEvent"):
         if not event.files:
             await self.agent.agent_io.send("Please specify files.")

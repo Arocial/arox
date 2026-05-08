@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, ClassVar
 import git
 from pydantic_ai import ModelMessage, ModelRequest, RunContext, UserPromptPart
 
-from arox.core.plugin import CommandEvent, Plugin, on
+from arox.core.plugin import CommandEvent, CommandSpec, Plugin
 from arox.plugins.capabilities import PROJECT_FILES
 
 if TYPE_CHECKING:
@@ -61,7 +61,9 @@ class RepoPlugin(Plugin):
     def add_project_files(self):
         self._pending_project_file_list = True
 
-    @on(AddFileListEvent)
+    def commands(self):
+        return [CommandSpec(AddFileListEvent, self.handle_add_file_list)]
+
     async def handle_add_file_list(self, event: AddFileListEvent):
         self.add_project_files()
 
