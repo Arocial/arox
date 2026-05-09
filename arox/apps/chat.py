@@ -52,6 +52,7 @@ def main():
             app_name = script_name[5:]
         else:
             app_name = "coder"
+    composer_name = "default"
 
     if args.ui == "text":
         log_dir = Path(".arox")
@@ -77,7 +78,7 @@ def main():
         from arox.ui.vercel_ai import VercelStreamServer
 
         server = VercelStreamServer(
-            composer_name=app_name,
+            composer_name=composer_name,
             config_files=[default_agent_config],
             cli_args=unknown_args,
             host=args.host,
@@ -101,7 +102,7 @@ def main():
             raise ValueError(f"Unknown UI: {args.ui}")
 
         composer = Composer(
-            app_name,
+            composer_name,
             io_adapter=io_adapter,
             session_id=args.session,
             config_files=[default_agent_config],

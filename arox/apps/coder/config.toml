@@ -1,6 +1,6 @@
 include = ["../_shared/compaction.toml"]
 
-[composer.coder]
+[composer.default]
 main_agent = "coder"
 subagents = ["compaction"]
 
