@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 _alnum_regex = re.compile(r"(?ui)\W")
 
+MAX_BINARY_READ_BYTES = 1 * 1024 * 1024
+
 
 @dataclass(kw_only=True)
 class FileAddEvent(CommandEvent):
@@ -70,7 +72,7 @@ class FilePlugin(Plugin):
         for item in self.workspace.iterdir():
             if item.is_file() and item.name.lower() in ("agents.md", "agent.md"):
                 try:
-                    content = "".join(self._read_raw(item.name))
+                    content = "".join(self._read_text(item.name))
                     self._pending_text_files[item.name] = content
                     self.persistent_files[item.name] = content
                     self._add_to_session(item.name)
@@ -144,11 +146,8 @@ class FilePlugin(Plugin):
         if file_path not in self.session_files:
             self.session_files.append(file_path)
 
-    def _read_raw(self, file_path: str) -> list[str]:
+    def _read_text(self, file_path: str) -> list[str]:
         path = self._normalize_path(file_path)
-        if self._is_binary_file(path):
-            raise Exception(f"Cannot read binary file: {file_path}")
-
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             return f.readlines()
 
@@ -160,7 +159,7 @@ class FilePlugin(Plugin):
                     with open(path, "rb") as f:
                         self._pending_binary_files[file_path] = f.read()
                 else:
-                    lines = self._read_raw(file_path)
+                    lines = self._read_text(file_path)
                     self._pending_text_files[file_path] = "".join(lines)
                 self._add_to_session(path)
             except Exception as e:
@@ -181,17 +180,38 @@ class FilePlugin(Plugin):
         path: str,
         offset: int = 0,
         limit: int = DEFAULT_READ_LIMIT,
-    ) -> str:
+    ) -> str | BinaryContent:
         """Reads a file from the local filesystem.
         It's better to read multiple files as a batch that are potentially useful.
 
+        Supports text files (with offset/limit line slicing) and binary files
+        such as images or PDFs (returned as BinaryContent; offset/limit ignored).
+
         Args:
             path: The path to the file to read.
-            offset: The line number to start reading from (0-based).
-            limit: The number of lines to read (defaults to 2000).
+            offset: The line number to start reading from (0-based). Text only.
+            limit: The number of lines to read (defaults to 2000). Text only.
         """
         try:
-            lines = self._read_raw(path)
+            normalized = self._normalize_path(path)
+            if self._is_binary_file(normalized):
+                import mimetypes
+
+                size = normalized.stat().st_size
+                if size > MAX_BINARY_READ_BYTES:
+                    return (
+                        f"Error: binary file {path} is {size} bytes, "
+                        f"exceeds limit of {MAX_BINARY_READ_BYTES} bytes."
+                    )
+                with open(normalized, "rb") as f:
+                    data = f.read()
+                mime_type, _ = mimetypes.guess_type(str(normalized))
+                if not mime_type:
+                    mime_type = "application/octet-stream"
+                self._add_to_session(path)
+                return BinaryContent(data=data, media_type=mime_type)
+
+            lines = self._read_text(path)
 
             truncated = truncate_content(lines, offset, limit)
             content_lines = truncated["lines"]
