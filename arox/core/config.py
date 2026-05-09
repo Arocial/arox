@@ -104,7 +104,6 @@ class AgentConfig(BaseModel):
 class ComposerConfig(BaseModel):
     main_agent: str
     subagents: list[str] = Field(default_factory=list)
-    io_adapter: str = "arox.ui.text_io.TextIOAdapter"
 
 
 class AppConfig(BaseModel):

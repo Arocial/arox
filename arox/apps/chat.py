@@ -53,8 +53,6 @@ def main():
         else:
             app_name = "coder"
 
-    unknown_args.append(f"composer.{app_name}.io_adapter={args.ui}")
-
     if args.ui == "text":
         log_dir = Path(".arox")
         log_dir.mkdir(exist_ok=True)

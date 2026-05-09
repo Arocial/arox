@@ -3,7 +3,6 @@ include = ["../_shared/compaction.toml"]
 [composer.general]
 main_agent = "general"
 subagents = ["compaction"]
-io_adapter = "text_io"
 
 [agent.general]
 type = "chat"
