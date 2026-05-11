@@ -140,9 +140,6 @@ class ChatAgent(MainAgent, DelegatableAgent):
                 user_input = reply.user_input
                 if user_input is not None:
                     self.agent_session.add_event("user_input", {"text": user_input})
-                    if not user_input.strip():
-                        await self.agent_io.send(StepDoneEvent())
-                        continue
 
                 step_task = asyncio.create_task(
                     self.step(user_input, deferred_tool_results=deferred_results)
