@@ -31,7 +31,7 @@ The Coder app consists of the following components:
 
 ## Configuration
 
-The Coder app is configured via a TOML file (`arox/apps/coder/config.toml`). You can override these settings using command-line arguments or a custom configuration file.
+The Coder app is configured via a TOML file (`arox/apps/chat/profiles/coder/config.toml`). You can override these settings using command-line arguments or a custom configuration file.
 
 ### System Prompt
 

@@ -12,14 +12,12 @@ from arox.core.composer import Composer
 logger = logging.getLogger(__name__)
 
 
-def main():
-    import sys
-
+def main(profile: str | None = None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--app",
-        default=None,
-        help="App name to run (e.g., coder, general)",
+        "--profile",
+        default=profile,
+        help="Profile to load (e.g., coder, general)",
     )
     parser.add_argument(
         "--ui",
@@ -45,13 +43,7 @@ def main():
     )
     args, unknown_args = parser.parse_known_args()
 
-    app_name = args.app
-    if not app_name:
-        script_name = Path(sys.argv[0]).name
-        if script_name.startswith("arox-"):
-            app_name = script_name[5:]
-        else:
-            app_name = "coder"
+    profile_name = args.profile or "coder"
     composer_name = "default"
 
     if args.ui == "text":
@@ -69,7 +61,9 @@ def main():
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
 
-    default_agent_config = Path(__file__).parent / app_name / "config.toml"
+    default_agent_config = (
+        Path(__file__).parent / "profiles" / profile_name / "config.toml"
+    )
     from arox.core.app import app_setup
 
     app_setup(config_files=[default_agent_config], cli_args=unknown_args)
@@ -114,6 +108,14 @@ def main():
                 await composer.run()
 
         asyncio.run(run_all())
+
+
+def coder():
+    main(profile="coder")
+
+
+def general():
+    main(profile="general")
 
 
 if __name__ == "__main__":
