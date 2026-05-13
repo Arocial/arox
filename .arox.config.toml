@@ -1,3 +1,0 @@
-[mcp_servers.pyls]
-# The mcp server is not managed here.
-url = "http://localhost:8500/mcp"
