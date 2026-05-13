@@ -32,6 +32,37 @@ class TestComposerSession:
         assert event.event_type == "system"
         assert len(session.events) == 1
 
+    def test_fork_at(self):
+        session = ComposerSession.create("coder", title="t")
+        agent_s = session.get_agent_session("main")
+        agent_s.add_event("user_input", {"text": "u1"})  # 0
+        agent_s.add_event("agent_step", {"new_messages": []})  # 1
+        agent_s.add_event("user_input", {"text": "u2"})  # 2
+        agent_s.add_event("agent_step", {"new_messages": []})  # 3
+
+        # also include a stray subagent session
+        session.get_agent_session("helper").add_event(
+            "agent_step", {"new_messages": []}
+        )
+
+        forked = session.fork_at("main", 2)
+
+        assert forked.id != session.id
+        assert forked.parent_id == session.id
+        assert forked.forked_from == {"main": 2}
+        assert forked.metadata == session.metadata
+        # Main agent events were truncated.
+        assert len(forked.agent_sessions["main"].events) == 2
+        # Subagent sessions are NOT carried into the new branch.
+        assert "helper" not in forked.agent_sessions
+        # Original session is unchanged.
+        assert len(session.agent_sessions["main"].events) == 4
+
+    def test_fork_at_unknown_agent(self):
+        session = ComposerSession.create("coder")
+        with pytest.raises(ValueError):
+            session.fork_at("missing", 0)
+
     def test_get_agent_session(self):
         session = ComposerSession.create("coder")
         agent_session = session.get_agent_session("main")
@@ -161,6 +192,46 @@ class TestAgentSession:
         )
         assert agent_session.rebuild_llm_context_id() == "ctx_second"
 
+    def test_user_turn_anchors(self):
+        agent_session = AgentSession(agent_name="main")
+        agent_session.add_event("user_input", {"text": "a"})  # 0
+        agent_session.add_event("agent_step", {"new_messages": []})  # 1
+        agent_session.add_event("user_input", {"text": "b"})  # 2
+        agent_session.add_event("agent_step", {"new_messages": []})  # 3
+        assert agent_session.user_turn_anchors() == [0, 2]
+        assert agent_session.resolve_user_turn(1) == 2
+        assert agent_session.resolve_user_turn(2) == 0
+        assert agent_session.resolve_user_turn(3) is None
+
+    def test_truncated_copy(self):
+        agent_session = AgentSession(agent_name="main")
+        agent_session.add_event("user_input", {"text": "first"})
+        agent_session.add_event(
+            "agent_step",
+            {
+                "new_messages": _serialize_messages(
+                    [
+                        ModelRequest(parts=[UserPromptPart(content="first")]),
+                        ModelResponse(parts=[TextPart(content="r1")]),
+                    ]
+                ),
+            },
+        )
+        agent_session.add_event("user_input", {"text": "second"})
+
+        truncated = agent_session.truncated_copy(2)
+        # Independent object
+        assert truncated is not agent_session
+        assert len(truncated.events) == 2
+        # Original is untouched
+        assert len(agent_session.events) == 3
+
+        history = truncated.rebuild_message_history()
+        assert len(history) == 2
+        part = history[0].parts[0]
+        assert isinstance(part, UserPromptPart)
+        assert part.content == "first"
+
     def test_non_step_events_ignored_in_rebuild(self):
         agent_session = AgentSession(agent_name="main")
         agent_session.add_event("user_input", {"text": "hello"})
@@ -239,6 +310,24 @@ class TestFileSessionStore:
     async def test_load_nonexistent(self, store):
         result = await store.load_session("nonexistent")
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_fork_round_trip(self, store):
+        session = ComposerSession.create("coder")
+        agent_s = session.get_agent_session("main")
+        agent_s.add_event("user_input", {"text": "u1"})
+        agent_s.add_event("agent_step", {"new_messages": []})
+        agent_s.add_event("user_input", {"text": "u2"})
+
+        forked = session.fork_at("main", 2)
+        await store.save_session(session)
+        await store.save_session(forked)
+
+        loaded = await store.load_session(forked.id)
+        assert loaded is not None
+        assert loaded.parent_id == session.id
+        assert loaded.forked_from == {"main": 2}
+        assert len(loaded.agent_sessions["main"].events) == 2
 
     @pytest.mark.asyncio
     async def test_list_sessions(self, store):

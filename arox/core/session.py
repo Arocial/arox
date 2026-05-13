@@ -75,6 +75,27 @@ class AgentSession(BaseModel):
                 context_id = event.data.get("llm_context_id")
         return context_id
 
+    def user_turn_anchors(self) -> list[int]:
+        """Return event indices of ``user_input`` events."""
+        return [i for i, ev in enumerate(self.events) if ev.event_type == "user_input"]
+
+    def resolve_user_turn(self, n: int) -> int | None:
+        """Resolve "n-th most recent user turn" to an event index."""
+        if n < 1:
+            return None
+        anchors = self.user_turn_anchors()
+        if len(anchors) < n:
+            return None
+        return anchors[-n]
+
+    def truncated_copy(self, event_index: int) -> AgentSession:
+        """Return a new :class:`AgentSession` with ``events[0:event_index]``."""
+        return AgentSession(
+            agent_name=self.agent_name,
+            events=[ev.model_copy(deep=True) for ev in self.events[:event_index]],
+            extra=dict(self.extra),
+        )
+
 
 class ComposerSession(BaseModel):
     id: str
@@ -84,6 +105,32 @@ class ComposerSession(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     events: list[SessionEvent] = Field(default_factory=list)
     agent_sessions: dict[str, AgentSession] = Field(default_factory=dict)
+    parent_id: str | None = None
+    forked_from: dict[str, int] | None = None
+
+    def fork_at(self, agent_name: str, event_index: int) -> ComposerSession:
+        """Create a new ComposerSession truncated at ``event_index`` on ``agent_name``.
+
+        The new session has a fresh id and points back to this one via
+        ``parent_id`` / ``forked_from``. The named agent's history is
+        truncated; other agents start with fresh (empty) sessions on the
+        new branch.
+        """
+        now = datetime.now(UTC)
+        agent_session = self.agent_sessions.get(agent_name)
+        if agent_session is None:
+            raise ValueError(f"No agent session for '{agent_name}' to fork from")
+        new = ComposerSession(
+            id=uuid.uuid4().hex[:12],
+            composer_name=self.composer_name,
+            created_at=now,
+            updated_at=now,
+            metadata=dict(self.metadata),
+            agent_sessions={agent_name: agent_session.truncated_copy(event_index)},
+            parent_id=self.id,
+            forked_from={agent_name: event_index},
+        )
+        return new
 
     def add_event(
         self,

@@ -118,12 +118,17 @@ class Composer:
             workspace=self.workspace,
         )
 
-        from arox.plugins.capabilities import SUBAGENT
+        from arox.plugins.capabilities import FORK_SESSION, SUBAGENT
 
         def get_subagent(name: str):
             return self.subagents.get(name)
 
         main_agent.provide_capability(SUBAGENT, get_subagent)
+
+        async def _fork(agent_name: str, event_index: int) -> str:
+            return await self.fork_session(agent_name, event_index)
+
+        main_agent.provide_capability(FORK_SESSION, _fork)
 
         exposed_subagents = {
             name: agent
@@ -188,6 +193,18 @@ class Composer:
 
         for name, agent in self.all_agents().items():
             agent.restore_session(self.session.get_agent_session(name))
+
+    async def fork_session(self, agent_name: str, event_index: int) -> str:
+        """Fork the current session at ``(agent_name, event_index)``.
+
+        Persists both the current session (with its in-memory state) and
+        the new branch. The new branch is *not* swapped in — the user
+        resumes it via ``--resume <new_id>``. Returns the new session id.
+        """
+        new_session = self.session.fork_at(agent_name, event_index)
+        await self._save_session()
+        await self.session_store.save_session(new_session)
+        return new_session.id
 
     async def _save_session(self):
         last_user_messages = []

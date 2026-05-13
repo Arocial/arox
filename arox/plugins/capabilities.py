@@ -23,6 +23,13 @@ AGENT_INFO = Capability[Callable[[], str]](
 # Capability for resetting agent state
 AGENT_RESET = Capability[Callable[[], None]]("agent_reset", "Resets the agent's state")
 
+# Capability for forking the current session at an agent event index.
+# Returns the new branch session id.
+FORK_SESSION = Capability[Callable[[str, int], Any]](
+    "fork_session",
+    "Forks the current composer session at the given agent event index",
+)
+
 # Capability for providing persistent context that should survive compaction
 PERSISTENT_CONTEXT = Capability[Callable[[], list[ModelMessage]]](
     "persistent_context", "Provides messages that should persist across compaction"
