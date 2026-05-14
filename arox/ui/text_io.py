@@ -111,9 +111,8 @@ class TextIOAdapter(AbstractIOAdapter):
         await super().register_composer(composer)
 
         main_agent = composer.main_agent
-        shell = composer.shell
         merged_router = CompletionRouter()
-        merged_router.merge(shell.command_manager.completion_router)
+        merged_router.merge(composer.command_manager.completion_router)
         merged_router.merge(main_agent.command_manager.completion_router)
         completer = CommandCompleter(merged_router, agent=main_agent)
         self.user_input = UserInputGenerator(completer=completer)
@@ -136,7 +135,7 @@ class TextIOAdapter(AbstractIOAdapter):
     def _find_shell(self, agent):
         for composer in self.composers.values():
             if composer.main_agent is agent:
-                return getattr(composer, "shell", None)
+                return composer
         return None
 
     async def _flush_stdin(self):
@@ -152,8 +151,7 @@ class TextIOAdapter(AbstractIOAdapter):
 
     def _is_shell_io(self, adapter_io: IOEndpoint) -> bool:
         for composer in self.composers.values():
-            shell = getattr(composer, "shell", None)
-            if shell is not None and shell.adapter_io is adapter_io:
+            if composer.adapter_io is adapter_io:
                 return True
         return False
 

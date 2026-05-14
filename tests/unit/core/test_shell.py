@@ -43,7 +43,7 @@ def _make_composer(main_agent_session: AgentSession):
             return self.session
 
         async def handle_rewind(self, event: RewindEvent) -> str:
-            return await Composer.handle_rewind(self, event)
+            return await Composer.handle_rewind(self, event)  # type: ignore
 
     return MockComposer()
 
