@@ -253,44 +253,44 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             for m in self._event_messages(adapter_io, event)
         ]
 
-    async def _render_command_output(self, agent, output: str | None) -> None:
+    async def _render_command_output(self, target, output: str | None) -> None:
         """Stream a command's text output through the normal event pipeline."""
         if not output:
             return
         text_part = TextPart(content=output)
         await self.handle_event(
-            agent.adapter_io,
+            target.adapter_io,
             PartStartEvent(part=text_part, index=-1),
         )
         await self.handle_event(
-            agent.adapter_io,
+            target.adapter_io,
             PartEndEvent(part=text_part, index=-1),
         )
 
-    async def _reissue_pending_input(self, agent) -> None:
+    async def _reissue_pending_input(self, target) -> None:
         """Re-emit the current pending ChatInputEvent so the client sees a
         fresh ``data-input-request``. Used after handling a command that did
         not consume the agent's pending input."""
-        event = self.pending_inputs.get(agent.adapter_io)
+        event = self.pending_inputs.get(target.adapter_io)
         if event is None:
             return
-        queue = self.event_queues.setdefault(agent.adapter_io, asyncio.Queue())
-        await queue.put((agent.adapter_io, event))
+        queue = self.event_queues.setdefault(target.adapter_io, asyncio.Queue())
+        await queue.put((target.adapter_io, event))
 
-    async def _apply_input(self, agent, payload: dict) -> dict:
+    async def _apply_input(self, target, payload: dict) -> dict:
         if payload.get("cancel"):
-            cancel = getattr(agent, "cancel_foreground_task", None)
+            cancel = getattr(target, "cancel_foreground_task", None)
             if callable(cancel):
                 cancel()
             return {"status": "cancelled"}
 
         cmd = payload.get("command")
         if cmd is not None:
-            event = agent.command_manager.deserialize_event(cmd)
+            event = target.command_manager.deserialize_event(cmd)
             if event is None:
                 return {"status": "unknown_command"}
-            reply = await agent.command_manager.execute(event)
-            await self._render_command_output(agent, reply.output)
+            reply = await target.command_manager.execute(event)
+            await self._render_command_output(target, reply.output)
             return {"status": "ok", "output": reply.output}
 
         reply = payload.get("reply")
@@ -307,15 +307,15 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             # round-trip through the LLM. Mirrors the structured "command"
             # branch above and TextIOAdapter's slash handling.
             if isinstance(user_input, str) and user_input.startswith("/"):
-                cmd_reply = await agent.command_manager.try_handle_slash(user_input)
+                cmd_reply = await target.command_manager.try_handle_slash(user_input)
                 if cmd_reply is not None:
-                    await self._render_command_output(agent, cmd_reply.output)
+                    await self._render_command_output(target, cmd_reply.output)
                     # The agent is still blocked on its current ChatInputEvent;
                     # re-emit it so the client can submit again.
-                    await self._reissue_pending_input(agent)
+                    await self._reissue_pending_input(target)
                     return {"status": "ok", "output": cmd_reply.output}
 
-            await agent.adapter_io.send(
+            await target.adapter_io.send(
                 ChatInputReply(
                     req_id=req_id,
                     deferred_answers=dict(deferred),
@@ -323,25 +323,15 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     retry=bool(exception_input.get("retry", False)),
                 )
             )
-            self.pending_inputs.pop(agent.adapter_io, None)
+            self.pending_inputs.pop(target.adapter_io, None)
             return {"status": "ok"}
 
         return {"status": "noop"}
 
-    async def ws_handler(self, websocket: WebSocket, composer_id: str, agent_name: str):
+    async def ws_handler(self, websocket: WebSocket, target):
         from fastapi import WebSocketDisconnect
 
-        run_instance = self.run_instances.get(composer_id)
-        if not run_instance:
-            await websocket.close(code=4004, reason="composer not found")
-            return
-        composer = run_instance.composer
-        agent = composer.all_agents().get(agent_name)
-        if not agent:
-            await websocket.close(code=4004, reason="agent not found")
-            return
-
-        adapter_io = agent.adapter_io
+        adapter_io = target.adapter_io
         queue = self.event_queues.setdefault(adapter_io, asyncio.Queue())
 
         await websocket.accept()
@@ -364,7 +354,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                         for msg in self._event_messages(adapter_io, event):
                             await websocket.send_json(msg)
                 else:
-                    await self._apply_input(agent, payload)
+                    await self._apply_input(target, payload)
 
         out_task = asyncio.create_task(pump_out())
         in_task = asyncio.create_task(pump_in())
@@ -381,28 +371,12 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             in_task.cancel()
             await asyncio.gather(out_task, in_task, return_exceptions=True)
 
-    async def suggestions(
+    def suggestions(
         self,
-        composer_id: str,
-        agent_name: str,
+        target,
         command: str | None = None,
         q: str | None = None,
-    ):
-        run_instance = self.run_instances.get(composer_id)
-        if not run_instance:
-            raise HTTPException(
-                status_code=404, detail=f"Composer {composer_id} not found."
-            )
-        composer = run_instance.composer
-        agent = composer.all_agents().get(agent_name)
-        if not agent:
-            raise HTTPException(
-                status_code=404, detail=f"Agent {agent_name} not found."
-            )
-        command_manager = getattr(agent, "command_manager", None)
-        if command_manager is None:
-            return SuggestionResponse(items=[])
-
+    ) -> SuggestionResponse:
         # Synthesize the equivalent text+cursor a TUI buffer would have so
         # both UIs route through the same CompletionRouter. ``command`` is
         # the slash already committed (None when user is still picking one);
@@ -411,8 +385,13 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             text = f"/{command} {q or ''}"
         else:
             text = f"/{q or ''}"
+        # parse_request only consults the agent for @-completions; for a
+        # composer target, pass its main_agent so file refs still resolve.
+        from arox.core.composer import Composer
+
+        agent = target.main_agent if isinstance(target, Composer) else target
         req = parse_request(text, agent=agent)
-        results = command_manager.completion_router.complete(req)
+        results = target.command_manager.completion_router.complete(req)
 
         items = [
             SuggestionItem(
@@ -474,6 +453,11 @@ class VercelStreamServer:
             self.list_composers
         )
         self.app.delete("/api/composers/{composer_id}")(self.delete_composer)
+        self.app.websocket("/api/composers/{composer_id}/ws")(self.composer_ws)
+        self.app.get(
+            "/api/composers/{composer_id}/suggestions",
+            response_model=SuggestionResponse,
+        )(self.composer_suggestions)
         self.app.websocket("/api/composers/{composer_id}/agents/{agent_name}/ws")(
             self.ws
         )
@@ -551,8 +535,50 @@ class VercelStreamServer:
             run_instance.task.cancel()
         return {"status": "deleted"}
 
+    def _resolve_composer(self, composer_id: str):
+        run_instance = self.io_adapter.run_instances.get(composer_id)
+        if not run_instance:
+            raise HTTPException(
+                status_code=404, detail=f"Composer {composer_id} not found."
+            )
+        return run_instance.composer
+
+    def _resolve_agent(self, composer_id: str, agent_name: str):
+        composer = self._resolve_composer(composer_id)
+        agent = composer.all_agents().get(agent_name)
+        if not agent:
+            raise HTTPException(
+                status_code=404, detail=f"Agent {agent_name} not found."
+            )
+        return agent
+
     async def ws(self, websocket: WebSocket, composer_id: str, agent_name: str):
-        return await self.io_adapter.ws_handler(websocket, composer_id, agent_name)
+        run_instance = self.io_adapter.run_instances.get(composer_id)
+        if not run_instance:
+            await websocket.close(code=4004, reason="composer not found")
+            return
+        agent = run_instance.composer.all_agents().get(agent_name)
+        if not agent:
+            await websocket.close(code=4004, reason="agent not found")
+            return
+        return await self.io_adapter.ws_handler(websocket, agent)
+
+    async def composer_ws(self, websocket: WebSocket, composer_id: str):
+        run_instance = self.io_adapter.run_instances.get(composer_id)
+        if not run_instance:
+            await websocket.close(code=4004, reason="composer not found")
+            return
+        return await self.io_adapter.ws_handler(websocket, run_instance.composer)
+
+    async def composer_suggestions(
+        self,
+        composer_id: str,
+        command: str | None = None,
+        q: str | None = None,
+    ):
+        return self.io_adapter.suggestions(
+            self._resolve_composer(composer_id), command, q
+        )
 
     async def suggestions(
         self,
@@ -561,7 +587,9 @@ class VercelStreamServer:
         command: str | None = None,
         q: str | None = None,
     ):
-        return await self.io_adapter.suggestions(composer_id, agent_name, command, q)
+        return self.io_adapter.suggestions(
+            self._resolve_agent(composer_id, agent_name), command, q
+        )
 
     async def state(self, composer_id: str, agent_name: str):
         run_instance = self.io_adapter.run_instances.get(composer_id)

@@ -45,6 +45,37 @@ List all running composer instances.
 #### `DELETE /api/composers/{composer_id}`
 Stop and delete a composer instance.
 
+### Composer Interactions
+
+The following endpoints are per-composer (not per-agent). They target the composer itself — useful for composer-scope slash commands like `/rewind` whose handlers live on the composer rather than any individual agent.
+
+#### `WS /api/composers/{composer_id}/ws`
+Full-duplex WebSocket bound to the composer's own IO endpoint. The composer does not block on `ChatInputEvent`, so this channel is asymmetric: clients send commands; the server streams back any text output produced by those commands.
+
+**Server → Client messages** (JSON)
+
+Standard Vercel AI SDK data-stream frames (`text-start` / `text-delta` / `text-end`, etc.) emitted as the composer's command handlers write output to its IO endpoint.
+
+**Client → Server messages** (JSON)
+
+```json
+// invoke a composer-scope slash command (e.g. /rewind)
+{ "command": { "type": "RewindEvent", "n": 1 } }
+```
+
+`type` is the composer-side `CommandEvent` class name (e.g. `RewindEvent`); remaining fields populate that event's dataclass. Unknown command types are reported via the ack with `status: "unknown_command"`.
+
+The server responds to every client message with `{"status": "ok" | "unknown_command" | "noop", "output": "..."}`. The connection stays open until either side closes it.
+
+#### `GET /api/composers/{composer_id}/suggestions`
+Get command suggestions / completions for the composer's own slash commands (separate from any agent's commands).
+
+**Query Parameters:**
+- `command` (optional): slash name to get argument completions for. When omitted, returns the list of registered composer slash commands.
+- `q` (optional): filter / current input fragment.
+
+**Response:** `{"items": [{"id", "value", "label", "description"}, ...]}` — same shape as the agent-level suggestions endpoint.
+
 ### Agent Interactions
 
 The following endpoints are per-agent, meaning you must specify both the `composer_id` and the `agent_name` (which can be the `main_agent` or one of the `subagents` from the `ComposerInfo` response).
