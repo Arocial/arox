@@ -3,16 +3,17 @@ from __future__ import annotations
 import contextlib
 import logging
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic_ai import FunctionToolset
 
 from arox.core.config import ComposerConfig
-from arox.core.io import AbstractIOAdapter
+from arox.core.io import AbstractIOAdapter, IOHost
 from arox.core.llm_base import AgentDeps, DelegatableAgent, MainAgent
+from arox.core.plugin import CommandEvent, CommandManager
 from arox.core.session import ComposerSession, FileSessionStore, SessionStore
-from arox.core.shell import ComposerShell
 from arox.utils import import_class
 
 if TYPE_CHECKING:
@@ -21,7 +22,34 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class Composer:
+@dataclass(kw_only=True)
+class RewindEvent(CommandEvent):
+    slashes: ClassVar[tuple[str, ...]] = ("rewind",)
+    description: ClassVar[str] = (
+        "Rewind to a user turn - /rewind [N] (relative) or /rewind @<index> (absolute)"
+    )
+
+    # Exactly one of these is meaningful per event.
+    n: int | None = 1
+    event_index: int | None = None
+
+    @classmethod
+    def from_slash(cls, name, arg):
+        raw = (arg or "").strip()
+        if not raw:
+            return cls(n=1)
+        if raw.startswith("@"):
+            try:
+                return cls(n=None, event_index=int(raw[1:]))
+            except ValueError:
+                return cls(n=1)
+        try:
+            return cls(n=max(int(raw), 1))
+        except ValueError:
+            return cls(n=1)
+
+
+class Composer(IOHost):
     def __init__(
         self,
         name: str,
@@ -32,8 +60,8 @@ class Composer:
         cli_args: list[str] | dict[str, Any] | None = None,
         session_store: SessionStore | None = None,
     ):
+        super().__init__(io_adapter)
         self.name = name
-        self.io_adapter = io_adapter
         self.workspace = Path(workspace).absolute() if workspace else Path.cwd()
         self.session_id = session_id
         self.id = str(uuid.uuid4())
@@ -55,6 +83,36 @@ class Composer:
         self.subagents = {}
 
         self._init_agents()
+
+        self.command_manager = CommandManager(self)
+        self._register_builtin_commands()
+
+    @property
+    def agent_session(self):
+        return self.session
+
+    def _register_builtin_commands(self):
+        self.command_manager.register(RewindEvent, self.handle_rewind)
+
+    async def handle_rewind(self, event: RewindEvent) -> str:
+        main_agent = self.main_agent
+        agent_session = main_agent.agent_session
+        if event.event_index is not None:
+            target = event.event_index
+            anchors = set(agent_session.user_turn_anchors())
+            if target not in anchors:
+                return f"Cannot rewind to @{target}: not a user-turn anchor."
+        else:
+            n = event.n or 1
+            resolved = agent_session.resolve_user_turn(n)
+            if resolved is None:
+                return f"Cannot rewind {n} user turn(s): not enough history."
+            target = resolved
+        new_id = await self.fork_session(main_agent.name, target)
+        return (
+            f"Forked at event @{target}. New branch session id: {new_id}\n"
+            f"Resume with: --resume {new_id}"
+        )
 
     def _load_agent_hooks(self, agent, agent_config):
         pre_step_hooks = agent_config.pre_step_hooks
@@ -163,8 +221,6 @@ class Composer:
         self._load_agent_hooks(main_agent, agent_configs[main_agent_name])
         self.main_agent = main_agent
 
-        self.shell = ComposerShell(self)
-
     def all_agents(self) -> dict[str, LLMBaseAgent]:
         agents = dict(self.subagents)
         if self.main_agent:
@@ -247,7 +303,7 @@ class Composer:
             for agent in self.subagents.values():
                 await stack.enter_async_context(agent)
             await stack.enter_async_context(self.main_agent)
-            await stack.enter_async_context(self.shell)
+            await stack.enter_async_context(self)
 
             await self._init_session(self.session_id)
 

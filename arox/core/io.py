@@ -154,7 +154,7 @@ class AbstractIOAdapter(ABC):
 class IOHost:
     """Owns one side of an :func:`create_io_channel` pair and a receive loop.
 
-    Subclasses (currently :class:`LLMBaseAgent` and :class:`ComposerShell`)
+    Subclasses (currently :class:`LLMBaseAgent` and :class:`Composer`)
     add their own domain on top: tool execution, command handling, etc.
     The base just wires the channel, drives ``io_adapter._process_io`` for
     the adapter side, and dispatches inbound :class:`RequestEvent` to
