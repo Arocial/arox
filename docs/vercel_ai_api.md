@@ -92,6 +92,7 @@ Arox adds a few non-standard frames on the same channel:
 | type | fields | meaning |
 |---|---|---|
 | `data-input-request` | `data` | agent is waiting for user input; `data` carries `req_id`, `deferred_tools`, `normal_input`, `exception_input` |
+| `data-user-turn` | `eventIndex`, `messageId?` | a user-turn anchor was just recorded in the agent session; `eventIndex` is the absolute event index usable as `RewindEvent.event_index`. `messageId` echoes the `client_message_id` carried on the matching `reply`, when present |
 | `step-done` | — | current step fully drained; next step may follow on the same connection |
 | `ack` | `status` | acknowledgment of a client-sent message (see below) |
 
@@ -111,7 +112,7 @@ Arox adds a few non-standard frames on the same channel:
 { "cancel": true }
 ```
 
-The `reply` object's `req_id` MUST match the `req_id` carried in the `data-input-request` it answers; remaining fields (`deferred_tools`, `normal_input`, `exception_input`) mirror the matching fields of the request.
+The `reply` object's `req_id` MUST match the `req_id` carried in the `data-input-request` it answers; remaining fields (`deferred_tools`, `normal_input`, `exception_input`) mirror the matching fields of the request. An optional `client_message_id` may be included to identify the UI message that produced this reply — when set, the server stores it on the resulting `user_input` session event and echoes it in the subsequent `data-user-turn` frame as `messageId`, so the client can map UI messages back to absolute event indices without relying on ordering.
 
 The `command` payload is a structured `CommandEvent`: `type` is the event class name (e.g. `SetModelEvent`, `InfoEvent`, `ResetEvent`, `AgentCallEvent`, `FileAddEvent`, `CompactEvent`, `AddFileListEvent`), and the remaining fields populate that event's dataclass. The server runs the command locally and streams any reply text back as ordinary text frames; the ack carries `{"status": "ok" | "unknown_command", "output": "..."}`.
 
@@ -140,6 +141,8 @@ Get the current state for a specific agent: message history plus any pending inp
 ```
 
 `model` is the current `provider_model` on the agent (the same value `/info` reports), or `null` if unset.
+
+`user_turn_anchors` is a map from UI `message_id` to the absolute event index of its `user_input` session event. Pass a value as `RewindEvent.event_index` to fork at that turn. The server populates the map from `client_message_id` stored on each `user_input` event; for legacy events that predate the field, entries fall back to the corresponding user message's id by chronological order. New entries arrive live as `data-user-turn` frames on the agent WebSocket — each frame carries both `eventIndex` and (when the client supplied it) `messageId`.
 
 To recover any pending input prompt after reconnecting, send `{"resume": true}` over the WebSocket — the server will re-emit the currently pending `data-input-request`, if any.
 

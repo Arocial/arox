@@ -18,6 +18,12 @@ class StepDoneEvent:
 
 
 @dataclass
+class UserTurnRecordedEvent:
+    event_index: int
+    message_id: str | None = None
+
+
+@dataclass
 class _DeferredToolQuestion:
     question: str
 
@@ -67,6 +73,11 @@ class ChatInputReply(ReplyEvent):
     deferred_answers: dict[str, str | None] = field(default_factory=dict)
     user_input: str | None = None
     retry: bool = False
+    # Opaque id assigned by the UI to the user message that produced this
+    # reply. Stored on the resulting ``user_input`` session event so the UI
+    # can later map UI messages back to absolute event indices without
+    # relying on positional ordering.
+    client_message_id: str | None = None
 
     def is_abort(self, request: ChatInputEvent) -> bool:
         for key, tool in request.deferred_tools.items():
@@ -139,7 +150,19 @@ class ChatAgent(MainAgent, DelegatableAgent):
 
                 user_input = reply.user_input
                 if user_input is not None:
-                    self.agent_session.add_event("user_input", {"text": user_input})
+                    self.agent_session.add_event(
+                        "user_input",
+                        {
+                            "text": user_input,
+                            "client_message_id": reply.client_message_id,
+                        },
+                    )
+                    await self.agent_io.send(
+                        UserTurnRecordedEvent(
+                            event_index=len(self.agent_session.events) - 1,
+                            message_id=reply.client_message_id,
+                        )
+                    )
 
                 step_task = asyncio.create_task(
                     self.step(user_input, deferred_tool_results=deferred_results)

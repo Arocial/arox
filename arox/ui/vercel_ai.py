@@ -31,6 +31,7 @@ from arox.core.chat import (
     ChatInputEvent,
     ChatInputReply,
     StepDoneEvent,
+    UserTurnRecordedEvent,
 )
 from arox.core.completion import parse_request
 from arox.core.io import (
@@ -245,6 +246,15 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         elif isinstance(event, StepDoneEvent):
             messages.append({"type": "step-done"})
 
+        elif isinstance(event, UserTurnRecordedEvent):
+            frame: dict = {
+                "type": "data-user-turn",
+                "eventIndex": event.event_index,
+            }
+            if event.message_id is not None:
+                frame["messageId"] = event.message_id
+            messages.append(frame)
+
         return messages
 
     def _format_event(self, adapter_io: IOEndpoint, event) -> list[str]:
@@ -315,12 +325,14 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     await self._reissue_pending_input(target)
                     return {"status": "ok", "output": cmd_reply.output}
 
+            client_message_id = reply.get("client_message_id")
             await target.adapter_io.send(
                 ChatInputReply(
                     req_id=req_id,
                     deferred_answers=dict(deferred),
                     user_input=user_input,
                     retry=bool(exception_input.get("retry", False)),
+                    client_message_id=client_message_id,
                 )
             )
             self.pending_inputs.pop(target.adapter_io, None)
@@ -353,8 +365,10 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     if event is not None:
                         for msg in self._event_messages(adapter_io, event):
                             await websocket.send_json(msg)
+                    await websocket.send_json({"type": "ack", "status": "ok"})
                 else:
-                    await self._apply_input(target, payload)
+                    ack = await self._apply_input(target, payload)
+                    await websocket.send_json({"type": "ack", **ack})
 
         out_task = asyncio.create_task(pump_out())
         in_task = asyncio.create_task(pump_in())
@@ -609,9 +623,31 @@ class VercelStreamServer:
             msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages
         ]
 
+        # Pair each user UIMessage with the absolute event index of its
+        # corresponding ``user_input`` session event. Prefer the stored
+        # ``client_message_id`` (set when the UI submits its message id with
+        # the reply); fall back to positional pairing for legacy events that
+        # predate the field.
+        anchors_by_id: dict[str, int] = {}
+        agent_session = getattr(agent, "agent_session", None)
+        if agent_session is not None:
+            user_events = [
+                (i, ev)
+                for i, ev in enumerate(agent_session.events)
+                if ev.event_type == "user_input"
+            ]
+            user_msgs = [m for m in ui_messages if getattr(m, "role", None) == "user"]
+            for k, (event_idx, ev) in enumerate(user_events):
+                stored = (ev.data or {}).get("client_message_id")
+                if stored:
+                    anchors_by_id[stored] = event_idx
+                elif k < len(user_msgs):
+                    anchors_by_id[user_msgs[k].id] = event_idx
+
         return {
             "history": history,
             "model": getattr(agent, "provider_model", None),
+            "user_turn_anchors": anchors_by_id,
         }
 
     async def list_sessions(self):

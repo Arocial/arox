@@ -27,6 +27,7 @@ from arox.core.chat import (
     ChatInputEvent,
     ChatInputReply,
     StepDoneEvent,
+    UserTurnRecordedEvent,
 )
 from arox.core.completion import CompletionRouter, parse_request
 from arox.core.composer import Composer
@@ -180,7 +181,9 @@ class TextIOAdapter(AbstractIOAdapter):
             print(
                 f"tool call: {part.tool_call_id}: {part.tool_name} args: {str(part.args)[:100]}"
             )
-        elif isinstance(event, (FinalResultEvent, StepDoneEvent)):
+        elif isinstance(
+            event, (FinalResultEvent, StepDoneEvent, UserTurnRecordedEvent)
+        ):
             pass
         elif isinstance(event, ChatInputEvent):
             deferred_answers: dict[str, str | None] = {}
