@@ -4,6 +4,7 @@ import logging
 import math
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -148,3 +149,79 @@ class AbstractIOAdapter(ABC):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         pass
+
+
+class IOHost:
+    """Owns one side of an :func:`create_io_channel` pair and a receive loop.
+
+    Subclasses (currently :class:`LLMBaseAgent` and :class:`ComposerShell`)
+    add their own domain on top: tool execution, command handling, etc.
+    The base just wires the channel, drives ``io_adapter._process_io`` for
+    the adapter side, and dispatches inbound :class:`RequestEvent` to
+    handlers registered via :meth:`register_request_handler`.
+    """
+
+    def __init__(self, io_adapter: "AbstractIOAdapter"):
+        self.agent_io, self.adapter_io = create_io_channel()
+        self.io_adapter = io_adapter
+        self._stack = contextlib.AsyncExitStack()
+        self._request_handlers: dict[type[RequestEvent], Callable[[Any], Any]] = {}
+
+    def register_request_handler(
+        self,
+        event_type: type[RequestEvent],
+        handler: Callable[[Any], Any],
+    ) -> None:
+        """Register a handler for a :class:`RequestEvent` subclass.
+
+        Handlers may be sync or async; the receiver loop awaits coroutines.
+        If the handler returns a :class:`ReplyEvent`, it is sent back;
+        otherwise a default :class:`ReplyEvent` is sent.
+        """
+        self._request_handlers[event_type] = handler
+
+    async def _receive_loop(self) -> None:
+        while True:
+            try:
+                event = await self.agent_io.receive()
+            except (EndOfStream, ClosedResourceError):
+                return
+            if isinstance(event, RequestEvent):
+                handler = self._request_handlers.get(type(event))
+                if handler is None:
+                    logger.warning(
+                        "No handler registered for RequestEvent %s",
+                        type(event).__name__,
+                    )
+                    await self.agent_io.send(ReplyEvent(req_id=event.req_id))
+                    continue
+                try:
+                    result = handler(event)
+                    if asyncio.iscoroutine(result):
+                        result = await result
+                    if isinstance(result, ReplyEvent):
+                        result.req_id = event.req_id
+                        await self.agent_io.send(result)
+                    else:
+                        await self.agent_io.send(ReplyEvent(req_id=event.req_id))
+                except Exception:
+                    logger.exception(
+                        "Error handling RequestEvent %s", type(event).__name__
+                    )
+            else:
+                logger.debug(
+                    "Ignoring non-RequestEvent on adapter->host channel: %r",
+                    type(event).__name__,
+                )
+
+    async def __aenter__(self):
+        self._tg = asyncio.TaskGroup()
+        await self._stack.enter_async_context(self._tg)
+        self._tg.create_task(self.io_adapter._process_io(self.adapter_io))
+        await self._stack.enter_async_context(self.agent_io)
+        await self._stack.enter_async_context(self.adapter_io)
+        self._tg.create_task(self._receive_loop())
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self._stack.aclose()

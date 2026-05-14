@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import logging
 import re
 import uuid
@@ -10,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 import fastmcp
-from anyio import ClosedResourceError, EndOfStream
 from httpx import AsyncClient, HTTPStatusError, Timeout, TransportError
 from pydantic_ai import (
     AbstractToolset,
@@ -48,9 +46,7 @@ from arox.core.hooks import PostStepHook, PreStepHook
 from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
-    ReplyEvent,
-    RequestEvent,
-    create_io_channel,
+    IOHost,
 )
 from arox.core.session import AgentSession, _serialize_messages
 from arox.core.skills import build_skill_catalog, discover_skills
@@ -191,7 +187,7 @@ class AgentDeps:
     agent_io: IOEndpoint
 
 
-class LLMBaseAgent:
+class LLMBaseAgent(IOHost):
     def __init__(
         self,
         name: str,
@@ -200,6 +196,7 @@ class LLMBaseAgent:
         local_toolset: FunctionToolset[AgentDeps] | None = None,
         workspace: Path | str | None = None,
     ):
+        super().__init__(io_adapter)
         self.uuid = str(uuid.uuid4())
         self.name = name
         self.workspace = Path(workspace).absolute() if workspace else Path.cwd()
@@ -235,9 +232,6 @@ class LLMBaseAgent:
 
         self.parse_configs()
 
-        self._request_handlers: dict[
-            type[RequestEvent], Callable[[RequestEvent], Any]
-        ] = {}
         from arox.core.plugin import CommandManager
 
         self.command_manager = CommandManager(self)
@@ -252,59 +246,7 @@ class LLMBaseAgent:
             output_type=(DeferredToolRequests, str),
         )
 
-        self.agent_io, self.adapter_io = create_io_channel()
-        self.io_adapter = io_adapter
-
-        self._stack = contextlib.AsyncExitStack()
         self.reset()
-
-    def register_request_handler(
-        self,
-        event_type: type[RequestEvent],
-        handler: Callable[[Any], Any],
-    ) -> None:
-        """Register a handler for a :class:`RequestEvent` subclass.
-
-        Handlers may be sync or async; the receiver loop awaits coroutines.
-        If the handler returns a ReplyEvent, it will be sent back. Otherwise,
-        a default ReplyEvent is sent.
-        """
-        self._request_handlers[event_type] = handler
-
-    async def _request_loop(self) -> None:
-        while True:
-            try:
-                event = await self.agent_io.receive()
-            except (EndOfStream, ClosedResourceError):
-                return
-            if isinstance(event, RequestEvent):
-                handler = self._request_handlers.get(type(event))
-                if handler is None:
-                    logger.warning(
-                        "No handler registered for RequestEvent %s",
-                        type(event).__name__,
-                    )
-                    await self.agent_io.send(ReplyEvent(req_id=event.req_id))
-                    continue
-                try:
-                    result = handler(event)
-                    if asyncio.iscoroutine(result):
-                        result = await result
-
-                    if isinstance(result, ReplyEvent):
-                        result.req_id = event.req_id
-                        await self.agent_io.send(result)
-                    else:
-                        await self.agent_io.send(ReplyEvent(req_id=event.req_id))
-                except Exception:
-                    logger.exception(
-                        "Error handling RequestEvent %s", type(event).__name__
-                    )
-            else:
-                logger.warning(
-                    "Ignoring non-RequestEvent on adapter->agent channel: %r",
-                    type(event).__name__,
-                )
 
     async def handle_event(
         self, ctx: RunContext["AgentDeps"], events: AsyncIterable[AgentStreamEvent]
@@ -349,18 +291,10 @@ class LLMBaseAgent:
         return self._capabilities.get(capability, [])
 
     async def __aenter__(self):
-        tg = asyncio.TaskGroup()
-        await self._stack.enter_async_context(tg)
-        tg.create_task(self.io_adapter._process_io(self.adapter_io))
-        await self._stack.enter_async_context(self.agent_io)
-        await self._stack.enter_async_context(self.adapter_io)
-        tg.create_task(self._request_loop())
+        await super().__aenter__()
         if self.mcp_client:
             await self._stack.enter_async_context(self.mcp_client)
         return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self._stack.aclose()
 
     def add_local_tool(self, func, **kwargs):
         if not self.local_toolset:

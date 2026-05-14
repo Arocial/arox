@@ -2,22 +2,19 @@
 
 A :class:`ComposerShell` sits alongside the composer's main agent and owns
 commands whose scope is the whole composer session (``/rewind`` and future
-``/fork``, ``/switch`` etc.) rather than a single agent. It has its own
-``CommandManager``, its own pair of :class:`IOEndpoint` for system messages
-back to the UI, and a placeholder run loop kept symmetrical with the agent's.
+``/fork``, ``/switch`` etc.) rather than a single agent. It shares the
+:class:`IOHost` machinery with :class:`LLMBaseAgent`: its own pair of
+:class:`IOEndpoint` and receive loop, driven by the same adapter that
+serves the agents.
 """
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
-from anyio import ClosedResourceError, EndOfStream
-
-from arox.core.io import create_io_channel
+from arox.core.io import IOHost
 from arox.core.plugin import CommandEvent, CommandManager
 
 if TYPE_CHECKING:
@@ -53,14 +50,13 @@ class RewindEvent(CommandEvent):
             return cls(n=1)
 
 
-class ComposerShell:
+class ComposerShell(IOHost):
     """Lightweight host for composer-scope commands and system IO."""
 
     def __init__(self, composer: Composer):
+        super().__init__(composer.io_adapter)
         self.composer = composer
-        self.agent_io, self.adapter_io = create_io_channel()
         self.command_manager = CommandManager(self)
-        self._stack = contextlib.AsyncExitStack()
         self._register_builtin_commands()
 
     # CommandManager records the parsed command as a session event via
@@ -96,28 +92,3 @@ class ComposerShell:
             f"Forked at event @{target}. New branch session id: {new_id}\n"
             f"Resume with: --resume {new_id}"
         )
-
-    async def __aenter__(self):
-        tg = asyncio.TaskGroup()
-        await self._stack.enter_async_context(tg)
-        tg.create_task(self.composer.io_adapter._process_io(self.adapter_io))
-        await self._stack.enter_async_context(self.agent_io)
-        await self._stack.enter_async_context(self.adapter_io)
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        await self._stack.aclose()
-
-    async def run(self):
-        """Passive loop: drain shell-side events until cancellation.
-
-        At present nothing routes events into the shell's receive side;
-        the loop exists so the shell has a symmetric lifecycle with the
-        main agent and can be cancelled cleanly on shutdown.
-        """
-        try:
-            while True:
-                event = await self.agent_io.receive()
-                logger.debug("ComposerShell received unhandled event: %r", event)
-        except (EndOfStream, ClosedResourceError, asyncio.CancelledError):
-            pass

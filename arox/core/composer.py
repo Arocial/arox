@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import contextlib
 import logging
 import uuid
@@ -252,7 +251,6 @@ class Composer:
 
             await self._init_session(self.session_id)
 
-            shell_task = asyncio.create_task(self.shell.run())
             try:
                 for agent in self.subagents.values():
                     await agent.show_agent_info()
@@ -260,7 +258,4 @@ class Composer:
 
                 await self.main_agent.run()
             finally:
-                shell_task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await shell_task
                 await self._save_session()

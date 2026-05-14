@@ -29,6 +29,7 @@ def _make_composer(main_agent_session: AgentSession):
         session=session,
         main_agent=main_agent,
         fork_session=fork_session,
+        io_adapter=SimpleNamespace(),
     )
 
 
