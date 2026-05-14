@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import logging
 import uuid
@@ -12,6 +13,7 @@ from arox.core.config import ComposerConfig
 from arox.core.io import AbstractIOAdapter
 from arox.core.llm_base import AgentDeps, DelegatableAgent, MainAgent
 from arox.core.session import ComposerSession, FileSessionStore, SessionStore
+from arox.core.shell import ComposerShell
 from arox.utils import import_class
 
 if TYPE_CHECKING:
@@ -118,17 +120,12 @@ class Composer:
             workspace=self.workspace,
         )
 
-        from arox.plugins.capabilities import FORK_SESSION, SUBAGENT
+        from arox.plugins.capabilities import SUBAGENT
 
         def get_subagent(name: str):
             return self.subagents.get(name)
 
         main_agent.provide_capability(SUBAGENT, get_subagent)
-
-        async def _fork(agent_name: str, event_index: int) -> str:
-            return await self.fork_session(agent_name, event_index)
-
-        main_agent.provide_capability(FORK_SESSION, _fork)
 
         exposed_subagents = {
             name: agent
@@ -167,6 +164,8 @@ class Composer:
         self._load_agent_hooks(main_agent, agent_configs[main_agent_name])
         self.main_agent = main_agent
 
+        self.shell = ComposerShell(self)
+
     def all_agents(self) -> dict[str, LLMBaseAgent]:
         agents = dict(self.subagents)
         if self.main_agent:
@@ -202,6 +201,14 @@ class Composer:
         resumes it via ``--resume <new_id>``. Returns the new session id.
         """
         new_session = self.session.fork_at(agent_name, event_index)
+        self.session.add_event(
+            "fork",
+            {
+                "agent_name": agent_name,
+                "event_index": event_index,
+                "new_session_id": new_session.id,
+            },
+        )
         await self._save_session()
         await self.session_store.save_session(new_session)
         return new_session.id
@@ -241,9 +248,11 @@ class Composer:
             for agent in self.subagents.values():
                 await stack.enter_async_context(agent)
             await stack.enter_async_context(self.main_agent)
+            await stack.enter_async_context(self.shell)
 
             await self._init_session(self.session_id)
 
+            shell_task = asyncio.create_task(self.shell.run())
             try:
                 for agent in self.subagents.values():
                     await agent.show_agent_info()
@@ -251,4 +260,7 @@ class Composer:
 
                 await self.main_agent.run()
             finally:
+                shell_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await shell_task
                 await self._save_session()

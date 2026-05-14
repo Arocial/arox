@@ -111,9 +111,11 @@ class TextIOAdapter(AbstractIOAdapter):
         await super().register_composer(composer)
 
         main_agent = composer.main_agent
-        completer = CommandCompleter(
-            main_agent.command_manager.completion_router, agent=main_agent
-        )
+        shell = composer.shell
+        merged_router = CompletionRouter()
+        merged_router.merge(shell.command_manager.completion_router)
+        merged_router.merge(main_agent.command_manager.completion_router)
+        completer = CommandCompleter(merged_router, agent=main_agent)
         self.user_input = UserInputGenerator(completer=completer)
 
     async def __aenter__(self):
@@ -131,6 +133,12 @@ class TextIOAdapter(AbstractIOAdapter):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         signal.signal(signal.SIGINT, self.original_sigint_handler)
 
+    def _find_shell(self, agent):
+        for composer in self.composers.values():
+            if composer.main_agent is agent:
+                return getattr(composer, "shell", None)
+        return None
+
     async def _flush_stdin(self):
         import sys
 
@@ -142,11 +150,19 @@ class TextIOAdapter(AbstractIOAdapter):
         except (ImportError, Exception):
             pass
 
+    def _is_shell_io(self, adapter_io: IOEndpoint) -> bool:
+        for composer in self.composers.values():
+            shell = getattr(composer, "shell", None)
+            if shell is not None and shell.adapter_io is adapter_io:
+                return True
+        return False
+
     async def _handle_output(self, adapter_io: IOEndpoint, event):
         if isinstance(event, PartStartEvent):
             part = event.part
             if isinstance(part, (TextPart, ThinkingPart)):
-                print(f"{part.part_kind}: ", end="")
+                prefix = "shell" if self._is_shell_io(adapter_io) else part.part_kind
+                print(f"{prefix}: ", end="")
                 print(f"{part.content}", end="")
         elif isinstance(event, PartDeltaEvent):
             if isinstance(event.delta, (TextPartDelta, ThinkingPartDelta)):
@@ -199,7 +215,16 @@ class TextIOAdapter(AbstractIOAdapter):
                         await self._flush_stdin()
                         break
                     if line.startswith("/") and agent is not None:
-                        cmd_reply = await agent.command_manager.try_handle_slash(line)
+                        shell = self._find_shell(agent)
+                        cmd_reply = None
+                        if shell is not None:
+                            cmd_reply = await shell.command_manager.try_handle_slash(
+                                line
+                            )
+                        if cmd_reply is None:
+                            cmd_reply = await agent.command_manager.try_handle_slash(
+                                line
+                            )
                         if cmd_reply is not None and cmd_reply.output:
                             print(cmd_reply.output)
                         continue

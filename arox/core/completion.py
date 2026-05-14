@@ -122,6 +122,19 @@ class CompletionRouter:
     def register_trigger(self, char: str, provider: CompletionProvider) -> None:
         self._triggers.setdefault(char, []).append(provider)
 
+    def merge(self, other: CompletionRouter) -> None:
+        """Copy slash and trigger registrations from ``other`` into ``self``.
+
+        Existing entries with the same key are preserved; new ones from
+        ``other`` are added.
+        """
+        for name, item in other._slash_top.items():
+            self._slash_top.setdefault(name, item)
+        for name, sub in other._slash_sub.items():
+            self._slash_sub.setdefault(name, sub)
+        for char, providers in other._triggers.items():
+            self._triggers.setdefault(char, []).extend(providers)
+
     @property
     def slash_top(self) -> dict[str, CompletionItem]:
         return self._slash_top
