@@ -23,10 +23,10 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass(kw_only=True)
-class RewindEvent(CommandEvent):
-    slashes: ClassVar[tuple[str, ...]] = ("rewind",)
+class ForkEvent(CommandEvent):
+    slashes: ClassVar[tuple[str, ...]] = ("fork",)
     description: ClassVar[str] = (
-        "Rewind to a user turn - /rewind [N] (relative) or /rewind @<index> (absolute)"
+        "Fork the session at a user turn - /fork [N] (relative) or /fork @<index> (absolute)"
     )
 
     # Exactly one of these is meaningful per event.
@@ -92,21 +92,21 @@ class Composer(IOHost):
         return self.session
 
     def _register_builtin_commands(self):
-        self.command_manager.register(RewindEvent, self.handle_rewind)
+        self.command_manager.register(ForkEvent, self.handle_fork)
 
-    async def handle_rewind(self, event: RewindEvent) -> str:
+    async def handle_fork(self, event: ForkEvent) -> str:
         main_agent = self.main_agent
         agent_session = main_agent.agent_session
         if event.event_index is not None:
             target = event.event_index
             anchors = set(agent_session.user_turn_anchors())
             if target not in anchors:
-                return f"Cannot rewind to @{target}: not a user-turn anchor."
+                return f"Cannot fork at @{target}: not a user-turn anchor."
         else:
             n = event.n or 1
             resolved = agent_session.resolve_user_turn(n)
             if resolved is None:
-                return f"Cannot rewind {n} user turn(s): not enough history."
+                return f"Cannot fork {n} user turn(s) back: not enough history."
             target = resolved
         new_id = await self.fork_session(main_agent.name, target)
         return (

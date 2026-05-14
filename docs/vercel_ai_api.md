@@ -47,7 +47,7 @@ Stop and delete a composer instance.
 
 ### Composer Interactions
 
-The following endpoints are per-composer (not per-agent). They target the composer itself — useful for composer-scope slash commands like `/rewind` whose handlers live on the composer rather than any individual agent.
+The following endpoints are per-composer (not per-agent). They target the composer itself — useful for composer-scope slash commands like `/fork` whose handlers live on the composer rather than any individual agent.
 
 #### `WS /api/composers/{composer_id}/ws`
 Full-duplex WebSocket bound to the composer's own IO endpoint. The composer does not block on `ChatInputEvent`, so this channel is asymmetric: clients send commands; the server streams back any text output produced by those commands.
@@ -59,11 +59,11 @@ Standard Vercel AI SDK data-stream frames (`text-start` / `text-delta` / `text-e
 **Client → Server messages** (JSON)
 
 ```json
-// invoke a composer-scope slash command (e.g. /rewind)
-{ "command": { "type": "RewindEvent", "n": 1 } }
+// invoke a composer-scope slash command (e.g. /fork)
+{ "command": { "type": "ForkEvent", "n": 1 } }
 ```
 
-`type` is the composer-side `CommandEvent` class name (e.g. `RewindEvent`); remaining fields populate that event's dataclass. Unknown command types are reported via the ack with `status: "unknown_command"`.
+`type` is the composer-side `CommandEvent` class name (e.g. `ForkEvent`); remaining fields populate that event's dataclass. Unknown command types are reported via the ack with `status: "unknown_command"`.
 
 The server responds to every client message with `{"status": "ok" | "unknown_command" | "noop", "output": "..."}`. The connection stays open until either side closes it.
 
@@ -92,7 +92,7 @@ Arox adds a few non-standard frames on the same channel:
 | type | fields | meaning |
 |---|---|---|
 | `data-input-request` | `data` | agent is waiting for user input; `data` carries `req_id`, `deferred_tools`, `normal_input`, `exception_input` |
-| `data-user-turn` | `eventIndex`, `messageId?` | a user-turn anchor was just recorded in the agent session; `eventIndex` is the absolute event index usable as `RewindEvent.event_index`. `messageId` echoes the `client_message_id` carried on the matching `reply`, when present |
+| `data-user-turn` | `eventIndex`, `messageId?` | a user-turn anchor was just recorded in the agent session; `eventIndex` is the absolute event index usable as `ForkEvent.event_index`. `messageId` echoes the `client_message_id` carried on the matching `reply`, when present |
 | `step-done` | — | current step fully drained; next step may follow on the same connection |
 | `ack` | `status` | acknowledgment of a client-sent message (see below) |
 
@@ -142,7 +142,7 @@ Get the current state for a specific agent: message history plus any pending inp
 
 `model` is the current `provider_model` on the agent (the same value `/info` reports), or `null` if unset.
 
-`user_turn_anchors` is a map from UI `message_id` to the absolute event index of its `user_input` session event. Pass a value as `RewindEvent.event_index` to fork at that turn. The server populates the map from `client_message_id` stored on each `user_input` event; for legacy events that predate the field, entries fall back to the corresponding user message's id by chronological order. New entries arrive live as `data-user-turn` frames on the agent WebSocket — each frame carries both `eventIndex` and (when the client supplied it) `messageId`.
+`user_turn_anchors` is a map from UI `message_id` to the absolute event index of its `user_input` session event. Pass a value as `ForkEvent.event_index` to fork at that turn. The server populates the map from `client_message_id` stored on each `user_input` event; for legacy events that predate the field, entries fall back to the corresponding user message's id by chronological order. New entries arrive live as `data-user-turn` frames on the agent WebSocket — each frame carries both `eventIndex` and (when the client supplied it) `messageId`.
 
 To recover any pending input prompt after reconnecting, send `{"resume": true}` over the WebSocket — the server will re-emit the currently pending `data-input-request`, if any.
 
