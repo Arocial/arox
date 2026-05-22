@@ -10,9 +10,11 @@ from typing import TYPE_CHECKING, Any
 
 from anyio import ClosedResourceError, EndOfStream, create_memory_object_stream
 from pydantic_ai import (
+    PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
     TextPart,
+    TextPartDelta,
 )
 
 if TYPE_CHECKING:
@@ -118,6 +120,30 @@ class IOEndpoint(_BaseIOEndpoint):
             await self.tx.send(PartEndEvent(part=part, index=index))
             return None
         return await self._send(event)
+
+    @contextlib.asynccontextmanager
+    async def text_stream(self):
+        """Stream a single TextPart as PartStart + many PartDelta + PartEnd
+        under one synthetic index. Yields an async ``write(delta)`` callable.
+        Use when a logical block of text arrives in pieces (e.g. line-by-line
+        shell output) so the UI groups it as one message instead of N."""
+        index = self._next_synthetic_index()
+        part = TextPart(content="")
+        await self.tx.send(PartStartEvent(part=part, index=index))
+        try:
+
+            async def write(delta: str) -> None:
+                if not delta:
+                    return
+                await self.tx.send(
+                    PartDeltaEvent(
+                        delta=TextPartDelta(content_delta=delta), index=index
+                    )
+                )
+
+            yield write
+        finally:
+            await self.tx.send(PartEndEvent(part=part, index=index))
 
     async def receive(self) -> Any:
         return await self._receive()

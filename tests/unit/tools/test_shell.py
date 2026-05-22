@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 import signal
 import sys
@@ -16,6 +17,14 @@ class CaptureIO:
 
     async def send(self, msg):
         self.messages.append(msg)
+
+    @contextlib.asynccontextmanager
+    async def text_stream(self):
+        async def write(delta: str) -> None:
+            if delta:
+                self.messages.append(delta)
+
+        yield write
 
 
 class MockAgent:
@@ -144,8 +153,8 @@ async def test_foreground_timeout_promotes_to_background(plugin):
     bg = plugin._background[task_id]
     # Process should still be alive (not killed).
     assert bg.process.returncode is None
-    # Stream flag flipped off; finish notification flag flipped on.
-    assert bg.stream_to_io is False
+    # Streaming writer cleared; finish notification flag flipped on.
+    assert bg.stream_writer is None
     assert bg.notify_on_finish is True
 
 
