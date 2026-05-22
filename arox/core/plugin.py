@@ -220,7 +220,7 @@ class Plugin:
 
     async def history_processor(
         self,
-        ctx: RunContext[None],
+        ctx: RunContext[Any],
         messages: list[ModelMessage],
     ) -> list[ModelMessage]:
         """Process message history before sending to the model."""

@@ -20,8 +20,9 @@ from pydantic_ai import (
     RunContext,
     capture_run_messages,
 )
-from pydantic_ai.capabilities import ProcessHistory
+from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
 from pydantic_ai.exceptions import ModelAPIError
+from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -39,7 +40,6 @@ from pydantic_ai.providers import (
 )
 from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
-from pydantic_ai.toolsets.fastmcp import FastMCPToolset
 from tenacity import (
     before_sleep_log,
     retry_if_exception_type,
@@ -122,7 +122,7 @@ def infer_provider(
 
     if provider.startswith("gateway/"):
         upstream_provider = provider.removeprefix("gateway/")
-        return gateway.gateway_provider(upstream_provider, **kwargs)  # type: ignore
+        return gateway.gateway_provider(upstream_provider, **kwargs)
     elif provider in ("google-vertex", "google-gla"):
         # Google GenAI SDK uses HttpOptions.timeout for both the httpx
         # per-request timeout AND the X-Server-Timeout header sent to the
@@ -147,7 +147,7 @@ def infer_provider(
         return google.GoogleProvider(**kwargs)
     else:
         provider_class = infer_provider_class(provider)
-        return provider_class(**kwargs)  # type: ignore
+        return provider_class(**kwargs)
 
 
 def _complete_pending_tool_calls(messages: list[ModelMessage]) -> None:
@@ -235,7 +235,7 @@ class LLMBaseAgent(IOHost):
         self.mcp_client = None
         if mcp_server_configs:
             self.mcp_client = fastmcp.Client({"mcpServers": mcp_server_configs})
-            mcp_toolset = FastMCPToolset[AgentDeps](self.mcp_client)
+            mcp_toolset = MCPToolset[AgentDeps](self.mcp_client)
             toolsets.append(mcp_toolset)
 
         self.parse_configs()
@@ -244,8 +244,9 @@ class LLMBaseAgent(IOHost):
 
         self.command_manager = CommandManager(self)
         self.plugins = self.load_plugins()
-        capabilities = [
-            ProcessHistory(plugin.history_processor) for plugin in self.plugins
+        capabilities: list[AbstractCapability[AgentDeps]] = [
+            ProcessHistory[AgentDeps](plugin.history_processor)
+            for plugin in self.plugins
         ]
 
         self.pydantic_agent = Agent[AgentDeps, DeferredToolRequests | str](
@@ -421,7 +422,7 @@ class LLMBaseAgent(IOHost):
         message_history: list[ModelMessage],
         deferred_tool_results: DeferredToolResults | None = None,
         on_failure: Callable[[list[ModelMessage]], None] | None = None,
-    ) -> AgentRunResult[DeferredToolRequests | str]:  # type: ignore[return]
+    ) -> AgentRunResult[DeferredToolRequests | str]:  # ty: ignore[invalid-return-type]
         """Run a single LLM inference with fallback model handling.
 
         Stateless w.r.t. the agent's own message_history / agent_session: the

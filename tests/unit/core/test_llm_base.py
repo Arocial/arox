@@ -252,7 +252,7 @@ system_prompt = "Hi."
         calls.append(ref)
         original_set_model(ref)
 
-    agent.set_model = spy  # type: ignore[method-assign]
+    agent.set_model = spy  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
     async with agent:
         agent.register_request_handler(

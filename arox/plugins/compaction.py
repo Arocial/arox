@@ -1,7 +1,7 @@
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic_ai import (
     ModelMessage,
@@ -124,7 +124,7 @@ class CompactionPlugin(Plugin):
 
     async def history_processor(
         self,
-        ctx: RunContext[None],
+        ctx: RunContext[Any],
         messages: list[ModelMessage],
     ) -> list[ModelMessage]:
         threshold = self._resolve_token_threshold()

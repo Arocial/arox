@@ -2,7 +2,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from pydantic_ai import (
     BinaryContent,
@@ -475,7 +475,7 @@ class FilePlugin(Plugin):
             return "\nNo chat files currently loaded."
 
     async def history_processor(
-        self, ctx: RunContext[None], messages: list[ModelMessage]
+        self, ctx: RunContext[Any], messages: list[ModelMessage]
     ) -> list[ModelMessage]:
         if messages and isinstance(messages[-1], ModelRequest):
             pending_text_files, pending_binary = self.consume_pending()
@@ -488,7 +488,7 @@ class FilePlugin(Plugin):
                 mime_type, _ = mimetypes.guess_type(path)
                 if not mime_type:
                     mime_type = "application/octet-stream"
-                extra_content.append(BinaryContent(data=data, media_type=mime_type))  # type: ignore
+                extra_content.append(BinaryContent(data=data, media_type=mime_type))
 
             if extra_content:
                 new_part = UserPromptPart(content=extra_content)

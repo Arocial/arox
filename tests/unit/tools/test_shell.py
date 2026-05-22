@@ -246,7 +246,7 @@ async def test_kill_escalates_to_sigkill_when_term_ignored(plugin, monkeypatch):
         if any("READY" in line for line in bg.output_lines):
             break
     else:
-        pytest.fail("child did not become ready")
+        pytest.fail("child did not become ready")  # ty: ignore[invalid-argument-type]
 
     await plugin.kill_shell(task_id=task_id, description="force kill")
     assert bg.process.returncode == -signal.SIGKILL
@@ -297,7 +297,7 @@ async def test_background_kills_child_process_tree(plugin):
         if any("CHILD_PID=" in line for line in bg.output_lines):
             break
     else:
-        pytest.fail("child pid not reported")
+        pytest.fail("child pid not reported")  # ty: ignore[invalid-argument-type]
 
     pid_line = next(line for line in bg.output_lines if "CHILD_PID=" in line)
     child_pid = int(pid_line.split("CHILD_PID=", 1)[1].strip().lstrip("!"))

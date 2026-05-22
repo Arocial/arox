@@ -71,7 +71,7 @@ system_prompt = "Hi there."
     async def failing_step(*args, **kwargs):
         raise RuntimeError("step blew up")
 
-    agent.step = failing_step  # type: ignore[method-assign]
+    agent.step = failing_step  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
     async with io_adapter, agent:
         await agent.run()

@@ -1,7 +1,7 @@
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import git
 from pydantic_ai import ModelMessage, ModelRequest, RunContext, UserPromptPart
@@ -68,7 +68,7 @@ class RepoPlugin(Plugin):
         self.add_project_files()
 
     async def history_processor(
-        self, ctx: RunContext[None], messages: list[ModelMessage]
+        self, ctx: RunContext[Any], messages: list[ModelMessage]
     ) -> list[ModelMessage]:
         if messages and isinstance(messages[-1], ModelRequest):
             if self._pending_project_file_list:
