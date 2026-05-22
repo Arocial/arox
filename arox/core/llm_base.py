@@ -202,7 +202,7 @@ class LLMBaseAgent(IOHost):
         self.workspace = Path(workspace).absolute() if workspace else Path.cwd()
         self.agent_session: AgentSession = AgentSession(agent_name=name)
         self.llm_context_id: str = str(uuid.uuid4())
-        self._capabilities: dict[Any, Any] = {}
+        self._slots: dict[Any, Any] = {}
         self.model_ref = None
         self.additional_prompt = ""
 
@@ -278,17 +278,17 @@ class LLMBaseAgent(IOHost):
                 )
         return plugins
 
-    def provide_capability(self, capability: Any, provider: Any):
-        """Register a provider for a specific capability."""
-        if capability not in self._capabilities:
-            self._capabilities[capability] = []
-        self._capabilities[capability].append(provider)
+    def provide_slot(self, slot: Any, provider: Any):
+        """Register a provider for a specific slot."""
+        if slot not in self._slots:
+            self._slots[slot] = []
+        self._slots[slot].append(provider)
 
-    def get_capability(self, capability: Any) -> list[Any]:
+    def get_slot(self, slot: Any) -> list[Any]:
         """
-        Get the providers for a capability
+        Get the providers for a slot
         """
-        return self._capabilities.get(capability, [])
+        return self._slots.get(slot, [])
 
     async def __aenter__(self):
         await super().__aenter__()

@@ -5,7 +5,7 @@ from typing import ClassVar
 from arox.core.completion import CompletionItem, CompletionRequest
 from arox.core.llm_base import DelegatableAgent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin
-from arox.plugins.capabilities import AGENT_INFO, AGENT_RESET, SUBAGENT
+from arox.plugins.slots import AGENT_INFO, AGENT_RESET, SUBAGENT
 
 logger = logging.getLogger(__name__)
 
@@ -81,7 +81,7 @@ class CorePlugin(Plugin):
 
     async def handle_info(self, event: InfoEvent) -> str:
         lines = [f"Current model: {getattr(self.agent, 'provider_model', 'Unknown')}"]
-        for provider in self.agent.get_capability(AGENT_INFO):
+        for provider in self.agent.get_slot(AGENT_INFO):
             info = await provider()
             if info:
                 lines.append(info)
@@ -89,7 +89,7 @@ class CorePlugin(Plugin):
 
     async def handle_reset(self, event: ResetEvent) -> str:
         self.agent.reset()
-        for provider in self.agent.get_capability(AGENT_RESET):
+        for provider in self.agent.get_slot(AGENT_RESET):
             provider()
         return "Reset complete."
 
@@ -98,7 +98,7 @@ class CorePlugin(Plugin):
             return "Usage: /agent <name> [task]"
 
         subagent = None
-        for get_subagent_func in self.agent.get_capability(SUBAGENT):
+        for get_subagent_func in self.agent.get_slot(SUBAGENT):
             subagent = get_subagent_func(event.subagent_name)
             if subagent:
                 break

@@ -7,7 +7,7 @@ import git
 from pydantic_ai import ModelMessage, ModelRequest, RunContext, UserPromptPart
 
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin
-from arox.plugins.capabilities import PROJECT_FILES
+from arox.plugins.slots import PROJECT_FILES
 
 if TYPE_CHECKING:
     from arox.core.llm_base import LLMBaseAgent
@@ -28,7 +28,7 @@ class RepoPlugin(Plugin):
         self._pending_project_file_list = False
 
         # Register as a provider for "project_files"
-        self.agent.provide_capability(PROJECT_FILES, self._get_tracked_files)
+        self.agent.provide_slot(PROJECT_FILES, self._get_tracked_files)
 
     def _get_tracked_files(self):
         try:

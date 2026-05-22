@@ -17,7 +17,7 @@ from rapidfuzz import fuzz
 
 from arox.core.completion import CompletionItem, CompletionRequest
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, tool
-from arox.plugins.capabilities import (
+from arox.plugins.slots import (
     AGENT_INFO,
     AGENT_RESET,
     PERSISTENT_CONTEXT,
@@ -56,9 +56,9 @@ class FilePlugin(Plugin):
         self.session_files = []
         self.persistent_files: dict[str, str] = {}
 
-        self.agent.provide_capability(AGENT_INFO, self.get_info)
-        self.agent.provide_capability(AGENT_RESET, self.reset)
-        self.agent.provide_capability(PERSISTENT_CONTEXT, self.get_persistent_context)
+        self.agent.provide_slot(AGENT_INFO, self.get_info)
+        self.agent.provide_slot(AGENT_RESET, self.reset)
+        self.agent.provide_slot(PERSISTENT_CONTEXT, self.get_persistent_context)
 
         self.reset()
 
@@ -119,7 +119,7 @@ class FilePlugin(Plugin):
 
     def candidates(self):
         provided_files = []
-        for get_files_func in self.agent.get_capability(PROJECT_FILES):
+        for get_files_func in self.agent.get_slot(PROJECT_FILES):
             files = get_files_func()
             if files:
                 provided_files.extend(files)

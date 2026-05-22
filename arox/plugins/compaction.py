@@ -13,7 +13,7 @@ from pydantic_ai import (
 from arox.core.llm_base import LLMBaseAgent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin
 from arox.core.session import _serialize_messages
-from arox.plugins.capabilities import PERSISTENT_CONTEXT, SUBAGENT
+from arox.plugins.slots import PERSISTENT_CONTEXT, SUBAGENT
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +145,7 @@ class CompactionPlugin(Plugin):
         return messages
 
     def _find_compaction_agent(self) -> CompactionAgent | None:
-        for get_subagent in self.agent.get_capability(SUBAGENT):
+        for get_subagent in self.agent.get_slot(SUBAGENT):
             sub = get_subagent(COMPACTION_AGENT_NAME)
             if isinstance(sub, CompactionAgent):
                 return sub
@@ -184,7 +184,7 @@ class CompactionPlugin(Plugin):
         compacted_messages: list[ModelMessage] = [new_request]
 
         # Add persistent context (e.g. agents.md)
-        for get_persistent in agent.get_capability(PERSISTENT_CONTEXT):
+        for get_persistent in agent.get_slot(PERSISTENT_CONTEXT):
             compacted_messages.extend(get_persistent())
 
         await agent.agent_io.send("Conversation history compacted successfully.")

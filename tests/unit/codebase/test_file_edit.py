@@ -20,15 +20,15 @@ class MockAgent:
     def __init__(self, workspace):
         self.workspace = workspace
         self.agent_io = None
-        self._capabilities = {}
+        self._slots = {}
 
-    def provide_capability(self, capability, provider):
-        if capability not in self._capabilities:
-            self._capabilities[capability] = []
-        self._capabilities[capability].append(provider)
+    def provide_slot(self, slot, provider):
+        if slot not in self._slots:
+            self._slots[slot] = []
+        self._slots[slot].append(provider)
 
-    def get_capability(self, capability):
-        return self._capabilities.get(capability, [])
+    def get_slot(self, slot):
+        return self._slots.get(slot, [])
 
 
 class TestFileEdit:

@@ -16,7 +16,7 @@ uv run mkdocs serve  # Serve docs at http://127.0.0.1:3420
 
 ### Hierarchy: App → Composer → Agents
 
-An **App** is a runnable process that owns one `IOAdapter` and hosts one or more **Composers**. Each `Composer` (`arox/core/composer.py`) wires together a **main agent** plus zero or more **subagents** against a single workspace, driven by `ComposerConfig`. The main agent runs the user-facing loop; subagents are exposed to it as callable tools (and via the `SUBAGENT` capability) so it can delegate tasks directly.
+An **App** is a runnable process that owns one `IOAdapter` and hosts one or more **Composers**. Each `Composer` (`arox/core/composer.py`) wires together a **main agent** plus zero or more **subagents** against a single workspace, driven by `ComposerConfig`. The main agent runs the user-facing loop; subagents are exposed to it as callable tools (and via the `SUBAGENT` slot) so it can delegate tasks directly.
 
 Agent types and which agent to instantiate come from config (`arox/core/config.py`): `AppConfig` / `ComposerConfig` / `AgentConfig` are resolved by `load_config` from layered YAML plus CLI overrides.
 
@@ -47,7 +47,7 @@ IO is split into two layers: per-agent channels and app-level adapters.
   - `tools()` — Python functions exposed to the LLM (`@tool`)
   - `commands()` — slash commands for the human (`@command`)
   - `history_processor()` — async hook to modify message history before LLM calls
-- **`Capability`** (`arox/core/capability.py`): typed token for loose coupling between plugins/agents. Producers call `agent.provide_capability(cap, impl)`; consumers call `agent.get_capability(cap)`. Built-in capabilities are in `arox/plugins/capabilities.py` (e.g. `SUBAGENT`, `PERSISTENT_CONTEXT`).
+- **`Slot`** (`arox/core/slot.py`): typed token for loose coupling between plugins/agents. Producers call `agent.provide_slot(slot, impl)`; consumers call `agent.get_slot(slot)`. Built-in slots are in `arox/plugins/slots.py` (e.g. `SUBAGENT`, `PERSISTENT_CONTEXT`).
 - **Skills** (`arox/core/skills.py`): discovered from `.arox/skills/` in the workspace and injected into the agent's system prompt as a catalog. `AgentConfig.skills` restricts which are visible.
 - **MCP**: each agent can connect to MCP servers through its `pydantic_ai` client, exposing remote tools alongside local ones.
 - **Hooks**: `pre_step_hooks` / `post_step_hooks` from `AgentConfig` are loaded via entry points and attached by the composer around each inference step.

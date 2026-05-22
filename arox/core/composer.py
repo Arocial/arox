@@ -177,12 +177,12 @@ class Composer(IOHost):
             workspace=self.workspace,
         )
 
-        from arox.plugins.capabilities import SUBAGENT
+        from arox.plugins.slots import SUBAGENT
 
         def get_subagent(name: str):
             return self.subagents.get(name)
 
-        main_agent.provide_capability(SUBAGENT, get_subagent)
+        main_agent.provide_slot(SUBAGENT, get_subagent)
 
         exposed_subagents = {
             name: agent

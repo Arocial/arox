@@ -3,9 +3,9 @@ from typing import TypeVar
 T = TypeVar("T")
 
 
-class Capability[T]:
+class Slot[T]:
     """
-    Represents a typed capability that can be provided and consumed.
+    Represents a typed slot that can be filled by providers and read by consumers.
     """
 
     def __init__(self, name: str, description: str = ""):
@@ -16,6 +16,6 @@ class Capability[T]:
         return hash(self.name)
 
     def __eq__(self, other):
-        if isinstance(other, Capability):
+        if isinstance(other, Slot):
             return self.name == other.name
         return False
