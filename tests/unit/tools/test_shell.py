@@ -77,7 +77,58 @@ async def test_foreground_stderr_captured(plugin):
         command="echo onerr 1>&2",
         description="Write to stderr",
     )
-    assert "onerr" in result
+    assert "[stderr] onerr" in result
+
+
+@pytest.mark.asyncio
+async def test_timeout_clamped_to_max(plugin, monkeypatch, caplog):
+    monkeypatch.setattr("arox.plugins.shell.MAX_TIMEOUT_SECONDS", 0)
+    with caplog.at_level("WARNING", logger="arox.plugins.shell"):
+        result = await plugin.shell(
+            command="sleep 30",
+            description="Will clamp",
+            timeout=9999,
+        )
+    assert "promoted to background" in result
+    assert any("clamping" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_kill_drains_pending_output(plugin):
+    # Emit output then sleep; kill while sleeping. Drained output must be
+    # captured before kill_shell returns.
+    start = await plugin.shell(
+        command="echo BEFORE_KILL; sleep 30",
+        description="Emit then sleep",
+        run_in_background=True,
+    )
+    task_id = _task_id_from(start)
+    bg = plugin._background[task_id]
+    for _ in range(50):
+        await asyncio.sleep(0.05)
+        if any("BEFORE_KILL" in line for line in bg.captured_lines()):
+            break
+    await plugin.kill_shell(task_id=task_id, description="stop")
+    # After kill returns, drain task should be done (output flushed).
+    assert bg.drain_task is None or bg.drain_task.done()
+
+
+@pytest.mark.asyncio
+async def test_head_tail_truncation_marker(plugin, monkeypatch):
+    # Force small head/tail buffers so we can exercise the truncation path
+    # without producing huge output. The field default_factory reads the
+    # module constant at instance-creation time, so monkeypatching the
+    # constants is enough.
+    monkeypatch.setattr("arox.plugins.shell.HEAD_BUFFER_LINES", 3)
+    monkeypatch.setattr("arox.plugins.shell.TAIL_BUFFER_LINES", 3)
+    result = await plugin.shell(
+        command="for i in 1 2 3 4 5 6 7 8 9 10; do echo line$i; done",
+        description="Produce 10 lines",
+    )
+    assert "line1" in result and "line2" in result and "line3" in result  # head
+    assert "line8" in result and "line9" in result and "line10" in result  # tail
+    assert "truncated" in result
+    assert "line5" not in result  # middle dropped
 
 
 @pytest.mark.asyncio
@@ -243,7 +294,7 @@ async def test_kill_escalates_to_sigkill_when_term_ignored(plugin, monkeypatch):
 
     for _ in range(50):
         await asyncio.sleep(0.05)
-        if any("READY" in line for line in bg.output_lines):
+        if any("READY" in line for line in bg.captured_lines()):
             break
     else:
         pytest.fail("child did not become ready")  # ty: ignore[invalid-argument-type]
@@ -294,13 +345,13 @@ async def test_background_kills_child_process_tree(plugin):
     # Wait for the child pid to be reported.
     for _ in range(50):
         await asyncio.sleep(0.05)
-        if any("CHILD_PID=" in line for line in bg.output_lines):
+        if any("CHILD_PID=" in line for line in bg.captured_lines()):
             break
     else:
         pytest.fail("child pid not reported")  # ty: ignore[invalid-argument-type]
 
-    pid_line = next(line for line in bg.output_lines if "CHILD_PID=" in line)
-    child_pid = int(pid_line.split("CHILD_PID=", 1)[1].strip().lstrip("!"))
+    pid_line = next(line for line in bg.captured_lines() if "CHILD_PID=" in line)
+    child_pid = int(pid_line.split("CHILD_PID=", 1)[1].strip())
 
     await plugin.kill_shell(task_id=task_id, description="terminate")
     await asyncio.sleep(0.2)

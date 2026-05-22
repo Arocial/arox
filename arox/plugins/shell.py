@@ -6,35 +6,46 @@ import sys
 import time
 import uuid
 from collections import deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
+from itertools import chain
 
 from arox.core.plugin import Plugin, tool
 from arox.plugins.slots import AGENT_INFO, AGENT_RESET
-from arox.utils import truncate_content
 
 logger = logging.getLogger(__name__)
 
-MAX_BACKGROUND_BUFFER_LINES = 5000
+HEAD_BUFFER_LINES = 1000
+TAIL_BUFFER_LINES = 4000
 KILL_GRACE_SECONDS = 5
 POLL_BASE_DELAY = 20
 POLL_MAX_DELAY = 300
+MAX_TIMEOUT_SECONDS = 600
+MAX_RENDER_BYTES = 100 * 1024
+DRAIN_FLUSH_TIMEOUT = 2.0
+DEFAULT_SHELL_UNIX = "/bin/bash"
+
+
+def _select_shell() -> str:
+    if sys.platform == "win32":
+        return os.environ.get("COMSPEC", "cmd.exe")
+    override = os.environ.get("AROX_SHELL")
+    if override:
+        return override
+    for candidate in (DEFAULT_SHELL_UNIX, "/bin/sh"):
+        if os.path.exists(candidate):
+            return candidate
+    return DEFAULT_SHELL_UNIX
 
 
 def get_shell_context():
-    import os
     import platform
-    import sys
 
-    if sys.platform == "win32":
-        shell_path = os.environ.get("COMSPEC", "cmd.exe")
-    else:
-        shell_path = os.environ.get("SHELL", "/bin/bash")
-    shell_name = os.path.basename(shell_path)
-
+    shell_path = _select_shell()
     return {
         "os_info": platform.system(),
         "os_release": platform.release(),
-        "shell_type": shell_name,
+        "shell_type": os.path.basename(shell_path),
     }
 
 
@@ -45,10 +56,10 @@ class BackgroundShell:
     description: str
     process: asyncio.subprocess.Process
     started_at: float
-    output_lines: deque = field(
-        default_factory=lambda: deque(maxlen=MAX_BACKGROUND_BUFFER_LINES)
-    )
-    read_offset: int = 0
+    head_lines: list[str] = field(default_factory=list)
+    tail_lines: deque = field(default_factory=lambda: deque(maxlen=TAIL_BUFFER_LINES))
+    total_lines: int = 0
+    read_total: int = 0
     exit_code: int | None = None
     finished_at: float | None = None
     drain_task: asyncio.Task | None = None
@@ -59,6 +70,31 @@ class BackgroundShell:
     def elapsed(self) -> float:
         end = self.finished_at if self.finished_at is not None else time.monotonic()
         return end - self.started_at
+
+    def append_line(self, line: str) -> None:
+        if len(self.head_lines) < HEAD_BUFFER_LINES:
+            self.head_lines.append(line)
+        self.tail_lines.append(line)
+        self.total_lines += 1
+
+    def captured_lines(self) -> Iterable[str]:
+        """Iterable view of retained lines (head + tail, may overlap)."""
+        return chain(self.head_lines, self.tail_lines)
+
+    def render_full(self) -> list[str]:
+        """Contiguous view of captured output, with a truncation marker
+        if a gap exists between the head and tail buffers."""
+        if self.total_lines <= len(self.tail_lines):
+            return list(self.tail_lines)
+        dropped_from_tail = self.total_lines - len(self.tail_lines)
+        if dropped_from_tail <= len(self.head_lines):
+            return self.head_lines[:dropped_from_tail] + list(self.tail_lines)
+        missing = self.total_lines - len(self.head_lines) - len(self.tail_lines)
+        return [
+            *self.head_lines,
+            f"... ({missing} lines truncated) ...",
+            *self.tail_lines,
+        ]
 
 
 class ShellPlugin(Plugin):
@@ -71,12 +107,10 @@ class ShellPlugin(Plugin):
         self.agent.provide_slot(AGENT_INFO, self._get_info)
 
     def _get_cmd(self, command: str) -> list[str]:
+        shell_path = _select_shell()
         if sys.platform == "win32":
-            shell_path = os.environ.get("COMSPEC", "cmd.exe")
             return [shell_path, "/c", command]
-        else:
-            shell_path = os.environ.get("SHELL", "/bin/bash")
-            return [shell_path, "-c", command]
+        return [shell_path, "-c", command]
 
     async def _spawn(self, command: str) -> asyncio.subprocess.Process:
         cmd_args = self._get_cmd(command)
@@ -124,6 +158,15 @@ class ShellPlugin(Plugin):
             self._signal_group(process, signal.SIGKILL)
             await process.wait()
 
+    async def _flush_drain(self, bg: BackgroundShell) -> None:
+        drain = bg.drain_task
+        if drain is None or drain.done():
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(drain), timeout=DRAIN_FLUSH_TIMEOUT)
+        except (TimeoutError, asyncio.CancelledError):
+            pass
+
     def _allocate_bg(
         self,
         process: asyncio.subprocess.Process,
@@ -156,8 +199,8 @@ class ShellPlugin(Plugin):
                 if not line:
                     return
                 text = line.decode(errors="replace").rstrip("\r\n")
-                display = f"!{text}" if is_err else text
-                bg.output_lines.append(display)
+                display = f"[stderr] {text}" if is_err else text
+                bg.append_line(display)
                 if bg.stream_to_io:
                     try:
                         await self.agent.agent_io.send(f"$ {display}")
@@ -177,6 +220,13 @@ class ShellPlugin(Plugin):
         finally:
             bg.exit_code = bg.process.returncode
             bg.finished_at = time.monotonic()
+            logger.info(
+                "Task %s finished: %s (exit %s, elapsed %.1fs)",
+                bg.task_id,
+                bg.description,
+                bg.exit_code,
+                bg.elapsed(),
+            )
             if bg.notify_on_finish:
                 try:
                     await self.agent.agent_io.send(
@@ -194,24 +244,36 @@ class ShellPlugin(Plugin):
         timeout: int | None = 100,
         run_in_background: bool = False,
     ) -> str:
-        """Run arbitrary shell commands in the system's shell and return its output.
+        """Run a shell command and return its output.
 
         Environment Info:
         - OS: {{ os_info }} {{ os_release }}
-        - Shell: {{ shell_type }}
+        - Shell: {{ shell_type }} (default `/bin/bash`; override with $AROX_SHELL)
 
         Rules
             1. For searching code, use `rg` or `ast-grep`.
-            2. Interactive commands that require user input are not supported and will fail.
-            3. The command will be invoked by `{{ shell_type }} -c`, mind the syntax. e.g.:
-               - use single quote to avoid substitution
+            2. Interactive commands that need stdin will fail (stdin is /dev/null).
+            3. The command runs via `{{ shell_type }} -c`, so quoting matters:
+               - Wrap literal text in single quotes to disable $ expansion:
+                     echo 'literal $HOME and `cmd`'
+               - To include a single quote inside single quotes, close/reopen:
+                     echo 'it'\\''s here'
+               - For multi-line literals prefer heredoc with a quoted delimiter:
+                     cat <<'EOF'
+                     line one
+                     line two
+                     EOF
+            4. stderr lines are tagged with a leading `[stderr]` so they are
+               distinguishable from stdout. Exit code is shown when non-zero.
+            5. Chain with `&&` to stop on the first failure; use `;` only when
+               every step should run regardless of previous exit codes.
 
         Long-running commands
             If a foreground command does not finish within `timeout` seconds,
             it is NOT killed — it is promoted to a background task and the
             returned message contains a `task_id` plus partial output. Poll
             it with `shell_state(task_id=...)` or kill it with
-            `kill_shell(task_id=...)` if it runs too long.
+            `kill_shell(task_id=...)`.
 
             Set `run_in_background=True` explicitly when you already know the
             command is long-lived (dev server, watcher, multi-minute build).
@@ -219,24 +281,36 @@ class ShellPlugin(Plugin):
         Examples
             command: "ls -la | rg staff"
             description: "List files matching 'staff'"
-            result: "total 24\\ndrwxr-xr-x  5 user  staff  160 ..."
+
+            command: "uv run pytest tests/unit -x"
+            description: "Run unit tests, stop on first failure"
 
         Args:
             command: The shell command to execute.
             description: One short sentence describing what this command does
                 (e.g., "Run unit tests"). Shown to the user and used in logs.
             timeout: Seconds to wait in the foreground before promoting to
-                background (default 100). Ignored when `run_in_background=True`.
+                background (default 100, hard cap 600). Ignored when
+                `run_in_background=True`.
             run_in_background: If True, start detached and return a task id
                 immediately.
 
         Returns:
-            Foreground that finished in time: combined stdout/stderr (truncated
-            if large) with an exit-code marker on non-zero exit.
+            Foreground that finished in time: combined stdout/stderr (with a
+            head+tail truncation marker if very large) and an exit-code marker
+            on non-zero exit.
             Foreground that timed out: promotion notice with task_id and
             partial output.
             Background: a task id and usage hint.
         """
+        if timeout is not None and timeout > MAX_TIMEOUT_SECONDS:
+            logger.warning(
+                "Requested timeout %ss exceeds cap %ss; clamping",
+                timeout,
+                MAX_TIMEOUT_SECONDS,
+            )
+            timeout = MAX_TIMEOUT_SECONDS
+
         logger.info("Executing shell command (%s): %s", description, command)
         try:
             process = await self._spawn(command)
@@ -275,12 +349,16 @@ class ShellPlugin(Plugin):
         try:
             await asyncio.wait_for(asyncio.shield(drain), timeout=timeout)
         except TimeoutError:
-            # Promote: keep process running, stop live-streaming, start
-            # notifying on completion. Model can poll via shell_state.
             bg.stream_to_io = False
             bg.notify_on_finish = True
-            tail_lines = list(bg.output_lines)[-50:]
+            tail_lines = list(bg.tail_lines)[-50:]
             tail = "\n".join(tail_lines)
+            logger.info(
+                "Task %s promoted to background after %ss: %s",
+                bg.task_id,
+                timeout,
+                bg.description,
+            )
             msg = (
                 f"Command did not finish within {timeout}s — promoted to "
                 f"background task `{bg.task_id}` (still running, elapsed "
@@ -295,25 +373,28 @@ class ShellPlugin(Plugin):
                 return f"{msg}\n--- partial output (last 50 lines) ---\n{tail}"
             return msg
 
-        # Completed in time: render and remove from registry.
         output = self._render_completed(bg)
         self._background.pop(bg.task_id, None)
-        logger.info("Command completed with return code: %s", bg.exit_code)
         return output
 
     def _render_completed(self, bg: BackgroundShell) -> str:
-        lines = list(bg.output_lines)
-        truncated = truncate_content(lines)
-        output = "\n".join(truncated["lines"])
-        if truncated["truncated_by_bytes"] or truncated["has_more_lines"]:
-            output += (
-                f"\n\n[Output truncated due to size limits. Total lines: {len(lines)}]"
+        lines = bg.render_full()
+        text = "\n".join(lines)
+        encoded = text.encode("utf-8")
+        if len(encoded) > MAX_RENDER_BYTES:
+            half = MAX_RENDER_BYTES // 2
+            head_text = encoded[:half].decode("utf-8", errors="replace")
+            tail_text = encoded[-half:].decode("utf-8", errors="replace")
+            text = (
+                f"{head_text}\n"
+                f"... (output truncated by size, {bg.total_lines} total lines) ...\n"
+                f"{tail_text}"
             )
         if bg.exit_code != 0:
-            if output:
-                output += "\n"
-            output += f"[Process exited with code {bg.exit_code}]"
-        return output
+            if text:
+                text += "\n"
+            text += f"[Process exited with code {bg.exit_code}]"
+        return text
 
     @tool()
     async def shell_state(self, task_id: str, description: str) -> str:
@@ -344,9 +425,18 @@ class ShellPlugin(Plugin):
             except TimeoutError:
                 pass
 
-        lines = list(bg.output_lines)
-        new_lines = lines[bg.read_offset :]
-        bg.read_offset = len(lines)
+        new_count = bg.total_lines - bg.read_total
+        if new_count <= 0:
+            new_lines: list[str] = []
+        elif new_count <= len(bg.tail_lines):
+            new_lines = list(bg.tail_lines)[-new_count:]
+        else:
+            dropped = new_count - len(bg.tail_lines)
+            new_lines = [
+                f"... ({dropped} lines dropped before this slice) ...",
+                *bg.tail_lines,
+            ]
+        bg.read_total = bg.total_lines
 
         if bg.exit_code is not None:
             status = f"exit {bg.exit_code}"
@@ -359,10 +449,17 @@ class ShellPlugin(Plugin):
         if not new_lines:
             return f"{header}\n(no new output)"
 
-        truncated = truncate_content(new_lines)
-        body = "\n".join(truncated["lines"])
-        if truncated["truncated_by_bytes"] or truncated["has_more_lines"]:
-            body += f"\n[Output truncated. New lines this call: {len(new_lines)}]"
+        body = "\n".join(new_lines)
+        encoded = body.encode("utf-8")
+        if len(encoded) > MAX_RENDER_BYTES:
+            half = MAX_RENDER_BYTES // 2
+            head_text = encoded[:half].decode("utf-8", errors="replace")
+            tail_text = encoded[-half:].decode("utf-8", errors="replace")
+            body = (
+                f"{head_text}\n"
+                f"... (poll output truncated by size, {len(new_lines)} new lines) ...\n"
+                f"{tail_text}"
+            )
         return f"{header}\n{body}"
 
     @tool()
@@ -384,6 +481,14 @@ class ShellPlugin(Plugin):
                 f"{bg.process.returncode} (elapsed {bg.elapsed():.1f}s)"
             )
         await self._terminate(bg.process)
+        await self._flush_drain(bg)
+        logger.info(
+            "Task %s killed: %s (exit %s, elapsed %.1fs)",
+            bg.task_id,
+            bg.description,
+            bg.process.returncode,
+            bg.elapsed(),
+        )
         return (
             f"Killed task {task_id} "
             f"(exit code {bg.process.returncode}, elapsed {bg.elapsed():.1f}s)"
