@@ -61,9 +61,15 @@ compaction = "arox.plugins.compaction:CompactionPlugin"
 [tool.setuptools.packages.find]
 where = ["."]
 
+[tool.pyrefly]
+project-includes = [
+    "**/*.py*",
+    "**/*.ipynb",
+]
+
 [dependency-groups]
 dev = [
-    "pyright>=1.1.408",
+    "pyrefly>=1.0.0",
     "pytest>=8.3.4",
     "pytest-asyncio>=1.0.0",
     "pytest-profiling>=1.8.1",
