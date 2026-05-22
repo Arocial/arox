@@ -408,26 +408,36 @@ class FilePlugin(Plugin):
             curr += len(line)
         line_starts.append(curr)
 
+        def boundary_index(pos: int) -> int:
+            for i in range(len(line_starts) - 1):
+                if line_starts[i] <= pos < line_starts[i + 1]:
+                    return i
+            return len(line_starts) - 1
+
+        def neighbors(idx: int, offsets: tuple[int, ...]) -> list[int]:
+            seen: set[int] = set()
+            for d in offsets:
+                j = max(0, min(len(line_starts) - 1, idx + d))
+                seen.add(line_starts[j])
+            return sorted(seen)
+
         dest_start, dest_end = align.dest_start, align.dest_end
-        start_candidates = [0]
-        end_candidates = [len(content)]
-        for i in range(len(line_starts) - 1):
-            current_idx = line_starts[i]
-            next_idx = line_starts[i + 1]
-            if current_idx <= dest_start and next_idx > dest_start:
-                start_candidates = [current_idx, next_idx]
-            if current_idx < dest_end and next_idx >= dest_end:
-                end_candidates = [current_idx, next_idx]
-                break
+        start_candidates = neighbors(boundary_index(dest_start), (-1, 0, 1))
+        # dest_end is exclusive; subtract 1 to find the line it sits inside.
+        end_candidates = neighbors(
+            boundary_index(max(dest_start, dest_end - 1)), (0, 1, 2)
+        )
 
         def clean_str(sentence: str) -> str:
             string_out = _alnum_regex.sub("", sentence)
             return string_out.strip().lower()
 
+        cleaned_old = clean_str(old_str)
         for s in start_candidates:
             for e in end_candidates:
-                matched = content[s:e]
-                if clean_str(old_str) == clean_str(matched):
+                if s >= e:
+                    continue
+                if clean_str(content[s:e]) == cleaned_old:
                     return s, e
 
         return None

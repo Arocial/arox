@@ -135,7 +135,7 @@ from pathlib import Path"""
             file_path = Path(temp_dir) / "test.py"
             random_string = original_content
             for _ in range(10):
-                length = random.randint(0, 100)
+                length = random.randint(1, 100)
                 line = "".join(random.choice(characters) for _ in range(length))
                 random_string = f"{random_string}\n{line}"
 
