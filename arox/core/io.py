@@ -98,10 +98,24 @@ class _BaseIOEndpoint:
 
 
 class IOEndpoint(_BaseIOEndpoint):
+    _SYNTHETIC_INDEX_MIN = -(2**31)
+
+    def __init__(self, tx, rx):
+        super().__init__(tx, rx)
+        self._synthetic_index = 0
+
+    def _next_synthetic_index(self) -> int:
+        self._synthetic_index -= 1
+        if self._synthetic_index < self._SYNTHETIC_INDEX_MIN:
+            self._synthetic_index = -1
+        return self._synthetic_index
+
     async def send(self, event: Any) -> Any:
         if isinstance(event, str):
-            await self.tx.send(PartStartEvent(part=TextPart(content=event), index=-1))
-            await self.tx.send(PartEndEvent(part=TextPart(content=event), index=-1))
+            index = self._next_synthetic_index()
+            part = TextPart(content=event)
+            await self.tx.send(PartStartEvent(part=part, index=index))
+            await self.tx.send(PartEndEvent(part=part, index=index))
             return None
         return await self._send(event)
 

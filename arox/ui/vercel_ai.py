@@ -267,15 +267,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         """Stream a command's text output through the normal event pipeline."""
         if not output:
             return
-        text_part = TextPart(content=output)
-        await self.handle_event(
-            target.adapter_io,
-            PartStartEvent(part=text_part, index=-1),
-        )
-        await self.handle_event(
-            target.adapter_io,
-            PartEndEvent(part=text_part, index=-1),
-        )
+        await target.agent_io.send(output)
 
     async def _reissue_pending_input(self, target) -> None:
         """Re-emit the current pending ChatInputEvent so the client sees a
