@@ -20,6 +20,7 @@ from pydantic_ai import (
     RunContext,
     capture_run_messages,
 )
+from pydantic_ai.capabilities import ProcessHistory
 from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.messages import (
     ModelMessage,
@@ -29,7 +30,13 @@ from pydantic_ai.messages import (
     ToolReturnPart,
 )
 from pydantic_ai.models import infer_model
-from pydantic_ai.providers import Provider, gateway, google, infer_provider_class
+from pydantic_ai.providers import (
+    Provider,
+    gateway,
+    google,
+    google_cloud,
+    infer_provider_class,
+)
 from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets.fastmcp import FastMCPToolset
@@ -135,7 +142,8 @@ def infer_provider(
             extra_request_hooks=[_remove_server_timeout, _add_session_header],
         )
         kwargs["http_client"] = client
-        kwargs["vertexai"] = provider == "google-vertex"
+        if provider == "google-vertex":
+            return google_cloud.GoogleCloudProvider(**kwargs)
         return google.GoogleProvider(**kwargs)
     else:
         provider_class = infer_provider_class(provider)
@@ -236,11 +244,13 @@ class LLMBaseAgent(IOHost):
 
         self.command_manager = CommandManager(self)
         self.plugins = self.load_plugins()
-        history_processors = [plugin.history_processor for plugin in self.plugins]
+        capabilities = [
+            ProcessHistory(plugin.history_processor) for plugin in self.plugins
+        ]
 
         self.pydantic_agent = Agent[AgentDeps, DeferredToolRequests | str](
             self.model,
-            history_processors=history_processors,
+            capabilities=capabilities,
             toolsets=toolsets,
             deps_type=AgentDeps,
             output_type=(DeferredToolRequests, str),
@@ -513,7 +523,7 @@ class LLMBaseAgent(IOHost):
         result: AgentRunResult[Any],
     ):
         new_messages = result.new_messages()
-        usage = result.usage()
+        usage = result.usage
         self.agent_session.add_event(
             "agent_step",
             {

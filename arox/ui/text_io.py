@@ -174,7 +174,7 @@ class TextIOAdapter(AbstractIOAdapter):
             print()
         elif isinstance(event, FunctionToolResultEvent):
             print(
-                f"tool result: {event.tool_call_id!r} returned => {str(event.result.content)[:100]}\n"
+                f"tool result: {event.tool_call_id!r} returned => {str(event.part.content)[:100]}\n"
             )
         elif isinstance(event, FunctionToolCallEvent):
             part = event.part
