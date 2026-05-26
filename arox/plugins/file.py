@@ -319,6 +319,7 @@ class FilePlugin(Plugin):
     @tool(sequential=True)
     async def replace_in_file(self, path: str, old_str: str, new_str: str) -> str:
         """Searches for `old_str` in the file and replaces it with `new_str`.
+        If you need to make multiple replacements in one or more files, please call this tool multiple times in a single response. The tool calls will be executed sequentially in the order they are provided.
 
         Args:
             path: The path of the file to modify.
