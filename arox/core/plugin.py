@@ -5,7 +5,8 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
-from pydantic_ai import ModelMessage, RunContext
+from pydantic_ai import FunctionToolset, ModelMessage, RunContext
+from pydantic_ai.capabilities import AbstractCapability, ProcessHistory, Toolset
 
 from arox.core.completion import (
     CompletionProvider,
@@ -217,6 +218,38 @@ class Plugin:
                     ToolDef(func=method, kwargs=getattr(method, "__tool_kwargs__", {}))
                 )
         return tls
+
+    def capabilities(self) -> Sequence[AbstractCapability[Any]]:
+        """Return pydantic_ai capabilities contributed by this plugin.
+
+        The base implementation wraps :meth:`tools` in a ``Toolset`` capability
+        and, when :meth:`history_processor` is overridden, adds a
+        ``ProcessHistory`` capability. Subclasses needing more (tool/model/output
+        wrappers, native tools, ...) should override this and extend
+        ``super().capabilities()``.
+        """
+        caps: list[AbstractCapability[Any]] = []
+        toolset = self._build_toolset()
+        if toolset is not None:
+            caps.append(Toolset(toolset))
+        if type(self).history_processor is not Plugin.history_processor:
+            caps.append(ProcessHistory(self.history_processor))
+        return caps
+
+    def _build_toolset(self) -> FunctionToolset | None:
+        """Build a ``FunctionToolset`` from :meth:`tools`, or None if empty."""
+        tools = self.tools()
+        if not tools:
+            return None
+        toolset = FunctionToolset()
+        for tool_def in tools:
+            if isinstance(tool_def, dict):
+                kwargs = dict(tool_def)
+                func = kwargs.pop("func")
+                toolset.add_function(func, **kwargs)
+            else:
+                toolset.add_function(tool_def.func, **tool_def.kwargs)
+        return toolset
 
     async def history_processor(
         self,

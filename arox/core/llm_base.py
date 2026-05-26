@@ -20,7 +20,7 @@ from pydantic_ai import (
     RunContext,
     capture_run_messages,
 )
-from pydantic_ai.capabilities import AbstractCapability, ProcessHistory
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import (
@@ -245,8 +245,7 @@ class LLMBaseAgent(IOHost):
         self.command_manager = CommandManager(self)
         self.plugins = self.load_plugins()
         capabilities: list[AbstractCapability[AgentDeps]] = [
-            ProcessHistory[AgentDeps](plugin.history_processor)
-            for plugin in self.plugins
+            cap for plugin in self.plugins for cap in plugin.capabilities()
         ]
 
         self.pydantic_agent = Agent[AgentDeps, DeferredToolRequests | str](
@@ -273,16 +272,8 @@ class LLMBaseAgent(IOHost):
             plugin = plugin_cls(self)
             plugins.append(plugin)
 
-            # Register tools
-            tools = plugin.tools()
-            for tool_def in tools:
-                if isinstance(tool_def, dict):
-                    func = tool_def.pop("func")
-                    self.add_local_tool(func, **tool_def)
-                else:
-                    self.add_local_tool(tool_def.func, **tool_def.kwargs)
-
-            # Register commands
+            # Register commands. Tools and capabilities are gathered later by
+            # _collect_capabilities() and fed to the pydantic_ai Agent.
             for spec in plugin.commands():
                 self.command_manager.register(
                     spec.event_cls, spec.handler, spec.completer
