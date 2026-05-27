@@ -4,10 +4,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, override
-
-if TYPE_CHECKING:
-    from arox.core.composer import Composer
+from typing import override
 
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -27,6 +24,7 @@ from pydantic_ai import (
     ToolCallPartDelta,
 )
 
+from arox.core.app import app_setup, create_main_agent
 from arox.core.chat import (
     ChatInputEvent,
     ChatInputReply,
@@ -38,6 +36,8 @@ from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
 )
+from arox.core.llm_base import MainAgent
+from arox.plugins.slots import ALL_AGENTS
 
 logger = logging.getLogger(__name__)
 
@@ -53,12 +53,12 @@ class SuggestionResponse(BaseModel):
     items: list[SuggestionItem]
 
 
-class CreateComposerRequest(BaseModel):
+class CreateAgentRequest(BaseModel):
     workspace: str | None = None
     session_id: str | None = None
 
 
-class ComposerInfo(BaseModel):
+class AgentInfo(BaseModel):
     id: str
     workspace: str
     main_agent: str
@@ -67,7 +67,7 @@ class ComposerInfo(BaseModel):
 
 class SessionInfo(BaseModel):
     id: str
-    composer_name: str
+    app_name: str
     created_at: str
     updated_at: str
     metadata: dict
@@ -77,7 +77,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 
-class ComposerTaskStatus(str, Enum):
+class AgentTaskStatus(str, Enum):
     RUNNING = "running"
     STOPPED = "stopped"
     CANCELLED = "cancelled"
@@ -85,10 +85,10 @@ class ComposerTaskStatus(str, Enum):
 
 
 @dataclass
-class ComposerRun:
-    composer: Composer
+class AgentRun:
+    main_agent: MainAgent
     task: asyncio.Task | None = None
-    status: ComposerTaskStatus = ComposerTaskStatus.RUNNING
+    status: AgentTaskStatus = AgentTaskStatus.RUNNING
     error: Exception | None = None
 
 
@@ -99,7 +99,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         self.read_lock = asyncio.Lock()
         self.event_queues = {}
         self.pending_inputs: dict[IOEndpoint, ChatInputEvent] = {}
-        self.run_instances: dict[str, ComposerRun] = {}
+        self.run_instances: dict[str, AgentRun] = {}
 
     @override
     async def handle_event(self, adapter_io: IOEndpoint, event):
@@ -305,7 +305,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             normal_input = reply.get("normal_input") or {}
             user_input = normal_input.get("user_input")
 
-            # Intercept slash commands typed into the composer so they don't
+            # Intercept slash commands typed into the app so they don't
             # round-trip through the LLM. Mirrors the structured "command"
             # branch above and TextIOAdapter's slash handling.
             if isinstance(user_input, str) and user_input.startswith("/"):
@@ -383,20 +383,11 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         command: str | None = None,
         q: str | None = None,
     ) -> SuggestionResponse:
-        # Synthesize the equivalent text+cursor a TUI buffer would have so
-        # both UIs route through the same CompletionRouter. ``command`` is
-        # the slash already committed (None when user is still picking one);
-        # ``q`` is whatever they're currently typing.
         if command:
             text = f"/{command} {q or ''}"
         else:
             text = f"/{q or ''}"
-        # parse_request only consults the agent for @-completions; for a
-        # composer target, pass its main_agent so file refs still resolve.
-        from arox.core.composer import Composer
-
-        agent = target.main_agent if isinstance(target, Composer) else target
-        req = parse_request(text, agent=agent)
+        req = parse_request(text, agent=target)
         results = target.command_manager.completion_router.complete(req)
 
         items = [
@@ -414,7 +405,6 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 class VercelStreamServer:
     def __init__(
         self,
-        composer_name: str,
         config_files: list[str | Path] | None = None,
         cli_args: list[str] | None = None,
         host: str = "0.0.0.0",
@@ -422,7 +412,6 @@ class VercelStreamServer:
     ):
         from contextlib import asynccontextmanager
 
-        self.composer_name = composer_name
         self.config_files = config_files or []
         self.cli_args = cli_args or []
         self.host = host
@@ -432,7 +421,7 @@ class VercelStreamServer:
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             yield
-            # Cancel all running composer tasks on shutdown
+            # Cancel all running app tasks on shutdown
             tasks = [
                 r.task
                 for r in self.io_adapter.run_instances.values()
@@ -452,28 +441,15 @@ class VercelStreamServer:
             allow_headers=["*"],
         )
 
-        self.app.post("/api/composers", response_model=ComposerInfo)(
-            self.create_composer
-        )
-        self.app.get("/api/composers", response_model=list[ComposerInfo])(
-            self.list_composers
-        )
-        self.app.delete("/api/composers/{composer_id}")(self.delete_composer)
-        self.app.websocket("/api/composers/{composer_id}/ws")(self.composer_ws)
+        self.app.post("/api/agents", response_model=AgentInfo)(self.create_agent)
+        self.app.get("/api/agents", response_model=list[AgentInfo])(self.list_agents)
+        self.app.delete("/api/agents/{agent_id}")(self.delete_agent)
+        self.app.websocket("/api/agents/{agent_id}/{agent_name}/ws")(self.ws)
         self.app.get(
-            "/api/composers/{composer_id}/suggestions",
-            response_model=SuggestionResponse,
-        )(self.composer_suggestions)
-        self.app.websocket("/api/composers/{composer_id}/agents/{agent_name}/ws")(
-            self.ws
-        )
-        self.app.get(
-            "/api/composers/{composer_id}/agents/{agent_name}/suggestions",
+            "/api/agents/{agent_id}/{agent_name}/suggestions",
             response_model=SuggestionResponse,
         )(self.suggestions)
-        self.app.get("/api/composers/{composer_id}/agents/{agent_name}/state")(
-            self.state
-        )
+        self.app.get("/api/agents/{agent_id}/{agent_name}/state")(self.state)
         self.app.get("/api/sessions", response_model=list[SessionInfo])(
             self.list_sessions
         )
@@ -483,127 +459,132 @@ class VercelStreamServer:
     async def health(self):
         return {"status": "ok"}
 
-    async def create_composer(self, request: CreateComposerRequest):
-        from arox.core.composer import Composer
+    def _get_all_agents(self, main_agent):
+        agents = [main_agent]
+        for provider in main_agent.get_slot(ALL_AGENTS):
+            agents.extend(provider())
+        return {a.name: a for a in agents}
 
-        composer = Composer(
-            self.composer_name,
-            io_adapter=self.io_adapter,
-            workspace=request.workspace,
-            session_id=request.session_id,
-            config_files=self.config_files,
-            cli_args=self.cli_args,
+    async def create_agent(self, request: CreateAgentRequest):
+        parsed_config = app_setup(
+            config_files=self.config_files, cli_args=self.cli_args
         )
-        run_instance = ComposerRun(composer=composer)
-        self.io_adapter.run_instances[composer.id] = run_instance
 
-        task = asyncio.create_task(composer.run())
+        main_agent = create_main_agent(
+            parsed_config,
+            io_adapter=self.io_adapter,
+            session_id=request.session_id,
+            workspace=request.workspace,
+        )
+
+        run_instance = AgentRun(main_agent=main_agent)
+        self.io_adapter.run_instances[main_agent.uuid] = run_instance
+
+        async def run_agent():
+            async with self.io_adapter:
+                await self.io_adapter.register_host(main_agent)
+                async with main_agent:
+                    await main_agent.show_agent_info()
+                    await main_agent.run()
+
+        task = asyncio.create_task(run_agent())
         run_instance.task = task
 
         def on_task_done(t: asyncio.Task):
             try:
                 t.result()
-                run_instance.status = ComposerTaskStatus.STOPPED
-                logger.info(f"Composer {composer.id} finished normally.")
+                run_instance.status = AgentTaskStatus.STOPPED
+                logger.info(f"Agent {main_agent.uuid} finished normally.")
             except asyncio.CancelledError:
-                run_instance.status = ComposerTaskStatus.CANCELLED
-                logger.info(f"Composer {composer.id} was cancelled.")
+                run_instance.status = AgentTaskStatus.CANCELLED
+                logger.info(f"Agent {main_agent.uuid} was cancelled.")
             except Exception as e:
-                run_instance.status = ComposerTaskStatus.ERROR
+                run_instance.status = AgentTaskStatus.ERROR
                 run_instance.error = e
-                logger.exception(f"Composer {composer.id} crashed with error.")
+                logger.exception(f"Agent {main_agent.uuid} crashed with error.")
 
         task.add_done_callback(on_task_done)
 
-        return ComposerInfo(
-            id=composer.id,
-            workspace=str(composer.workspace),
-            main_agent=composer.main_agent.name,
-            subagents=list(composer.subagents.keys()),
+        all_agents = self._get_all_agents(main_agent)
+        subagents = [name for name in all_agents if name != main_agent.name]
+
+        return AgentInfo(
+            id=main_agent.uuid,
+            workspace=str(main_agent.workspace),
+            main_agent=main_agent.name,
+            subagents=subagents,
         )
 
-    async def list_composers(self):
-        return [
-            ComposerInfo(
-                id=cid,
-                workspace=str(r.composer.workspace),
-                main_agent=r.composer.main_agent.name,
-                subagents=list(r.composer.subagents.keys()),
+    async def list_agents(self):
+        res = []
+        for cid, r in self.io_adapter.run_instances.items():
+            all_agents = self._get_all_agents(r.main_agent)
+            subagents = [name for name in all_agents if name != r.main_agent.name]
+            res.append(
+                AgentInfo(
+                    id=cid,
+                    workspace=str(r.main_agent.workspace),
+                    main_agent=r.main_agent.name,
+                    subagents=subagents,
+                )
             )
-            for cid, r in self.io_adapter.run_instances.items()
-        ]
+        return res
 
-    async def delete_composer(self, composer_id: str):
-        run_instance = self.io_adapter.run_instances.pop(composer_id, None)
+    async def delete_agent(self, agent_id: str):
+        run_instance = self.io_adapter.run_instances.pop(agent_id, None)
         if not run_instance:
-            raise HTTPException(status_code=404, detail="Composer not found")
+            raise HTTPException(status_code=404, detail="Agent not found")
         if run_instance.task and not run_instance.task.done():
             run_instance.task.cancel()
         return {"status": "deleted"}
 
-    def _resolve_composer(self, composer_id: str):
-        run_instance = self.io_adapter.run_instances.get(composer_id)
+    def _resolve_main_agent(self, agent_id: str):
+        run_instance = self.io_adapter.run_instances.get(agent_id)
         if not run_instance:
-            raise HTTPException(
-                status_code=404, detail=f"Composer {composer_id} not found."
-            )
-        return run_instance.composer
+            raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found.")
+        return run_instance.main_agent
 
-    def _resolve_agent(self, composer_id: str, agent_name: str):
-        composer = self._resolve_composer(composer_id)
-        agent = composer.all_agents().get(agent_name)
+    def _resolve_agent(self, agent_id: str, agent_name: str):
+        main_agent = self._resolve_main_agent(agent_id)
+        all_agents = self._get_all_agents(main_agent)
+        agent = all_agents.get(agent_name)
         if not agent:
             raise HTTPException(
                 status_code=404, detail=f"Agent {agent_name} not found."
             )
         return agent
 
-    async def ws(self, websocket: WebSocket, composer_id: str, agent_name: str):
-        run_instance = self.io_adapter.run_instances.get(composer_id)
+    async def ws(self, websocket: WebSocket, agent_id: str, agent_name: str):
+        run_instance = self.io_adapter.run_instances.get(agent_id)
         if not run_instance:
-            await websocket.close(code=4004, reason="composer not found")
+            await websocket.close(code=4004, reason="agent not found")
             return
-        agent = run_instance.composer.all_agents().get(agent_name)
+        all_agents = self._get_all_agents(run_instance.main_agent)
+        agent = all_agents.get(agent_name)
         if not agent:
             await websocket.close(code=4004, reason="agent not found")
             return
         return await self.io_adapter.ws_handler(websocket, agent)
 
-    async def composer_ws(self, websocket: WebSocket, composer_id: str):
-        run_instance = self.io_adapter.run_instances.get(composer_id)
-        if not run_instance:
-            await websocket.close(code=4004, reason="composer not found")
-            return
-        return await self.io_adapter.ws_handler(websocket, run_instance.composer)
-
-    async def composer_suggestions(
-        self,
-        composer_id: str,
-        command: str | None = None,
-        q: str | None = None,
-    ):
-        return self.io_adapter.suggestions(
-            self._resolve_composer(composer_id), command, q
-        )
-
     async def suggestions(
         self,
-        composer_id: str,
+        agent_id: str,
         agent_name: str,
         command: str | None = None,
         q: str | None = None,
     ):
         return self.io_adapter.suggestions(
-            self._resolve_agent(composer_id, agent_name), command, q
+            self._resolve_agent(agent_id, agent_name), command, q
         )
 
-    async def state(self, composer_id: str, agent_name: str):
-        run_instance = self.io_adapter.run_instances.get(composer_id)
+    async def state(self, agent_id: str, agent_name: str):
+        run_instance = self.io_adapter.run_instances.get(agent_id)
         if not run_instance:
-            raise HTTPException(status_code=404, detail="Composer not found")
+            raise HTTPException(status_code=404, detail="Agent not found")
 
-        composer = run_instance.composer
-        agent = composer.all_agents().get(agent_name)
+        main_agent = run_instance.main_agent
+        all_agents = self._get_all_agents(main_agent)
+        agent = all_agents.get(agent_name)
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")
 
@@ -615,11 +596,6 @@ class VercelStreamServer:
             msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages
         ]
 
-        # Pair each user UIMessage with the absolute event index of its
-        # corresponding ``user_input`` session event. Prefer the stored
-        # ``client_message_id`` (set when the UI submits its message id with
-        # the reply); fall back to positional pairing for legacy events that
-        # predate the field.
         anchors_by_id: dict[str, int] = {}
         agent_session = getattr(agent, "agent_session", None)
         if agent_session is not None:
@@ -646,11 +622,13 @@ class VercelStreamServer:
         from arox.core.session import FileSessionStore
 
         store = FileSessionStore()
-        sessions = await store.list_sessions(self.composer_name)
+        # We don't have app_name anymore, maybe use main_agent.name or just list all
+        # For now, let's list all sessions or assume a default name
+        sessions = await store.list_sessions("default")
         return [
             SessionInfo(
                 id=s.id,
-                composer_name=s.composer_name,
+                app_name=s.app_name,
                 created_at=s.created_at.isoformat(),
                 updated_at=s.updated_at.isoformat(),
                 metadata=s.metadata,

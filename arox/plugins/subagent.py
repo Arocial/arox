@@ -7,7 +7,8 @@ from pydantic_ai.tools import ToolDefinition
 
 from arox.core.llm_base import DelegatableAgent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, ToolDef
-from arox.plugins.slots import DELEGATABLE_SUBAGENTS, SUBAGENT
+from arox.plugins.slots import ALL_AGENTS, DELEGATABLE_SUBAGENTS, SUBAGENT
+from arox.utils import import_class
 
 logger = logging.getLogger(__name__)
 
@@ -30,13 +31,75 @@ class AgentCallEvent(CommandEvent):
 
 
 class SubagentPlugin(Plugin):
-    """Exposes the composer's subagents to the main agent.
+    """Manages subagents and exposes them to the main agent.
 
     Subagents are surfaced two ways: the ``delegate_to_subagent`` tool the LLM
     can call, and the ``/agent`` slash command the human can type. Both reach
     the subagents through the :data:`SUBAGENT` / :data:`DELEGATABLE_SUBAGENTS`
-    slots the composer provides.
+    slots.
     """
+
+    def __init__(self, agent):
+        super().__init__(agent)
+        self.subagents = {}
+
+    async def on_start(self):
+        subagent_names = self.agent.agent_config.subagents
+        parsed_config = self.agent.parsed_config
+
+        for agent_name in subagent_names:
+            agent_config = parsed_config.agent.get(agent_name)
+            if not agent_config:
+                raise ValueError(f"Agent config for '{agent_name}' not found")
+
+            agent_type = agent_config.type
+            try:
+                agent_cls = import_class(agent_type, group="arox.agents")
+            except ValueError:
+                raise ValueError(
+                    f"Unknown agent type: {agent_type} for agent {agent_name}"
+                )
+
+            subagent = agent_cls(
+                agent_name,
+                parsed_config,
+                io_adapter=self.agent.io_adapter,
+                workspace=self.agent.workspace,
+            )
+
+            # Load hooks for subagent
+            pre_step_hooks = agent_config.pre_step_hooks
+            for hook_path in pre_step_hooks:
+                hook_func = import_class(hook_path, group="arox.hooks")
+                subagent.add_pre_step_hook(hook_func)
+
+            post_step_hooks = agent_config.post_step_hooks
+            for hook_path in post_step_hooks:
+                hook_func = import_class(hook_path, group="arox.hooks")
+                subagent.add_post_step_hook(hook_func)
+
+            self.subagents[agent_name] = subagent
+            await self.agent._stack.enter_async_context(subagent)
+
+        # Provide slots
+        def get_subagent(name: str):
+            return self.subagents.get(name)
+
+        self.agent.provide_slot(SUBAGENT, get_subagent)
+
+        def list_delegatable_subagents():
+            return [
+                agent
+                for agent in self.subagents.values()
+                if isinstance(agent, DelegatableAgent)
+            ]
+
+        self.agent.provide_slot(DELEGATABLE_SUBAGENTS, list_delegatable_subagents)
+
+        def get_all_subagents():
+            return list(self.subagents.values())
+
+        self.agent.provide_slot(ALL_AGENTS, get_all_subagents)
 
     def commands(self):
         return [CommandSpec(AgentCallEvent, self.handle_agent_call)]

@@ -30,11 +30,11 @@ from arox.core.chat import (
     UserTurnRecordedEvent,
 )
 from arox.core.completion import CompletionRouter, parse_request
-from arox.core.composer import Composer
 from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
 )
+from arox.plugins.slots import ALL_AGENTS
 
 logger = logging.getLogger(__name__)
 
@@ -108,23 +108,25 @@ class TextIOAdapter(AbstractIOAdapter):
         super().__init__()
         self.user_input: UserInputGenerator = UserInputGenerator()
 
-    async def register_composer(self, composer: Composer):
-        await super().register_composer(composer)
+    async def register_host(self, host: Any):
+        await super().register_host(host)
 
-        main_agent = composer.main_agent
         merged_router = CompletionRouter()
-        merged_router.merge(composer.command_manager.completion_router)
-        merged_router.merge(main_agent.command_manager.completion_router)
-        completer = CommandCompleter(merged_router, agent=main_agent)
+        merged_router.merge(host.command_manager.completion_router)
+        completer = CommandCompleter(merged_router, agent=host)
         self.user_input = UserInputGenerator(completer=completer)
 
     async def __aenter__(self):
         def sigint_handler(signum, frame):
             logger.info("Received SIGINT, cancelling current step...")
-            for composer in self.composers.values():
-                for agent in composer.all_agents().values():
-                    if isinstance(agent, ChatAgent):
-                        agent.cancel_foreground_task()
+            for host in self.hosts.values():
+                if isinstance(host, ChatAgent):
+                    host.cancel_foreground_task()
+                if hasattr(host, "get_slot"):
+                    for provider in host.get_slot(ALL_AGENTS):
+                        for agent in provider():
+                            if isinstance(agent, ChatAgent):
+                                agent.cancel_foreground_task()
 
         self.original_sigint_handler = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, sigint_handler)
@@ -134,9 +136,9 @@ class TextIOAdapter(AbstractIOAdapter):
         signal.signal(signal.SIGINT, self.original_sigint_handler)
 
     def _find_shell(self, agent):
-        for composer in self.composers.values():
-            if composer.main_agent is agent:
-                return composer
+        for host in self.hosts.values():
+            if host is agent:
+                return host
         return None
 
     async def _flush_stdin(self):
@@ -151,8 +153,8 @@ class TextIOAdapter(AbstractIOAdapter):
             pass
 
     def _is_shell_io(self, adapter_io: IOEndpoint) -> bool:
-        for composer in self.composers.values():
-            if composer.adapter_io is adapter_io:
+        for host in self.hosts.values():
+            if getattr(host, "adapter_io", None) is adapter_io:
                 return True
         return False
 

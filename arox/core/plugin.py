@@ -202,6 +202,12 @@ class Plugin:
     def __init__(self, agent):
         self.agent = agent
 
+    async def on_start(self) -> None:
+        """Lifecycle hook called when the agent starts."""
+
+    async def on_stop(self) -> None:
+        """Lifecycle hook called when the agent stops."""
+
     def commands(self) -> Sequence[CommandSpec]:
         """Return :class:`CommandSpec` bindings to register.
 

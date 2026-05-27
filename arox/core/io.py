@@ -6,7 +6,7 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from anyio import ClosedResourceError, EndOfStream, create_memory_object_stream
 from pydantic_ai import (
@@ -16,9 +16,6 @@ from pydantic_ai import (
     TextPart,
     TextPartDelta,
 )
-
-if TYPE_CHECKING:
-    from arox.core.composer import Composer
 
 logger = logging.getLogger(__name__)
 
@@ -157,19 +154,24 @@ def create_io_channel() -> tuple[IOEndpoint, IOEndpoint]:
 
 class AbstractIOAdapter(ABC):
     def __init__(self):
-        self.composers: dict[str, Composer] = {}
-        self._composer_tasks: dict[Any, list[asyncio.Task]] = {}
+        self.hosts: dict[str, Any] = {}
         self._tg: asyncio.TaskGroup = asyncio.TaskGroup()
 
-    async def register_composer(self, composer: "Composer"):
-        self.composers[composer.id] = composer
+    async def register_host(self, host: Any):
+        self.hosts[getattr(host, "uuid", str(id(host)))] = host
 
     def _find_agent(self, adapter_io: IOEndpoint):
-        """Locate the agent that owns ``adapter_io`` across registered composers."""
-        for composer in self.composers.values():
-            for agent in composer.all_agents().values():
-                if getattr(agent, "adapter_io", None) is adapter_io:
-                    return agent
+        """Locate the agent that owns ``adapter_io`` across registered hosts."""
+        for host in self.hosts.values():
+            if getattr(host, "adapter_io", None) is adapter_io:
+                return host
+            if hasattr(host, "get_slot"):
+                from arox.plugins.slots import ALL_AGENTS
+
+                for provider in host.get_slot(ALL_AGENTS):
+                    for agent in provider():
+                        if getattr(agent, "adapter_io", None) is adapter_io:
+                            return agent
         return None
 
     async def _process_io(self, adapter_io: IOEndpoint):
@@ -194,7 +196,7 @@ class AbstractIOAdapter(ABC):
 class IOHost:
     """Owns one side of an :func:`create_io_channel` pair and a receive loop.
 
-    Subclasses (currently :class:`LLMBaseAgent` and :class:`Composer`)
+    Subclasses (currently :class:`LLMBaseAgent`)
     add their own domain on top: tool execution, command handling, etc.
     The base just wires the channel, drives ``io_adapter._process_io`` for
     the adapter side, and dispatches inbound :class:`RequestEvent` to

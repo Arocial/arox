@@ -10,30 +10,30 @@ from pydantic_ai.messages import (
 
 from arox.core.session import (
     AgentSession,
-    ComposerSession,
+    AppSession,
     FileSessionStore,
     _deserialize_messages,
     _serialize_messages,
 )
 
 
-class TestComposerSession:
+class TestAppSession:
     def test_create(self):
-        session = ComposerSession.create("coder", title="test")
-        assert session.composer_name == "coder"
+        session = AppSession.create("coder", title="test")
+        assert session.app_name == "coder"
         assert len(session.id) == 12
         assert session.metadata == {"title": "test"}
         assert session.events == []
         assert session.agent_sessions == {}
 
     def test_add_event(self):
-        session = ComposerSession.create("coder")
+        session = AppSession.create("coder")
         event = session.add_event("system", {"msg": "started"})
         assert event.event_type == "system"
         assert len(session.events) == 1
 
     def test_fork_at(self):
-        session = ComposerSession.create("coder", title="t")
+        session = AppSession.create("coder", title="t")
         agent_s = session.get_agent_session("main")
         agent_s.add_event("user_input", {"text": "u1"})  # 0
         agent_s.add_event("agent_step", {"new_messages": []})  # 1
@@ -59,12 +59,12 @@ class TestComposerSession:
         assert len(session.agent_sessions["main"].events) == 4
 
     def test_fork_at_unknown_agent(self):
-        session = ComposerSession.create("coder")
+        session = AppSession.create("coder")
         with pytest.raises(ValueError):
             session.fork_at("missing", 0)
 
     def test_get_agent_session(self):
-        session = ComposerSession.create("coder")
+        session = AppSession.create("coder")
         agent_session = session.get_agent_session("main")
         assert agent_session.agent_name == "main"
         assert "main" in session.agent_sessions
@@ -274,7 +274,7 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_save_and_load(self, store):
-        session = ComposerSession.create("coder")
+        session = AppSession.create("coder")
         agent_session = session.get_agent_session("main")
         agent_session.add_event("user_input", {"text": "hello"})
         agent_session.add_event(
@@ -294,7 +294,7 @@ class TestFileSessionStore:
 
         assert loaded is not None
         assert loaded.id == session.id
-        assert loaded.composer_name == "coder"
+        assert loaded.app_name == "coder"
 
         assert "main" in loaded.agent_sessions
         agent_s = loaded.agent_sessions["main"]
@@ -313,7 +313,7 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_fork_round_trip(self, store):
-        session = ComposerSession.create("coder")
+        session = AppSession.create("coder")
         agent_s = session.get_agent_session("main")
         agent_s.add_event("user_input", {"text": "u1"})
         agent_s.add_event("agent_step", {"new_messages": []})
@@ -331,9 +331,9 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_list_sessions(self, store):
-        s1 = ComposerSession.create("coder")
-        s2 = ComposerSession.create("coder")
-        s3 = ComposerSession.create("other")
+        s1 = AppSession.create("coder")
+        s2 = AppSession.create("coder")
+        s3 = AppSession.create("other")
 
         await store.save_session(s1)
         await store.save_session(s2)
@@ -355,7 +355,7 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_delete_session(self, store):
-        session = ComposerSession.create("coder")
+        session = AppSession.create("coder")
         await store.save_session(session)
 
         loaded = await store.load_session(session.id)
@@ -371,7 +371,7 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_multiple_agent_sessions(self, store):
-        session = ComposerSession.create("coder")
+        session = AppSession.create("coder")
         main_s = session.get_agent_session("main")
         main_s.add_event(
             "agent_step",
@@ -395,7 +395,7 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_save_overwrites(self, store):
-        session = ComposerSession.create("coder")
+        session = AppSession.create("coder")
         agent_s = session.get_agent_session("main")
         agent_s.add_event("user_input", {"text": "first"})
         await store.save_session(session)
@@ -418,11 +418,11 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_cleanup_deletes_expired(self, store):
-        old_session = ComposerSession.create("coder")
+        old_session = AppSession.create("coder")
         await store.save_session(old_session)
         self._backdate_session(store, old_session, days=60)
 
-        new_session = ComposerSession.create("coder")
+        new_session = AppSession.create("coder")
         await store.save_session(new_session)
 
         deleted = await store.cleanup(max_age_days=30)
@@ -433,7 +433,7 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_cleanup_keeps_recent(self, store):
-        session = ComposerSession.create("coder")
+        session = AppSession.create("coder")
         await store.save_session(session)
 
         deleted = await store.cleanup(max_age_days=30)
@@ -448,7 +448,7 @@ class TestFileSessionStore:
     @pytest.mark.asyncio
     async def test_cleanup_uses_default_max_age(self, tmp_path):
         store = FileSessionStore(base_dir=tmp_path / "sessions", max_age_days=7)
-        old_session = ComposerSession.create("coder")
+        old_session = AppSession.create("coder")
         await store.save_session(old_session)
         self._backdate_session(store, old_session, days=10)
 

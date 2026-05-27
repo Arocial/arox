@@ -14,7 +14,7 @@ The primary goal of Arox is to build AI agents that act as capable assistants, a
 
 To learn more about how Arox works and how to build your own agents, explore the following sections:
 
-- **[Architecture](architecture.md)** — runtime hierarchy (App → Composer → Agents), IO system, agent types, and extension points.
+- **[Architecture](architecture.md)** — runtime hierarchy (App → MainAgent), IO system, agent types, and extension points.
 - **[Apps: Coder](apps/coder.md)** — the built-in Coder application.
 - **[Development](development.md)** — project setup and contribution guide.
 - **[Philosophy](philosophy.md)** — design philosophy behind Arox.

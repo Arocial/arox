@@ -4,7 +4,7 @@ The **Coder** app is the primary application built on top of the Arox framework.
 
 ## Overview
 
-The Coder app uses a `Composer` to assemble a main `ChatAgent` (the "coder") configured with a set of plugins, including one that compacts long conversation history to keep the context window manageable.
+The Coder app assembles a main `ChatAgent` (the "coder") configured with a set of plugins, including one that compacts long conversation history to keep the context window manageable.
 
 ## Architecture
 

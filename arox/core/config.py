@@ -99,14 +99,11 @@ class AgentConfig(BaseModel):
     model_prompt: dict[str, str] = Field(default_factory=dict)
     pre_step_hooks: list[str] = Field(default_factory=list)
     post_step_hooks: list[str] = Field(default_factory=list)
-
-
-class ComposerConfig(BaseModel):
-    main_agent: str
     subagents: list[str] = Field(default_factory=list)
 
 
 class AppConfig(BaseModel):
+    main_agent: str = "coder"
     env_vars: dict[str, str] = Field(default_factory=dict)
     api_keys: dict[str, str] = Field(default_factory=dict)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
@@ -120,7 +117,6 @@ class Config(BaseModel):
     compaction_threshold: int | float = 0.7
     app: AppConfig = Field(default_factory=AppConfig)
     mcp_servers: dict[str, Any] = Field(default_factory=dict)
-    composer: dict[str, ComposerConfig] = Field(default_factory=dict)
     agent: dict[str, AgentConfig] = Field(default_factory=dict)
     model: dict[str, ModelConfig] = Field(default_factory=dict)
     provider: dict[str, ProviderConfig] = Field(default_factory=dict)

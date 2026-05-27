@@ -1,11 +1,11 @@
 include = ["../_shared/compaction.toml"]
 
-[composer.default]
+[app]
 main_agent = "general"
-subagents = ["compaction"]
 
 [agent.general]
 type = "chat"
+subagents = ["compaction"]
 system_prompt = '''
 You are Arox Assistant, a helpful and capable general-purpose AI assistant.
 
@@ -24,6 +24,7 @@ plugins = [
     "file",
     "compaction",
     "subagent",
+    "session",
 ]
 post_step_hooks = []
 

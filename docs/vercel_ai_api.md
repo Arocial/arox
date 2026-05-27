@@ -4,10 +4,10 @@ Arox provides a REST API that is compatible with the Vercel AI SDK, allowing you
 
 ## Endpoints
 
-### Composers
+### Agents
 
-#### `POST /api/composers`
-Create a new composer instance.
+#### `POST /api/agents`
+Create a new agent instance.
 
 **Request Body:**
 ```json
@@ -20,21 +20,21 @@ Create a new composer instance.
 **Response:**
 ```json
 {
-  "id": "composer-uuid",
+  "id": "agent-uuid",
   "workspace": "/path/to/workspace",
   "main_agent": "main",
   "subagents": ["coder", "planner"]
 }
 ```
 
-#### `GET /api/composers`
-List all running composer instances.
+#### `GET /api/agents`
+List all running agent instances.
 
 **Response:**
 ```json
 [
   {
-    "id": "composer-uuid",
+    "id": "agent-uuid",
     "workspace": "/path/to/workspace",
     "main_agent": "main",
     "subagents": ["coder", "planner"]
@@ -42,45 +42,14 @@ List all running composer instances.
 ]
 ```
 
-#### `DELETE /api/composers/{composer_id}`
-Stop and delete a composer instance.
-
-### Composer Interactions
-
-The following endpoints are per-composer (not per-agent). They target the composer itself — useful for composer-scope slash commands like `/fork` whose handlers live on the composer rather than any individual agent.
-
-#### `WS /api/composers/{composer_id}/ws`
-Full-duplex WebSocket bound to the composer's own IO endpoint. The composer does not block on `ChatInputEvent`, so this channel is asymmetric: clients send commands; the server streams back any text output produced by those commands.
-
-**Server → Client messages** (JSON)
-
-Standard Vercel AI SDK data-stream frames (`text-start` / `text-delta` / `text-end`, etc.) emitted as the composer's command handlers write output to its IO endpoint.
-
-**Client → Server messages** (JSON)
-
-```json
-// invoke a composer-scope slash command (e.g. /fork)
-{ "command": { "type": "ForkEvent", "n": 1 } }
-```
-
-`type` is the composer-side `CommandEvent` class name (e.g. `ForkEvent`); remaining fields populate that event's dataclass. Unknown command types are reported via the ack with `status: "unknown_command"`.
-
-The server responds to every client message with `{"status": "ok" | "unknown_command" | "noop", "output": "..."}`. The connection stays open until either side closes it.
-
-#### `GET /api/composers/{composer_id}/suggestions`
-Get command suggestions / completions for the composer's own slash commands (separate from any agent's commands).
-
-**Query Parameters:**
-- `command` (optional): slash name to get argument completions for. When omitted, returns the list of registered composer slash commands.
-- `q` (optional): filter / current input fragment.
-
-**Response:** `{"items": [{"id", "value", "label", "description"}, ...]}` — same shape as the agent-level suggestions endpoint.
+#### `DELETE /api/agents/{agent_id}`
+Stop and delete an agent instance.
 
 ### Agent Interactions
 
-The following endpoints are per-agent, meaning you must specify both the `composer_id` and the `agent_name` (which can be the `main_agent` or one of the `subagents` from the `ComposerInfo` response).
+The following endpoints are per-agent, meaning you must specify both the `agent_id` and the `agent_name` (which can be the `main_agent` or one of the `subagents` from the `AgentInfo` response).
 
-#### `WS /api/composers/{composer_id}/agents/{agent_name}/ws`
+#### `WS /api/agents/{agent_id}/{agent_name}/ws`
 Full-duplex WebSocket for async interaction with an agent. This connection is long-lived across multiple steps — sending input and receiving events are decoupled.
 
 **Server → Client messages** (JSON, one object per frame)
@@ -120,7 +89,7 @@ The server responds to every client message with `{"type": "ack", "status": "ok"
 
 The connection stays open until either side closes it. Closing the client disconnects the stream but does **not** cancel any in-flight step — send `{"cancel": true}` first if needed.
 
-#### `GET /api/composers/{composer_id}/agents/{agent_name}/suggestions`
+#### `GET /api/agents/{agent_id}/{agent_name}/suggestions`
 Get command suggestions or auto-completions for a specific agent.
 
 **Query Parameters:**
@@ -129,7 +98,7 @@ Get command suggestions or auto-completions for a specific agent.
 
 **Response:** `{"items": [{"id", "value", "label", "description"}, ...]}`. When listing slash commands, `description` is taken from the `CommandEvent` subclass's `description` ClassVar.
 
-#### `GET /api/composers/{composer_id}/agents/{agent_name}/state`
+#### `GET /api/agents/{agent_id}/{agent_name}/state`
 Get the current state for a specific agent: message history plus any pending input request.
 
 **Response:**

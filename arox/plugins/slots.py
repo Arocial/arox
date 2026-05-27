@@ -33,3 +33,6 @@ AGENT_RESET = Slot[Callable[[], None]]("agent_reset", "Resets the agent's state"
 PERSISTENT_CONTEXT = Slot[Callable[[], list[ModelMessage]]](
     "persistent_context", "Provides messages that should persist across compaction"
 )
+
+# Returns a list of all active agents (MainAgent + Subagents)
+ALL_AGENTS = "all_agents"

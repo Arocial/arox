@@ -8,7 +8,7 @@ from pathlib import Path
 # Disable fastmcp custom logging
 os.environ["FASTMCP_LOG_ENABLED"] = "false"
 
-from arox.core.composer import Composer
+from arox.core.app import app_setup, create_main_agent
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,6 @@ def main(profile: str | None = None):
     args, unknown_args = parser.parse_known_args()
 
     profile_name = args.profile or "coder"
-    composer_name = "default"
 
     if args.ui in ("text", "headless"):
         log_dir = Path(".arox")
@@ -70,15 +69,15 @@ def main(profile: str | None = None):
     default_agent_config = (
         Path(__file__).parent / "profiles" / profile_name / "config.toml"
     )
-    from arox.core.app import app_setup
 
-    app_setup(config_files=[default_agent_config], cli_args=unknown_args)
+    parsed_config = app_setup(
+        config_files=[default_agent_config], cli_args=unknown_args
+    )
 
     if args.ui == "vercel_ai":
         from arox.ui.vercel_ai import VercelStreamServer
 
         server = VercelStreamServer(
-            composer_name=composer_name,
             config_files=[default_agent_config],
             cli_args=unknown_args,
             host=args.host,
@@ -112,17 +111,18 @@ def main(profile: str | None = None):
         else:
             raise ValueError(f"Unknown UI: {args.ui}")
 
-        composer = Composer(
-            composer_name,
+        main_agent = create_main_agent(
+            parsed_config,
             io_adapter=io_adapter,
             session_id=args.session,
-            config_files=[default_agent_config],
-            cli_args=unknown_args,
         )
 
         async def run_all():
             async with io_adapter:
-                await composer.run()
+                await io_adapter.register_host(main_agent)
+                async with main_agent:
+                    await main_agent.show_agent_info()
+                    await main_agent.run()
 
         if args.ui == "headless":
             from arox.ui.headless import HeadlessIOAdapter

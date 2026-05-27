@@ -56,6 +56,7 @@ repo = "arox.plugins.repo:RepoPlugin"
 shell = "arox.plugins.shell:ShellPlugin"
 compaction = "arox.plugins.compaction:CompactionPlugin"
 subagent = "arox.plugins.subagent:SubagentPlugin"
+session = "arox.plugins.session:SessionPlugin"
 
 [project.entry-points."arox.hooks"]
 

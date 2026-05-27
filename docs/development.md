@@ -24,7 +24,7 @@ This guide provides instructions on how to set up the development environment, r
 ## Project Structure
 
 - `arox/`: The main framework code.
-    - `core/`: Core agent logic (`LLMBaseAgent`, `ChatAgent`, `Composer`, `Plugin`, `Slot`).
+    - `core/`: Core agent logic (`LLMBaseAgent`, `ChatAgent`, `Plugin`, `Slot`).
     - `apps/`: Built-in applications (e.g., `coder`).
     - `plugins/`: Built-in plugins providing tools and commands (e.g., `shell`, `file`, `repo`).
     - `ui/`: IO Adapters for different platforms (Text, Vercel AI, Telegram, Feishu).

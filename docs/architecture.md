@@ -2,26 +2,26 @@
 
 Arox is organized around a clear runtime hierarchy, a split IO system, and a small set of extension points on top of a common agent base. This document walks through each layer.
 
-## Hierarchy: App → Composer → Agents
+## Hierarchy: App → MainAgent
 
-An **App** is a runnable process (e.g. `arox-coder`) that owns a single **IO adapter** and hosts one or more **Composers**.
+An **App** is a runnable process (e.g. `arox-coder`) that owns a single **IO adapter** and hosts a **MainAgent**.
 
-A **`Composer`** (`arox/core/composer.py`) assembles a working agent system against a workspace:
+A **`MainAgent`** assembles a working agent system against a workspace, augmented by plugins:
 
 - Exactly one **main agent** — the user-facing entry point, must subclass `MainAgent` (typically a `ChatAgent`).
-- Zero or more **subagents** — specialized agents the main agent can delegate to. They are exposed as callable tools (and through the `SUBAGENT` slot) on the main agent.
-- A resolved `ComposerConfig` (from `arox/core/config.py`), which names the main agent, its subagents, and their per-agent configuration.
+- Zero or more **subagents** — specialized agents the main agent can delegate to. They are managed by the `SubagentPlugin` and exposed as callable tools (and through the `SUBAGENT` slot) on the main agent.
+- A resolved `AppConfig` and `AgentConfig` (from `arox/core/config.py`), which names the main agent, its subagents, and their per-agent configuration.
 
-The composer drives lifecycle: it constructs agents (looked up by entry-point name from `AgentConfig.type`), attaches pre/post step hooks, enters their async contexts, restores session state, then runs `main_agent.run()`.
+The App drives lifecycle: it constructs the main agent (looked up by entry-point name from `AgentConfig.type`), attaches pre/post step hooks, enters its async context (which in turn starts plugins), and then runs `main_agent.run()`.
 
 ### Session management
 
-Session handling lives at the composer layer (`arox/core/session.py`), one layer above individual agents:
+Session handling is managed by the `SessionPlugin` (`arox/plugins/session.py`):
 
-- **`ComposerSession`** aggregates per-agent `AgentSession` entries plus composer-level metadata under a single session id.
+- **`AppSession`** aggregates per-agent `AgentSession` entries plus app-level metadata under a single session id.
 - **`AgentSession`** is event-sourced: instead of storing a static message list, it stores a sequence of `SessionEvent`s (`agent_step`, `compaction`, `reset`, …) and rebuilds `message_history` by replay.
 - **`llm_context_id`** is a UUID tracking the current LLM context window, passed to providers (e.g. via headers) to leverage server-side caching. A `reset` or `compaction` event rolls it forward, signaling a new context.
-- **`SessionStore`** (default `FileSessionStore`) persists sessions as JSON with age-based cleanup. `Composer.run()` restores on entry and saves on exit; resume by passing `session_id` to the composer.
+- **`SessionStore`** (default `FileSessionStore`) persists sessions as JSON with age-based cleanup. The `SessionPlugin` restores on entry and saves on exit; resume by passing `session_id` to the App.
 
 ## IO system
 
@@ -33,9 +33,9 @@ Every agent holds its own **`IOEndpoint`** (`agent.agent_io`), created by `creat
 
 ### App-level adapter
 
-One **`AbstractIOAdapter`** (`arox/ui/`) is instantiated per App and shared across all composers in it. The adapter:
+One **`AbstractIOAdapter`** (`arox/ui/`) is instantiated per App. The adapter:
 
-- Registers composers via `register_composer`.
+- Registers hosts (agents) via `register_host`.
 - Consumes each agent's matching adapter-side `IOEndpoint`.
 - Renders events to the concrete UI.
 

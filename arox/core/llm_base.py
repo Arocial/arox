@@ -296,6 +296,9 @@ class LLMBaseAgent(IOHost):
         await super().__aenter__()
         if self.mcp_client:
             await self._stack.enter_async_context(self.mcp_client)
+        for plugin in self.plugins:
+            await plugin.on_start()
+            self._stack.push_async_callback(plugin.on_stop)
         return self
 
     def add_local_tool(self, func, **kwargs):
