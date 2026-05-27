@@ -1,6 +1,9 @@
 import logging
+import os
 import re
+import shutil
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -31,6 +34,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _alnum_regex = re.compile(r"(?ui)\W")
+
+# When set, failed `replace_in_file` matches are dumped to this directory
+# (a copy of the target file plus the old/new strings) for later debugging.
+REPLACE_DEBUG_DIR_ENV = "AROX_REPLACE_DEBUG_DIR"
 
 MAX_BINARY_READ_BYTES = 1 * 1024 * 1024
 
@@ -354,12 +361,35 @@ class FilePlugin(Plugin):
                 msg = f"Successfully updated {file_path}"
             else:
                 msg = f"Cannot find a match for passed old_str in {file_path}"
+                self._dump_failed_replace(file_path, old_str, new_str)
             logger.info(msg)
             return msg
         except Exception as e:
             msg = f"Error replacing in file `{path}` with exception: {e!s}"
             logger.info(msg)
             return msg
+
+    def _dump_failed_replace(self, file_path: Path, old_str: str, new_str: str) -> None:
+        """Dump a failed `replace_in_file` match to a debug directory.
+
+        Enabled by setting the ``AROX_REPLACE_DEBUG_DIR`` environment variable.
+        Writes a copy of the target file along with the old/new strings into a
+        timestamped subdirectory so the mismatch can be inspected later.
+        """
+        debug_dir = os.environ.get(REPLACE_DEBUG_DIR_ENV)
+        if not debug_dir:
+            return
+        try:
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+            dump_dir = Path(debug_dir).expanduser() / f"{file_path.name}-{stamp}"
+            dump_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(file_path, dump_dir / file_path.name)
+            (dump_dir / "old_str.txt").write_text(old_str)
+            (dump_dir / "new_str.txt").write_text(new_str)
+            (dump_dir / "meta.txt").write_text(f"original_path: {file_path}\n")
+            logger.info("Dumped failed replace_in_file context to %s", dump_dir)
+        except Exception as e:
+            logger.warning("Failed to dump replace_in_file debug context: %s", e)
 
     def _match_placeholder(self, content):
         return re.search(
