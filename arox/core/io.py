@@ -158,7 +158,7 @@ class AbstractIOAdapter(ABC):
         self._tg: asyncio.TaskGroup = asyncio.TaskGroup()
 
     async def register_host(self, host: Any):
-        self.hosts[getattr(host, "uuid", str(id(host)))] = host
+        self.hosts[host.uuid] = host
 
     def _find_agent(self, adapter_io: IOEndpoint):
         """Locate the agent that owns ``adapter_io`` across registered hosts."""

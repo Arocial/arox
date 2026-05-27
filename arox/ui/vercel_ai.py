@@ -619,12 +619,16 @@ class VercelStreamServer:
         }
 
     async def list_sessions(self):
+        from arox.core.config import load_config
         from arox.core.session import FileSessionStore
 
+        # Sessions are persisted with ``app_name`` set to the main agent's name
+        # (see ``SessionPlugin``), so filter by the configured main agent.
+        parsed_config = load_config(self.config_files, self.cli_args)
+        app_name = parsed_config.app.main_agent
+
         store = FileSessionStore()
-        # We don't have app_name anymore, maybe use main_agent.name or just list all
-        # For now, let's list all sessions or assume a default name
-        sessions = await store.list_sessions("default")
+        sessions = await store.list_sessions(app_name)
         return [
             SessionInfo(
                 id=s.id,

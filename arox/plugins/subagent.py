@@ -43,11 +43,15 @@ class SubagentPlugin(Plugin):
         super().__init__(agent)
         self.subagents = {}
 
-    async def on_start(self):
-        subagent_names = self.agent.agent_config.subagents
+        # Instantiate subagents and publish their slots synchronously at
+        # construction time. Doing this here (rather than in ``on_start``) means
+        # the ``SUBAGENT`` / ``DELEGATABLE_SUBAGENTS`` / ``ALL_AGENTS`` slots are
+        # available regardless of plugin start order — e.g. ``SessionPlugin``
+        # can restore subagent sessions even if it starts before this plugin.
+        # Only entering each subagent's async context is deferred to
+        # ``on_start``.
         parsed_config = self.agent.parsed_config
-
-        for agent_name in subagent_names:
+        for agent_name in self.agent.agent_config.subagents:
             agent_config = parsed_config.agent.get(agent_name)
             if not agent_config:
                 raise ValueError(f"Agent config for '{agent_name}' not found")
@@ -68,20 +72,16 @@ class SubagentPlugin(Plugin):
             )
 
             # Load hooks for subagent
-            pre_step_hooks = agent_config.pre_step_hooks
-            for hook_path in pre_step_hooks:
+            for hook_path in agent_config.pre_step_hooks:
                 hook_func = import_class(hook_path, group="arox.hooks")
                 subagent.add_pre_step_hook(hook_func)
 
-            post_step_hooks = agent_config.post_step_hooks
-            for hook_path in post_step_hooks:
+            for hook_path in agent_config.post_step_hooks:
                 hook_func = import_class(hook_path, group="arox.hooks")
                 subagent.add_post_step_hook(hook_func)
 
             self.subagents[agent_name] = subagent
-            await self.agent._stack.enter_async_context(subagent)
 
-        # Provide slots
         def get_subagent(name: str):
             return self.subagents.get(name)
 
@@ -100,6 +100,10 @@ class SubagentPlugin(Plugin):
             return list(self.subagents.values())
 
         self.agent.provide_slot(ALL_AGENTS, get_all_subagents)
+
+    async def on_start(self):
+        for subagent in self.subagents.values():
+            await self.agent._stack.enter_async_context(subagent)
 
     def commands(self):
         return [CommandSpec(AgentCallEvent, self.handle_agent_call)]
