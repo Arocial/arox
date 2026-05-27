@@ -13,7 +13,7 @@ from pydantic_ai import (
 from arox.core.llm_base import LLMBaseAgent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin
 from arox.core.session import _serialize_messages
-from arox.plugins.slots import PERSISTENT_CONTEXT, SUBAGENT
+from arox.plugins.slots import PERSISTENT_CONTEXT, SUBAGENTS
 
 logger = logging.getLogger(__name__)
 
@@ -143,10 +143,9 @@ class CompactionPlugin(Plugin):
 
         return messages
 
-    def _find_compaction_agent(self) -> CompactionAgent | None:
-        for get_subagent in self.agent.get_slot(SUBAGENT):
-            sub = get_subagent(COMPACTION_AGENT_NAME)
-            if isinstance(sub, CompactionAgent):
+    async def _find_compaction_agent(self) -> CompactionAgent | None:
+        for sub in await self.agent.invoke_slot(SUBAGENTS) or []:
+            if sub.name == COMPACTION_AGENT_NAME and isinstance(sub, CompactionAgent):
                 return sub
         return None
 
@@ -158,7 +157,7 @@ class CompactionPlugin(Plugin):
         if not messages:
             return messages
 
-        compaction_agent = self._find_compaction_agent()
+        compaction_agent = await self._find_compaction_agent()
         if not compaction_agent:
             await agent.agent_io.send(
                 "Compaction agent not configured; skipping compaction."
@@ -183,8 +182,8 @@ class CompactionPlugin(Plugin):
         compacted_messages: list[ModelMessage] = [new_request]
 
         # Add persistent context (e.g. agents.md)
-        for get_persistent in agent.get_slot(PERSISTENT_CONTEXT):
-            compacted_messages.extend(get_persistent())
+        for persistent_messages in await agent.invoke_slot(PERSISTENT_CONTEXT) or []:
+            compacted_messages.extend(persistent_messages)
 
         await agent.agent_io.send("Conversation history compacted successfully.")
         return compacted_messages

@@ -56,6 +56,13 @@ from arox.core.io import (
     IOHost,
 )
 from arox.core.skills import build_skill_catalog, discover_skills
+from arox.core.slot import ResultAggregator, Slot
+from arox.plugins.slots import (
+    AGENT_RESET,
+    AGENT_STEP,
+    AGENT_STEP_FAILURE,
+    RECORD_EVENT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -277,6 +284,10 @@ class LLMBaseAgent(IOHost):
                 self.command_manager.register(
                     spec.event_cls, spec.handler, spec.completer
                 )
+
+            # Wire up push-slot subscriptions.
+            for slot, handler in plugin.subscribe():
+                self.provide_slot(slot, handler)
         return plugins
 
     def get_plugin(self, plugin_cls: type) -> Any | None:
@@ -285,17 +296,43 @@ class LLMBaseAgent(IOHost):
                 return plugin
         return None
 
-    def provide_slot(self, slot: Any, provider: Any):
+    def provide_slot[T](self, slot: Slot[T], provider: T):
         """Register a provider for a specific slot."""
         if slot not in self._slots:
             self._slots[slot] = []
         self._slots[slot].append(provider)
 
-    def get_slot(self, slot: Any) -> list[Any]:
+    async def invoke_slot[T](
+        self, slot: Slot[T], *args: Any, **kwargs: Any
+    ) -> T | list[T] | None:
+        """Dispatch to registered providers using the slot's aggregator strategy.
+
+        * ``DISCARD`` – invoke every provider in registration order, discard
+          return values (fire-and-forget event channel).
+        * ``FIRST``  – return the result of the first registered provider.
+        * ``LIST``   – return the results of all registered providers as a list.
         """
-        Get the providers for a slot
-        """
-        return self._slots.get(slot, [])
+        providers = self._slots.get(slot, [])
+        match slot.aggregator:
+            case ResultAggregator.DISCARD:
+                for handler in providers:
+                    result = handler(*args, **kwargs)
+                    if asyncio.iscoroutine(result):
+                        await result
+                return None
+            case ResultAggregator.FIRST:
+                if not providers:
+                    return None
+                result = providers[0](*args, **kwargs)
+                return await result if asyncio.iscoroutine(result) else result
+            case ResultAggregator.LIST:
+                results = []
+                for handler in providers:
+                    result = handler(*args, **kwargs)
+                    if asyncio.iscoroutine(result):
+                        result = await result
+                    results.append(result)
+                return results
 
     async def __aenter__(self):
         await super().__aenter__()
@@ -498,8 +535,7 @@ class LLMBaseAgent(IOHost):
         await self._run_pre_step_hooks(input_content)
 
         async def _commit_failure(messages: list[ModelMessage]) -> None:
-            for plugin in self.plugins:
-                await plugin.on_agent_step_failure(input_content, messages)
+            await self.invoke_slot(AGENT_STEP_FAILURE, input_content, messages)
 
         result = await self._run_inference(
             input_content,
@@ -508,20 +544,17 @@ class LLMBaseAgent(IOHost):
             on_failure=_commit_failure,
         )
         self.message_history = result.all_messages()
-        for plugin in self.plugins:
-            await plugin.on_agent_step(input_content, result)
+        await self.invoke_slot(AGENT_STEP, input_content, result)
         await self._run_post_step_hooks(input_content, result)
         return result
 
     async def reset(self):
         self.message_history = []
         self.llm_context_id = str(uuid.uuid4())
-        for plugin in self.plugins:
-            await plugin.on_agent_reset()
+        await self.invoke_slot(AGENT_RESET)
 
     async def record_event(self, event_type: str, data: dict[str, Any]):
-        for plugin in self.plugins:
-            await plugin.on_event(event_type, data)
+        await self.invoke_slot(RECORD_EVENT, event_type, data)
 
     def add_pre_step_hook(self, hook: PreStepHook):
         if not hasattr(self, "pre_step_hooks"):

@@ -36,14 +36,41 @@ class MockAgent:
     def provide_slot(self, slot, provider):
         self._slots.setdefault(slot, []).append(provider)
 
-    def get_slot(self, slot):
-        return self._slots.get(slot, [])
+    async def invoke_slot(self, slot, *args, **kwargs):
+        providers = self._slots.get(slot, [])
+        from arox.core.slot import ResultAggregator
+
+        match slot.aggregator:
+            case ResultAggregator.DISCARD:
+                for handler in providers:
+                    result = handler(*args, **kwargs)
+                    if asyncio.iscoroutine(result):
+                        await result
+                return None
+            case ResultAggregator.FIRST:
+                if not providers:
+                    return None
+                result = providers[0](*args, **kwargs)
+                return await result if asyncio.iscoroutine(result) else result
+            case ResultAggregator.LIST:
+                results = []
+                for handler in providers:
+                    result = handler(*args, **kwargs)
+                    if asyncio.iscoroutine(result):
+                        result = await result
+                    results.append(result)
+                return results
+
+    def register(self, plugin):
+        for slot, handler in plugin.subscribe():
+            self.provide_slot(slot, handler)
+        return plugin
 
 
 @pytest_asyncio.fixture
 async def plugin(tmp_path):
     agent = MockAgent(tmp_path)
-    p = ShellPlugin(agent)
+    p = agent.register(ShellPlugin(agent))
     yield p
     await p._reset()
 
@@ -277,10 +304,9 @@ async def test_reset_kills_all_backgrounds(plugin):
     await plugin.shell(command="sleep 30", description="long2", run_in_background=True)
     assert len(plugin._background) == 2
 
-    reset_fn = plugin.agent.get_slot(
-        __import__("arox.plugins.slots", fromlist=["AGENT_RESET"]).AGENT_RESET
-    )[0]
-    await reset_fn()
+    from arox.plugins.slots import AGENT_RESET
+
+    await plugin.agent.invoke_slot(AGENT_RESET)
     assert plugin._background == {}
 
 

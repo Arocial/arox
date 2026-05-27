@@ -13,7 +13,16 @@ from arox.core.session import (
     _deserialize_messages,
     _serialize_messages,
 )
-from arox.plugins.slots import ALL_AGENTS
+from arox.plugins.slots import (
+    AGENT_COMMAND,
+    AGENT_ERROR,
+    AGENT_RESET,
+    AGENT_STEP,
+    AGENT_STEP_FAILURE,
+    RECORD_EVENT,
+    SUBAGENTS,
+    USER_INPUT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,16 +110,24 @@ class SessionPlugin(Plugin):
         self.app_session = None
         self.agent_session = None
 
-    def _get_subagents(self):
-        agents = []
-        for provider in self.agent.get_slot(ALL_AGENTS):
-            for a in provider():
-                if a != self.agent:
-                    agents.append(a)
-        return agents
+    async def _get_subagents(self):
+        return [
+            a for a in await self.agent.invoke_slot(SUBAGENTS) or [] if a != self.agent
+        ]
 
     def commands(self):
         return [CommandSpec(ForkEvent, self.handle_fork)]
+
+    def subscribe(self):
+        return [
+            (AGENT_RESET, self.on_agent_reset),
+            (AGENT_STEP, self.on_agent_step),
+            (AGENT_STEP_FAILURE, self.on_agent_step_failure),
+            (AGENT_COMMAND, self.on_agent_command),
+            (USER_INPUT, self.on_user_input),
+            (AGENT_ERROR, self.on_error),
+            (RECORD_EVENT, self.on_event),
+        ]
 
     async def on_start(self):
         await self.session_store.cleanup()
@@ -267,7 +284,7 @@ class SessionPlugin(Plugin):
             await self.session_store.save_session(self.agent_session)
 
         # Broadcast to subagents
-        for subagent in self._get_subagents():
+        for subagent in await self._get_subagents():
             if subagent_plugin := subagent.get_plugin(SessionPlugin):
                 await subagent_plugin.save()
 
@@ -313,7 +330,7 @@ class SessionPlugin(Plugin):
         await self.session_store.save_session(new_agent_session)
 
         # Broadcast fork/reset to subagents
-        for subagent in self._get_subagents():
+        for subagent in await self._get_subagents():
             if subagent_plugin := subagent.get_plugin(SessionPlugin):
                 await subagent_plugin.reset_for_fork(
                     new_app_session.id, [new_app_session.id, new_agent_session.id]
@@ -329,7 +346,7 @@ class SessionPlugin(Plugin):
         assert self.agent_session is not None
         await self.session_store.save_session(self.agent_session)
 
-        for subagent in self._get_subagents():
+        for subagent in await self._get_subagents():
             if subagent_plugin := subagent.get_plugin(SessionPlugin):
                 await subagent_plugin.reset_for_fork(
                     self.agent_session.id,

@@ -7,7 +7,7 @@ from pydantic_ai.tools import ToolDefinition
 
 from arox.core.llm_base import DelegatableAgent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, ToolDef
-from arox.plugins.slots import ALL_AGENTS, DELEGATABLE_SUBAGENTS, SUBAGENT
+from arox.plugins.slots import SUBAGENTS
 from arox.utils import import_class
 
 logger = logging.getLogger(__name__)
@@ -35,21 +35,19 @@ class SubagentPlugin(Plugin):
 
     Subagents are surfaced two ways: the ``delegate_to_subagent`` tool the LLM
     can call, and the ``/agent`` slash command the human can type. Both reach
-    the subagents through the :data:`SUBAGENT` / :data:`DELEGATABLE_SUBAGENTS`
-    slots.
+    the subagents through the :data:`SUBAGENTS` slot.
     """
 
     def __init__(self, agent):
         super().__init__(agent)
         self.subagents = {}
 
-        # Instantiate subagents and publish their slots synchronously at
+        # Instantiate subagents and publish the slot synchronously at
         # construction time. Doing this here (rather than in ``on_start``) means
-        # the ``SUBAGENT`` / ``DELEGATABLE_SUBAGENTS`` / ``ALL_AGENTS`` slots are
-        # available regardless of plugin start order — e.g. ``SessionPlugin``
-        # can restore subagent sessions even if it starts before this plugin.
-        # Only entering each subagent's async context is deferred to
-        # ``on_start``.
+        # the ``SUBAGENTS`` slot is available regardless of plugin start order —
+        # e.g. ``SessionPlugin`` can restore subagent sessions even if it starts
+        # before this plugin. Only entering each subagent's async context is
+        # deferred to ``on_start``.
         parsed_config = self.agent.parsed_config
         for agent_name in self.agent.agent_config.subagents:
             agent_config = parsed_config.agent.get(agent_name)
@@ -82,24 +80,10 @@ class SubagentPlugin(Plugin):
 
             self.subagents[agent_name] = subagent
 
-        def get_subagent(name: str):
-            return self.subagents.get(name)
-
-        self.agent.provide_slot(SUBAGENT, get_subagent)
-
-        def list_delegatable_subagents():
-            return [
-                agent
-                for agent in self.subagents.values()
-                if isinstance(agent, DelegatableAgent)
-            ]
-
-        self.agent.provide_slot(DELEGATABLE_SUBAGENTS, list_delegatable_subagents)
-
-        def get_all_subagents():
+        def list_subagents():
             return list(self.subagents.values())
 
-        self.agent.provide_slot(ALL_AGENTS, get_all_subagents)
+        self.agent.provide_slot(SUBAGENTS, list_subagents)
 
     async def on_start(self):
         for subagent in self.subagents.values():
@@ -116,17 +100,18 @@ class SubagentPlugin(Plugin):
             )
         ]
 
-    def _delegatable_subagents(self) -> list:
-        for provider in self.agent.get_slot(DELEGATABLE_SUBAGENTS):
-            subagents = provider()
-            if subagents:
-                return subagents
-        return []
+    async def _all_subagents(self) -> list:
+        return await self.agent.invoke_slot(SUBAGENTS) or []
+
+    async def _delegatable_subagents(self) -> list:
+        return [
+            a for a in await self._all_subagents() if isinstance(a, DelegatableAgent)
+        ]
 
     async def _prepare_delegate(
         self, ctx: RunContext, tool_def: ToolDefinition
     ) -> ToolDefinition | None:
-        subagents = self._delegatable_subagents()
+        subagents = await self._delegatable_subagents()
         if not subagents:
             # Hide the tool entirely when there is nothing to delegate to.
             return None
@@ -144,7 +129,7 @@ class SubagentPlugin(Plugin):
 
     async def delegate_to_subagent(self, subagent_name: str, task: str) -> str:
         """Delegate a task to a specific subagent."""
-        subagents = {agent.name: agent for agent in self._delegatable_subagents()}
+        subagents = {agent.name: agent for agent in await self._delegatable_subagents()}
         agent = subagents.get(subagent_name)
         if not agent:
             return (
@@ -163,11 +148,10 @@ class SubagentPlugin(Plugin):
         if not event.subagent_name:
             return "Usage: /agent <name> [task]"
 
-        subagent = None
-        for get_subagent_func in self.agent.get_slot(SUBAGENT):
-            subagent = get_subagent_func(event.subagent_name)
-            if subagent:
-                break
+        subagent = next(
+            (a for a in await self._all_subagents() if a.name == event.subagent_name),
+            None,
+        )
 
         if not isinstance(subagent, DelegatableAgent):
             return f"Subagent '{event.subagent_name}' not found."

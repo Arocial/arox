@@ -160,18 +160,17 @@ class AbstractIOAdapter(ABC):
     async def register_host(self, host: Any):
         self.hosts[host.uuid] = host
 
-    def _find_agent(self, adapter_io: IOEndpoint):
+    async def _find_agent(self, adapter_io: IOEndpoint):
         """Locate the agent that owns ``adapter_io`` across registered hosts."""
         for host in self.hosts.values():
             if getattr(host, "adapter_io", None) is adapter_io:
                 return host
-            if hasattr(host, "get_slot"):
-                from arox.plugins.slots import ALL_AGENTS
+            if hasattr(host, "invoke_slot"):
+                from arox.plugins.slots import SUBAGENTS
 
-                for provider in host.get_slot(ALL_AGENTS):
-                    for agent in provider():
-                        if getattr(agent, "adapter_io", None) is adapter_io:
-                            return agent
+                for agent in await host.invoke_slot(SUBAGENTS) or []:
+                    if getattr(agent, "adapter_io", None) is adapter_io:
+                        return agent
         return None
 
     async def _process_io(self, adapter_io: IOEndpoint):

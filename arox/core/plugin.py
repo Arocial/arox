@@ -13,6 +13,8 @@ from arox.core.completion import (
     CompletionRouter,
 )
 from arox.core.io import ReplyEvent, RequestEvent
+from arox.core.slot import Slot
+from arox.plugins.slots import AGENT_COMMAND
 
 logger = logging.getLogger(__name__)
 
@@ -127,8 +129,7 @@ class CommandManager:
             logger.warning("Command not found: /%s", name)
             return None
         try:
-            for plugin in self.agent.plugins:
-                await plugin.on_agent_command(name, arg)
+            await self.agent.invoke_slot(AGENT_COMMAND, name, arg)
             event = event_cls.from_slash(name, arg)
             if event is not None and not isinstance(event, CommandEvent):
                 logger.warning(
@@ -204,33 +205,21 @@ class Plugin:
         self.agent = agent
 
     async def on_start(self) -> None:
-        """Lifecycle hook called when the agent starts."""
+        """Resource hook called when the agent starts (sets up the context stack)."""
 
     async def on_stop(self) -> None:
-        """Lifecycle hook called when the agent stops."""
+        """Resource hook called when the agent stops (torn down in reverse order)."""
 
-    async def on_agent_reset(self) -> None:
-        """Lifecycle hook called when the agent is reset."""
+    def subscribe(self) -> Sequence[tuple[Slot, Callable[..., Any]]]:
+        """Return ``(slot, handler)`` bindings for push-style event slots.
 
-    async def on_agent_step(self, input_content: str | None, result: Any) -> None:
-        """Lifecycle hook called when an agent step completes successfully."""
-
-    async def on_agent_step_failure(
-        self, input_content: str | None, messages: list[ModelMessage]
-    ) -> None:
-        """Lifecycle hook called when an agent step fails."""
-
-    async def on_agent_command(self, command: str, arg: str | None) -> None:
-        """Lifecycle hook called when a slash command is parsed."""
-
-    async def on_user_input(self, text: str, client_message_id: str | None) -> None:
-        """Lifecycle hook called when user input is received."""
-
-    async def on_error(self, error: Exception) -> None:
-        """Lifecycle hook called when an error occurs."""
-
-    async def on_event(self, event_type: str, data: dict[str, Any]) -> None:
-        """Lifecycle hook called for custom events."""
+        Handlers fire when the agent calls :meth:`~LLMBaseAgent.invoke_slot` on the
+        matching :class:`~arox.core.slot.Slot` (reset, step, command, user
+        input, errors, ...). Handlers may be sync or async and their return
+        value is ignored. Use pull slots (:meth:`LLMBaseAgent.invoke_slot`) when
+        a value must be retrieved on demand.
+        """
+        return []
 
     def commands(self) -> Sequence[CommandSpec]:
         """Return :class:`CommandSpec` bindings to register.
@@ -288,7 +277,3 @@ class Plugin:
     ) -> list[ModelMessage]:
         """Process message history before sending to the model."""
         return messages
-
-    async def get_info(self) -> str:
-        """Return information to be displayed by the /info command."""
-        return ""

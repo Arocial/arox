@@ -91,7 +91,7 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
                 line = await self.input_queue.get()
                 retry = line.strip().lower() == "y"
             if event.normal_input.request:
-                agent = self._find_agent(adapter_io)
+                agent = await self._find_agent(adapter_io)
                 while True:
                     line = await self.input_queue.get()
                     if (

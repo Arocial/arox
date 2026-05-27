@@ -14,11 +14,11 @@ Two pieces:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-CompletionProvider = Callable[["CompletionRequest"], Iterable["CompletionItem"]]
+CompletionProvider = Callable[["CompletionRequest"], AsyncIterator["CompletionItem"]]
 
 DEFAULT_RESULT_LIMIT = 50
 
@@ -139,13 +139,15 @@ class CompletionRouter:
     def slash_top(self) -> dict[str, CompletionItem]:
         return self._slash_top
 
-    def complete(self, req: CompletionRequest) -> list[CompletionItem]:
+    async def complete(self, req: CompletionRequest) -> list[CompletionItem]:
         items: list[CompletionItem] = []
         if req.trigger == "/":
-            items.extend(self._complete_slash(req))
+            async for it in self._complete_slash(req):
+                items.append(it)
         elif req.trigger and req.trigger in self._triggers:
             for provider in self._triggers[req.trigger]:
-                items.extend(provider(req))
+                async for it in provider(req):
+                    items.append(it)
 
         # Fill in replace_range default and clamp
         for it in items:
@@ -153,7 +155,9 @@ class CompletionRouter:
                 it.replace_range = req.current_token_range
         return items[: self._limit]
 
-    def _complete_slash(self, req: CompletionRequest) -> Iterable[CompletionItem]:
+    async def _complete_slash(
+        self, req: CompletionRequest
+    ) -> AsyncIterator[CompletionItem]:
         # Determine whether we're completing the command name or its arguments.
         # Treat "/foo" (no trailing space) as still editing the name; "/foo "
         # (with separator after the name) as editing arguments.
@@ -186,7 +190,8 @@ class CompletionRouter:
         sub = self._slash_sub.get(name)
         if sub is None:
             return
-        yield from sub(req)
+        async for item in sub(req):
+            yield item
 
 
 def _score(query: str, candidate: str) -> float:

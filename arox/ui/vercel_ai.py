@@ -37,7 +37,7 @@ from arox.core.io import (
     IOEndpoint,
 )
 from arox.core.llm_base import MainAgent
-from arox.plugins.slots import ALL_AGENTS
+from arox.plugins.slots import SUBAGENTS
 
 logger = logging.getLogger(__name__)
 
@@ -377,7 +377,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             in_task.cancel()
             await asyncio.gather(out_task, in_task, return_exceptions=True)
 
-    def suggestions(
+    async def suggestions(
         self,
         target,
         command: str | None = None,
@@ -388,7 +388,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         else:
             text = f"/{q or ''}"
         req = parse_request(text, agent=target)
-        results = target.command_manager.completion_router.complete(req)
+        results = await target.command_manager.completion_router.complete(req)
 
         items = [
             SuggestionItem(
@@ -459,10 +459,8 @@ class VercelStreamServer:
     async def health(self):
         return {"status": "ok"}
 
-    def _get_all_agents(self, main_agent):
-        agents = [main_agent]
-        for provider in main_agent.get_slot(ALL_AGENTS):
-            agents.extend(provider())
+    async def _get_all_agents(self, main_agent):
+        agents = [main_agent, *(await main_agent.invoke_slot(SUBAGENTS) or [])]
         return {a.name: a for a in agents}
 
     async def create_agent(self, request: CreateAgentRequest):
@@ -526,7 +524,7 @@ class VercelStreamServer:
 
         task.add_done_callback(on_task_done)
 
-        all_agents = self._get_all_agents(main_agent)
+        all_agents = await self._get_all_agents(main_agent)
         subagents = [name for name in all_agents if name != main_agent.name]
 
         return AgentInfo(
@@ -539,7 +537,7 @@ class VercelStreamServer:
     async def list_agents(self):
         res = []
         for cid, r in self.io_adapter.run_instances.items():
-            all_agents = self._get_all_agents(r.main_agent)
+            all_agents = await self._get_all_agents(r.main_agent)
             subagents = [name for name in all_agents if name != r.main_agent.name]
             res.append(
                 AgentInfo(
@@ -565,9 +563,9 @@ class VercelStreamServer:
             raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found.")
         return run_instance.main_agent
 
-    def _resolve_agent(self, agent_id: str, agent_name: str):
+    async def _resolve_agent(self, agent_id: str, agent_name: str):
         main_agent = self._resolve_main_agent(agent_id)
-        all_agents = self._get_all_agents(main_agent)
+        all_agents = await self._get_all_agents(main_agent)
         agent = all_agents.get(agent_name)
         if not agent:
             raise HTTPException(
@@ -580,7 +578,7 @@ class VercelStreamServer:
         if not run_instance:
             await websocket.close(code=4004, reason="agent not found")
             return
-        all_agents = self._get_all_agents(run_instance.main_agent)
+        all_agents = await self._get_all_agents(run_instance.main_agent)
         agent = all_agents.get(agent_name)
         if not agent:
             await websocket.close(code=4004, reason="agent not found")
@@ -594,8 +592,8 @@ class VercelStreamServer:
         command: str | None = None,
         q: str | None = None,
     ):
-        return self.io_adapter.suggestions(
-            self._resolve_agent(agent_id, agent_name), command, q
+        return await self.io_adapter.suggestions(
+            await self._resolve_agent(agent_id, agent_name), command, q
         )
 
     async def state(self, agent_id: str, agent_name: str):
@@ -604,7 +602,7 @@ class VercelStreamServer:
             raise HTTPException(status_code=404, detail="Agent not found")
 
         main_agent = run_instance.main_agent
-        all_agents = self._get_all_agents(main_agent)
+        all_agents = await self._get_all_agents(main_agent)
         agent = all_agents.get(agent_name)
         if not agent:
             raise HTTPException(status_code=404, detail="Agent not found")

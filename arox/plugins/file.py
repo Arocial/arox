@@ -64,10 +64,12 @@ class FilePlugin(Plugin):
         self.persistent_files: dict[str, str] = {}
 
         self.agent.provide_slot(AGENT_INFO, self.get_info)
-        self.agent.provide_slot(AGENT_RESET, self.reset)
         self.agent.provide_slot(PERSISTENT_CONTEXT, self.get_persistent_context)
 
         self.reset()
+
+    def subscribe(self):
+        return [(AGENT_RESET, self.reset)]
 
     def reset(self):
         self._pending_text_files = {}
@@ -124,10 +126,9 @@ class FilePlugin(Plugin):
             ]
         return []
 
-    def candidates(self):
+    async def candidates(self):
         provided_files = []
-        for get_files_func in self.agent.get_slot(PROJECT_FILES):
-            files = get_files_func()
+        for files in await self.agent.invoke_slot(PROJECT_FILES) or []:
             if files:
                 provided_files.extend(files)
 
@@ -482,9 +483,9 @@ class FilePlugin(Plugin):
             return
         await self.read_by_user(event.files)
 
-    def get_completions(self, req: CompletionRequest):
+    async def get_completions(self, req: CompletionRequest):
         current_word = req.current_token
-        for candidate in self.candidates():
+        for candidate in await self.candidates():
             if current_word in candidate:
                 yield CompletionItem(
                     value=candidate,

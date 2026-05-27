@@ -9,6 +9,7 @@ from pydantic_ai.tools import DeferredToolRequests
 
 from arox.core.io import ReplyEvent, RequestEvent
 from arox.core.llm_base import DelegatableAgent, MainAgent
+from arox.plugins.slots import AGENT_ERROR, USER_INPUT
 
 logger = logging.getLogger(__name__)
 
@@ -150,8 +151,10 @@ class ChatAgent(MainAgent, DelegatableAgent):
 
                 user_input = reply.user_input
                 if user_input is not None:
-                    for plugin in self.plugins:
-                        await plugin.on_user_input(user_input, reply.client_message_id)
+                    await self.invoke_slot(
+                        USER_INPUT, user_input, reply.client_message_id
+                    )
+
                     # We still need to know the event index for UserTurnRecordedEvent.
                     # If we move agent_session to SessionPlugin, we might need a way to get the index.
                     # For now, let's assume SessionPlugin is present and we can get it.
@@ -188,8 +191,7 @@ class ChatAgent(MainAgent, DelegatableAgent):
 
             except Exception as e:
                 logger.exception("An error occurred.")
-                for plugin in self.plugins:
-                    await plugin.on_error(e)
+                await self.invoke_slot(AGENT_ERROR, e)
                 pending_exception = e
 
             # 6. Send StepDoneEvent to indicate the step is finished

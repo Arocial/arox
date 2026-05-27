@@ -23,7 +23,7 @@ def _make_plugin(main_agent_session: AgentSession):
             )
             self.plugins = []
 
-        def get_slot(self, slot):
+        async def invoke_slot(self, slot, *args, **kwargs):
             return []
 
     agent = MockAgent()

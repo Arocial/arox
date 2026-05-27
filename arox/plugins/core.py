@@ -4,7 +4,7 @@ from typing import ClassVar
 
 from arox.core.completion import CompletionItem, CompletionRequest
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin
-from arox.plugins.slots import AGENT_INFO, AGENT_RESET
+from arox.plugins.slots import AGENT_INFO
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class CorePlugin(Plugin):
         self.agent.set_model(event.model_ref)
         return f"Model switched to {event.model_ref}"
 
-    def complete_model_ref(self, req: CompletionRequest):
+    async def complete_model_ref(self, req: CompletionRequest):
         typed = req.current_token.lower()
         for ref in self.agent.parsed_config.available_models:
             if typed and typed not in ref.lower():
@@ -62,14 +62,11 @@ class CorePlugin(Plugin):
 
     async def handle_info(self, event: InfoEvent) -> str:
         lines = [f"Current model: {getattr(self.agent, 'provider_model', 'Unknown')}"]
-        for provider in self.agent.get_slot(AGENT_INFO):
-            info = await provider()
+        for info in await self.agent.invoke_slot(AGENT_INFO) or []:
             if info:
                 lines.append(info)
         return "\n".join(lines)
 
     async def handle_reset(self, event: ResetEvent) -> str:
         await self.agent.reset()
-        for provider in self.agent.get_slot(AGENT_RESET):
-            provider()
         return "Reset complete."

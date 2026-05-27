@@ -34,7 +34,6 @@ from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
 )
-from arox.plugins.slots import ALL_AGENTS
 
 logger = logging.getLogger(__name__)
 
@@ -86,11 +85,16 @@ class CommandCompleter(Completer):
         self.agent = agent
 
     def get_completions(self, document, complete_event):
+        # Async-only completer; prompt-toolkit drives ``get_completions_async``
+        # during async prompt sessions. The sync path yields nothing.
+        return iter(())
+
+    async def get_completions_async(self, document, complete_event):
         text = document.text
         if not text or text[0] not in ("/", "@"):
             return
         req = parse_request(text, cursor=document.cursor_position, agent=self.agent)
-        for item in self.completion_router.complete(req):
+        for item in await self.completion_router.complete(req):
             start, _end = item.replace_range or req.current_token_range
             # start_position is relative to the cursor; document.cursor_position
             # is the absolute cursor in `text`.
@@ -122,9 +126,11 @@ class TextIOAdapter(AbstractIOAdapter):
             for host in self.hosts.values():
                 if isinstance(host, ChatAgent):
                     host.cancel_foreground_task()
-                if hasattr(host, "get_slot"):
-                    for provider in host.get_slot(ALL_AGENTS):
-                        for agent in provider():
+                if hasattr(host, "_slots"):
+                    from arox.plugins.slots import SUBAGENTS
+
+                    for get_agents in host._slots.get(SUBAGENTS, []):
+                        for agent in get_agents() or []:
                             if isinstance(agent, ChatAgent):
                                 agent.cancel_foreground_task()
 
@@ -209,7 +215,7 @@ class TextIOAdapter(AbstractIOAdapter):
                     retry = False
                     await self._flush_stdin()
             if event.normal_input.request:
-                agent = self._find_agent(adapter_io)
+                agent = await self._find_agent(adapter_io)
                 while True:
                     try:
                         line = await self.user_input()

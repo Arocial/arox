@@ -47,7 +47,7 @@ IO is split into two layers: per-agent channels and app-level adapters.
   - `tools()` — Python functions exposed to the LLM (`@tool`)
   - `commands()` — slash commands for the human (`@command`)
   - `history_processor()` — async hook to modify message history before LLM calls
-- **`Slot`** (`arox/core/slot.py`): typed token for loose coupling between plugins/agents. Producers call `agent.provide_slot(slot, impl)`; consumers call `agent.get_slot(slot)`. Built-in slots are in `arox/plugins/slots.py` (e.g. `SUBAGENT`, `PERSISTENT_CONTEXT`).
+- **`Slot`** (`arox/core/slot.py`): typed token for loose coupling between plugins/agents, used for both pull and push patterns. Producers call `agent.provide_slot(slot, impl)`; consumers pull or push notifications with `await agent.invoke_slot(slot, ...)`. Built-in slots are in `arox/plugins/slots.py` (e.g. `SUBAGENT`, `PERSISTENT_CONTEXT`, `AGENT_RESET`).
 - **Skills** (`arox/core/skills.py`): discovered from `.arox/skills/` in the workspace and injected into the agent's system prompt as a catalog. `AgentConfig.skills` restricts which are visible.
 - **MCP**: each agent can connect to MCP servers through its `pydantic_ai` client, exposing remote tools alongside local ones.
 - **Hooks**: `pre_step_hooks` / `post_step_hooks` from `AgentConfig` are loaded via entry points and attached around each inference step.

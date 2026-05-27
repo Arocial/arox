@@ -27,8 +27,34 @@ class MockAgent:
             self._slots[slot] = []
         self._slots[slot].append(provider)
 
-    def get_slot(self, slot):
-        return self._slots.get(slot, [])
+    async def invoke_slot(self, slot, *args, **kwargs):
+        providers = self._slots.get(slot, [])
+        from arox.core.slot import ResultAggregator
+
+        match slot.aggregator:
+            case ResultAggregator.DISCARD:
+                for handler in providers:
+                    result = handler(*args, **kwargs)
+                    if __import__("asyncio").iscoroutine(result):
+                        await result
+                return None
+            case ResultAggregator.FIRST:
+                if not providers:
+                    return None
+                result = providers[0](*args, **kwargs)
+                return (
+                    await result
+                    if __import__("asyncio").iscoroutine(result)
+                    else result
+                )
+            case ResultAggregator.LIST:
+                results = []
+                for handler in providers:
+                    result = handler(*args, **kwargs)
+                    if __import__("asyncio").iscoroutine(result):
+                        result = await result
+                    results.append(result)
+                return results
 
 
 class TestFileEdit:
