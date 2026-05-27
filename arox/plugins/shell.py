@@ -118,13 +118,19 @@ class ShellPlugin(Plugin):
         kwargs: dict = {}
         if sys.platform != "win32":
             kwargs["start_new_session"] = True
+
+        env = os.environ.copy()
+        # Disable color output for self-adapting commands
+        env["NO_COLOR"] = "1"
+        env["TERM"] = "dumb"
+
         return await asyncio.create_subprocess_exec(
             *cmd_args,
             cwd=str(self.workspace),
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=os.environ.copy(),
+            env=env,
             **kwargs,
         )
 
