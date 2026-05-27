@@ -99,7 +99,7 @@ class AgentSession(BaseModel):
 
 class AppSession(BaseModel):
     id: str
-    app_name: str
+    main_agent: str
     created_at: datetime
     updated_at: datetime
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -122,7 +122,7 @@ class AppSession(BaseModel):
             raise ValueError(f"No agent session for '{agent_name}' to fork from")
         new = AppSession(
             id=uuid.uuid4().hex[:12],
-            app_name=self.app_name,
+            main_agent=self.main_agent,
             created_at=now,
             updated_at=now,
             metadata=dict(self.metadata),
@@ -151,11 +151,11 @@ class AppSession(BaseModel):
         return self.agent_sessions[agent_name]
 
     @staticmethod
-    def create(app_name: str, **metadata: Any) -> AppSession:
+    def create(main_agent: str, **metadata: Any) -> AppSession:
         now = datetime.now(UTC)
         return AppSession(
             id=uuid.uuid4().hex[:12],
-            app_name=app_name,
+            main_agent=main_agent,
             created_at=now,
             updated_at=now,
             metadata=metadata,
@@ -163,7 +163,7 @@ class AppSession(BaseModel):
 
 
 class SessionStore(Protocol):
-    async def list_sessions(self, app_name: str) -> list[AppSession]: ...
+    async def list_sessions(self, main_agent: str) -> list[AppSession]: ...
     async def load_session(self, session_id: str) -> AppSession | None: ...
     async def save_session(self, session: AppSession) -> None: ...
     async def delete_session(self, session_id: str) -> None: ...
@@ -183,7 +183,7 @@ class FileSessionStore:
     def _session_meta_path(self, session_id: str) -> Path:
         return self._session_dir(session_id) / "session.json"
 
-    async def list_sessions(self, app_name: str) -> list[AppSession]:
+    async def list_sessions(self, main_agent: str) -> list[AppSession]:
         if not self.base_dir.exists():
             return []
         sessions = []
@@ -195,7 +195,7 @@ class FileSessionStore:
                 continue
             try:
                 raw = json.loads(meta_path.read_text())
-                if raw.get("app_name") == app_name:
+                if raw.get("main_agent") == main_agent:
                     session = AppSession.model_validate(raw)
                     sessions.append(session)
             except Exception:

@@ -67,7 +67,7 @@ class AgentInfo(BaseModel):
 
 class SessionInfo(BaseModel):
     id: str
-    app_name: str
+    main_agent: str
     created_at: str
     updated_at: str
     metadata: dict
@@ -622,17 +622,17 @@ class VercelStreamServer:
         from arox.core.config import load_config
         from arox.core.session import FileSessionStore
 
-        # Sessions are persisted with ``app_name`` set to the main agent's name
-        # (see ``SessionPlugin``), so filter by the configured main agent.
+        # Sessions are persisted with ``main_agent`` set to the main agent's
+        # name (see ``SessionPlugin``), so filter by the configured main agent.
         parsed_config = load_config(self.config_files, self.cli_args)
-        app_name = parsed_config.app.main_agent
+        main_agent = parsed_config.app.main_agent
 
         store = FileSessionStore()
-        sessions = await store.list_sessions(app_name)
+        sessions = await store.list_sessions(main_agent)
         return [
             SessionInfo(
                 id=s.id,
-                app_name=s.app_name,
+                main_agent=s.main_agent,
                 created_at=s.created_at.isoformat(),
                 updated_at=s.updated_at.isoformat(),
                 metadata=s.metadata,

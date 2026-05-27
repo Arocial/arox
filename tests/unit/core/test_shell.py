@@ -10,7 +10,7 @@ from arox.plugins.session import ForkEvent, SessionPlugin
 def _make_plugin(main_agent_session: AgentSession):
     session = AppSession(
         id="s1",
-        app_name="test",
+        main_agent="test",
         created_at=datetime.now(UTC),
         updated_at=datetime.now(UTC),
         agent_sessions={main_agent_session.agent_name: main_agent_session},

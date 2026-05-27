@@ -20,7 +20,7 @@ from arox.core.session import (
 class TestAppSession:
     def test_create(self):
         session = AppSession.create("coder", title="test")
-        assert session.app_name == "coder"
+        assert session.main_agent == "coder"
         assert len(session.id) == 12
         assert session.metadata == {"title": "test"}
         assert session.events == []
@@ -294,7 +294,7 @@ class TestFileSessionStore:
 
         assert loaded is not None
         assert loaded.id == session.id
-        assert loaded.app_name == "coder"
+        assert loaded.main_agent == "coder"
 
         assert "main" in loaded.agent_sessions
         agent_s = loaded.agent_sessions["main"]
