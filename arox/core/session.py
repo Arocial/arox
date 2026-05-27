@@ -31,10 +31,16 @@ class SessionEvent(BaseModel):
     data: dict[str, Any] = Field(default_factory=dict)
 
 
-class AgentSession(BaseModel):
-    agent_name: str
+class Session(BaseModel):
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    session_type: str
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    forked_from: dict[str, int] | None = None
+    owner_id: str | None = None
+    owner_path: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
     events: list[SessionEvent] = Field(default_factory=list)
-    extra: dict[str, Any] = Field(default_factory=dict)
 
     def add_event(
         self,
@@ -44,111 +50,27 @@ class AgentSession(BaseModel):
         event = SessionEvent(
             timestamp=datetime.now(UTC),
             event_type=event_type,
-            agent_name=self.agent_name,
             data=data or {},
         )
         self.events.append(event)
         return event
 
-    def rebuild_message_history(self) -> list[ModelMessage]:
-        """Rebuild message_history from events.
 
-        Walks events in order:
-        - agent_step: appends new_messages
-        - compaction: resets to compacted_messages
-        """
-        history: list[ModelMessage] = []
-        for event in self.events:
-            if event.event_type == "agent_step":
-                raw = event.data.get("new_messages", [])
-                history.extend(_deserialize_messages(raw))
-            elif event.event_type == "compaction":
-                raw = event.data.get("compacted_messages", [])
-                history = _deserialize_messages(raw)
-        return history
-
-    def rebuild_llm_context_id(self) -> str | None:
-        """Rebuild llm_context_id from events. Returns None if no context was set."""
-        context_id = None
-        for event in self.events:
-            if event.event_type in ("compaction", "reset"):
-                context_id = event.data.get("llm_context_id")
-        return context_id
-
-    def user_turn_anchors(self) -> list[int]:
-        """Return event indices of ``user_input`` events."""
-        return [i for i, ev in enumerate(self.events) if ev.event_type == "user_input"]
-
-    def resolve_user_turn(self, n: int) -> int | None:
-        """Resolve "n-th most recent user turn" to an event index."""
-        if n < 1:
-            return None
-        anchors = self.user_turn_anchors()
-        if len(anchors) < n:
-            return None
-        return anchors[-n]
-
-    def truncated_copy(self, event_index: int) -> AgentSession:
-        """Return a new :class:`AgentSession` with ``events[0:event_index]``."""
-        return AgentSession(
-            agent_name=self.agent_name,
-            events=[ev.model_copy(deep=True) for ev in self.events[:event_index]],
-            extra=dict(self.extra),
-        )
-
-
-class AppSession(BaseModel):
-    id: str
+class AppSession(Session):
+    session_type: str = "app"
     main_agent: str
-    created_at: datetime
-    updated_at: datetime
-    metadata: dict[str, Any] = Field(default_factory=dict)
-    events: list[SessionEvent] = Field(default_factory=list)
-    agent_sessions: dict[str, AgentSession] = Field(default_factory=dict)
-    parent_id: str | None = None
-    forked_from: dict[str, int] | None = None
 
     def fork_at(self, agent_name: str, event_index: int) -> AppSession:
-        """Create a new AppSession truncated at ``event_index`` on ``agent_name``.
-
-        The new session has a fresh id and points back to this one via
-        ``parent_id`` / ``forked_from``. The named agent's history is
-        truncated; other agents start with fresh (empty) sessions on the
-        new branch.
-        """
         now = datetime.now(UTC)
-        agent_session = self.agent_sessions.get(agent_name)
-        if agent_session is None:
-            raise ValueError(f"No agent session for '{agent_name}' to fork from")
         new = AppSession(
             id=uuid.uuid4().hex[:12],
             main_agent=self.main_agent,
             created_at=now,
             updated_at=now,
             metadata=dict(self.metadata),
-            agent_sessions={agent_name: agent_session.truncated_copy(event_index)},
-            parent_id=self.id,
             forked_from={agent_name: event_index},
         )
         return new
-
-    def add_event(
-        self,
-        event_type: str,
-        data: dict[str, Any] | None = None,
-    ) -> SessionEvent:
-        event = SessionEvent(
-            timestamp=datetime.now(UTC),
-            event_type=event_type,
-            data=data or {},
-        )
-        self.events.append(event)
-        return event
-
-    def get_agent_session(self, agent_name: str) -> AgentSession:
-        if agent_name not in self.agent_sessions:
-            self.agent_sessions[agent_name] = AgentSession(agent_name=agent_name)
-        return self.agent_sessions[agent_name]
 
     @staticmethod
     def create(main_agent: str, **metadata: Any) -> AppSession:
@@ -164,9 +86,13 @@ class AppSession(BaseModel):
 
 class SessionStore(Protocol):
     async def list_sessions(self, main_agent: str) -> list[AppSession]: ...
-    async def load_session(self, session_id: str) -> AppSession | None: ...
-    async def save_session(self, session: AppSession) -> None: ...
-    async def delete_session(self, session_id: str) -> None: ...
+    async def load_session(
+        self, session_id: str, owner_path: list[str] | None = None
+    ) -> Session | None: ...
+    async def save_session(self, session: Session) -> None: ...
+    async def delete_session(
+        self, session_id: str, owner_path: list[str] | None = None
+    ) -> None: ...
     async def cleanup(self, max_age_days: int | None = None) -> int: ...
 
 
@@ -177,11 +103,19 @@ class FileSessionStore:
         self.base_dir = base_dir
         self.max_age_days = max_age_days
 
-    def _session_dir(self, session_id: str) -> Path:
-        return self.base_dir / session_id
+    def _session_dir(
+        self, session_id: str, owner_path: list[str] | None = None
+    ) -> Path:
+        path = self.base_dir
+        if owner_path:
+            for owner in owner_path:
+                path = path / owner
+        return path / session_id
 
-    def _session_meta_path(self, session_id: str) -> Path:
-        return self._session_dir(session_id) / "session.json"
+    def _session_meta_path(
+        self, session_id: str, owner_path: list[str] | None = None
+    ) -> Path:
+        return self._session_dir(session_id, owner_path) / "session.json"
 
     async def list_sessions(self, main_agent: str) -> list[AppSession]:
         if not self.base_dir.exists():
@@ -195,70 +129,55 @@ class FileSessionStore:
                 continue
             try:
                 raw = json.loads(meta_path.read_text())
-                if raw.get("main_agent") == main_agent:
+                if (
+                    raw.get("main_agent") == main_agent
+                    and raw.get("session_type") == "app"
+                ):
                     session = AppSession.model_validate(raw)
                     sessions.append(session)
             except Exception:
                 logger.warning(f"Failed to load session from {d}", exc_info=True)
 
-        # Sort sessions by updated_at descending (most recently updated first)
         sessions.sort(key=lambda s: s.updated_at, reverse=True)
         return sessions
 
-    async def load_session(self, session_id: str) -> AppSession | None:
-        meta_path = self._session_meta_path(session_id)
+    async def load_session(
+        self, session_id: str, owner_path: list[str] | None = None
+    ) -> Session | None:
+        meta_path = self._session_meta_path(session_id, owner_path)
         if not meta_path.exists():
             return None
 
         raw = json.loads(meta_path.read_text())
-        session = AppSession.model_validate(raw)
+        session_type = raw.get("session_type")
+        if session_type == "app":
+            return AppSession.model_validate(raw)
+        else:
+            # We will return a generic Session here, or the caller can parse it.
+            # Since AgentSession is moved to plugins, we can just return Session and let the caller re-parse if needed,
+            # or we can just return the raw dict? Let's return Session.
+            return Session.model_validate(raw)
 
-        # Load agent sessions
-        session_dir = self._session_dir(session_id)
-        for state_file in session_dir.glob("agent_*.json"):
-            try:
-                state_raw = json.loads(state_file.read_text())
-                agent_name = state_raw["agent_name"]
-                agent_session = AgentSession.model_validate(state_raw)
-                session.agent_sessions[agent_name] = agent_session
-            except Exception:
-                logger.warning(
-                    f"Failed to load agent session from {state_file}", exc_info=True
-                )
-
-        return session
-
-    async def save_session(self, session: AppSession) -> None:
+    async def save_session(self, session: Session) -> None:
         session.updated_at = datetime.now(UTC)
-        session_dir = self._session_dir(session.id)
+        session_dir = self._session_dir(session.id, session.owner_path)
         session_dir.mkdir(parents=True, exist_ok=True)
 
-        # Save session metadata and events (without agent_sessions inline)
-        meta = session.model_dump(mode="json", exclude={"agent_sessions"})
-        self._session_meta_path(session.id).write_text(
+        meta = session.model_dump(mode="json")
+        self._session_meta_path(session.id, session.owner_path).write_text(
             json.dumps(meta, indent=2, ensure_ascii=False)
         )
 
-        # Save each agent session separately
-        for agent_name, agent_session in session.agent_sessions.items():
-            state_path = session_dir / f"agent_{agent_name}.json"
-            state_path.write_text(
-                json.dumps(
-                    agent_session.model_dump(mode="json"),
-                    indent=2,
-                    ensure_ascii=False,
-                )
-            )
-
-    async def delete_session(self, session_id: str) -> None:
+    async def delete_session(
+        self, session_id: str, owner_path: list[str] | None = None
+    ) -> None:
         import shutil
 
-        session_dir = self._session_dir(session_id)
+        session_dir = self._session_dir(session_id, owner_path)
         if session_dir.exists():
             shutil.rmtree(session_dir)
 
     async def cleanup(self, max_age_days: int | None = None) -> int:
-        """Delete sessions older than max_age_days. Returns number of deleted sessions."""
         if not self.base_dir.exists():
             return 0
 

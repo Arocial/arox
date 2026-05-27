@@ -152,7 +152,7 @@ class SubagentPlugin(Plugin):
                 f"Available subagents: {', '.join(subagents)}"
             )
 
-        self.agent.agent_session.add_event(
+        await self.agent.record_event(
             "subagent_call",
             {"subagent": agent.name, "task": task},
         )
@@ -172,7 +172,7 @@ class SubagentPlugin(Plugin):
         if not isinstance(subagent, DelegatableAgent):
             return f"Subagent '{event.subagent_name}' not found."
 
-        self.agent.agent_session.add_event(
+        await self.agent.record_event(
             "subagent_call",
             {"subagent": subagent.name, "task": event.task},
         )

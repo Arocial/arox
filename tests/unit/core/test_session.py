@@ -9,12 +9,12 @@ from pydantic_ai.messages import (
 )
 
 from arox.core.session import (
-    AgentSession,
     AppSession,
     FileSessionStore,
     _deserialize_messages,
     _serialize_messages,
 )
+from arox.plugins.session import AgentSession
 
 
 class TestAppSession:
@@ -24,7 +24,6 @@ class TestAppSession:
         assert len(session.id) == 12
         assert session.metadata == {"title": "test"}
         assert session.events == []
-        assert session.agent_sessions == {}
 
     def test_add_event(self):
         session = AppSession.create("coder")
@@ -34,42 +33,11 @@ class TestAppSession:
 
     def test_fork_at(self):
         session = AppSession.create("coder", title="t")
-        agent_s = session.get_agent_session("main")
-        agent_s.add_event("user_input", {"text": "u1"})  # 0
-        agent_s.add_event("agent_step", {"new_messages": []})  # 1
-        agent_s.add_event("user_input", {"text": "u2"})  # 2
-        agent_s.add_event("agent_step", {"new_messages": []})  # 3
-
-        # also include a stray subagent session
-        session.get_agent_session("helper").add_event(
-            "agent_step", {"new_messages": []}
-        )
-
         forked = session.fork_at("main", 2)
 
         assert forked.id != session.id
-        assert forked.parent_id == session.id
         assert forked.forked_from == {"main": 2}
         assert forked.metadata == session.metadata
-        # Main agent events were truncated.
-        assert len(forked.agent_sessions["main"].events) == 2
-        # Subagent sessions are NOT carried into the new branch.
-        assert "helper" not in forked.agent_sessions
-        # Original session is unchanged.
-        assert len(session.agent_sessions["main"].events) == 4
-
-    def test_fork_at_unknown_agent(self):
-        session = AppSession.create("coder")
-        with pytest.raises(ValueError):
-            session.fork_at("missing", 0)
-
-    def test_get_agent_session(self):
-        session = AppSession.create("coder")
-        agent_session = session.get_agent_session("main")
-        assert agent_session.agent_name == "main"
-        assert "main" in session.agent_sessions
-        # Second call returns the same instance
-        assert session.get_agent_session("main") is agent_session
 
 
 class TestAgentSession:
@@ -77,7 +45,6 @@ class TestAgentSession:
         agent_session = AgentSession(agent_name="main")
         event = agent_session.add_event("user_input", {"text": "hello"})
         assert event.event_type == "user_input"
-        assert event.agent_name == "main"
         assert len(agent_session.events) == 1
 
     def test_rebuild_empty(self):
@@ -275,7 +242,9 @@ class TestFileSessionStore:
     @pytest.mark.asyncio
     async def test_save_and_load(self, store):
         session = AppSession.create("coder")
-        agent_session = session.get_agent_session("main")
+        agent_session = AgentSession(
+            agent_name="main", owner_id=session.id, owner_path=[session.id]
+        )
         agent_session.add_event("user_input", {"text": "hello"})
         agent_session.add_event(
             "agent_step",
@@ -290,44 +259,25 @@ class TestFileSessionStore:
         )
 
         await store.save_session(session)
-        loaded = await store.load_session(session.id)
+        await store.save_session(agent_session)
 
+        loaded = await store.load_session(session.id)
         assert loaded is not None
         assert loaded.id == session.id
         assert loaded.main_agent == "coder"
 
-        assert "main" in loaded.agent_sessions
-        agent_s = loaded.agent_sessions["main"]
-        assert len(agent_s.events) == 2
-        assert agent_s.events[0].event_type == "user_input"
-        assert agent_s.events[1].event_type == "agent_step"
-
-        # Verify message rebuild works after load
-        history = agent_s.rebuild_message_history()
-        assert len(history) == 2
+        loaded_agent = await store.load_session(
+            agent_session.id, owner_path=[session.id]
+        )
+        assert loaded_agent is not None
+        assert len(loaded_agent.events) == 2
+        assert loaded_agent.events[0].event_type == "user_input"
+        assert loaded_agent.events[1].event_type == "agent_step"
 
     @pytest.mark.asyncio
     async def test_load_nonexistent(self, store):
         result = await store.load_session("nonexistent")
         assert result is None
-
-    @pytest.mark.asyncio
-    async def test_fork_round_trip(self, store):
-        session = AppSession.create("coder")
-        agent_s = session.get_agent_session("main")
-        agent_s.add_event("user_input", {"text": "u1"})
-        agent_s.add_event("agent_step", {"new_messages": []})
-        agent_s.add_event("user_input", {"text": "u2"})
-
-        forked = session.fork_at("main", 2)
-        await store.save_session(session)
-        await store.save_session(forked)
-
-        loaded = await store.load_session(forked.id)
-        assert loaded is not None
-        assert loaded.parent_id == session.id
-        assert loaded.forked_from == {"main": 2}
-        assert len(loaded.agent_sessions["main"].events) == 2
 
     @pytest.mark.asyncio
     async def test_list_sessions(self, store):
@@ -370,42 +320,20 @@ class TestFileSessionStore:
         await store.delete_session("nonexistent")
 
     @pytest.mark.asyncio
-    async def test_multiple_agent_sessions(self, store):
-        session = AppSession.create("coder")
-        main_s = session.get_agent_session("main")
-        main_s.add_event(
-            "agent_step",
-            {
-                "new_messages": _serialize_messages(
-                    [ModelRequest(parts=[UserPromptPart(content="hi")])]
-                ),
-            },
-        )
-        comp_s = session.get_agent_session("compaction")
-        comp_s.extra = {"some_key": "some_value"}
-
-        await store.save_session(session)
-        loaded = await store.load_session(session.id)
-
-        assert loaded is not None
-        assert "main" in loaded.agent_sessions
-        assert "compaction" in loaded.agent_sessions
-        assert len(loaded.agent_sessions["main"].events) == 1
-        assert loaded.agent_sessions["compaction"].extra == {"some_key": "some_value"}
-
-    @pytest.mark.asyncio
     async def test_save_overwrites(self, store):
         session = AppSession.create("coder")
-        agent_s = session.get_agent_session("main")
+        agent_s = AgentSession(
+            agent_name="main", owner_id=session.id, owner_path=[session.id]
+        )
         agent_s.add_event("user_input", {"text": "first"})
-        await store.save_session(session)
+        await store.save_session(agent_s)
 
         agent_s.add_event("user_input", {"text": "second"})
-        await store.save_session(session)
+        await store.save_session(agent_s)
 
-        loaded = await store.load_session(session.id)
+        loaded = await store.load_session(agent_s.id, owner_path=[session.id])
         assert loaded is not None
-        assert len(loaded.agent_sessions["main"].events) == 2
+        assert len(loaded.events) == 2
 
     def _backdate_session(self, store, session, days):
         """Save session then overwrite updated_at to simulate an old session."""

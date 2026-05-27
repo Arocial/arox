@@ -111,16 +111,15 @@ class CompactionPlugin(Plugin):
         agent.message_history = compacted_messages
         agent.llm_context_id = str(uuid.uuid4())
 
-        if agent.agent_session:
-            agent.agent_session.add_event(
-                "compaction",
-                {
-                    "messages_before": messages_before,
-                    "messages_after": len(agent.message_history),
-                    "compacted_messages": _serialize_messages(compacted_messages),
-                    "llm_context_id": agent.llm_context_id,
-                },
-            )
+        await agent.record_event(
+            "compaction",
+            {
+                "messages_before": messages_before,
+                "messages_after": len(agent.message_history),
+                "compacted_messages": _serialize_messages(compacted_messages),
+                "llm_context_id": agent.llm_context_id,
+            },
+        )
 
     async def history_processor(
         self,

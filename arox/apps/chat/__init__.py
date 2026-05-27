@@ -118,9 +118,31 @@ def main(profile: str | None = None):
         )
 
         async def run_all():
+            from arox.core.session import AppSession, FileSessionStore
+
+            store = FileSessionStore()
+
+            if args.session:
+                app_session = await store.load_session(args.session)
+                if not app_session or not isinstance(app_session, AppSession):
+                    print(
+                        f"Session {args.session} not found or invalid.", file=sys.stderr
+                    )
+                    sys.exit(1)
+            else:
+                app_session = AppSession.create(
+                    main_agent.name, workspace=str(main_agent.workspace)
+                )
+
+            main_agent.app_session = app_session
+
             async with io_adapter:
                 await io_adapter.register_host(main_agent)
                 async with main_agent:
+                    if args.session:
+                        await main_agent.agent_io.send(
+                            f"Session restored: {app_session.id}"
+                        )
                     await main_agent.show_agent_info()
                     await main_agent.run()
 

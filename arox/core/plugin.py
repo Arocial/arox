@@ -127,7 +127,8 @@ class CommandManager:
             logger.warning("Command not found: /%s", name)
             return None
         try:
-            self.agent.agent_session.add_event("command", {"command": name, "arg": arg})
+            for plugin in self.agent.plugins:
+                await plugin.on_agent_command(name, arg)
             event = event_cls.from_slash(name, arg)
             if event is not None and not isinstance(event, CommandEvent):
                 logger.warning(
@@ -207,6 +208,29 @@ class Plugin:
 
     async def on_stop(self) -> None:
         """Lifecycle hook called when the agent stops."""
+
+    async def on_agent_reset(self) -> None:
+        """Lifecycle hook called when the agent is reset."""
+
+    async def on_agent_step(self, input_content: str | None, result: Any) -> None:
+        """Lifecycle hook called when an agent step completes successfully."""
+
+    async def on_agent_step_failure(
+        self, input_content: str | None, messages: list[ModelMessage]
+    ) -> None:
+        """Lifecycle hook called when an agent step fails."""
+
+    async def on_agent_command(self, command: str, arg: str | None) -> None:
+        """Lifecycle hook called when a slash command is parsed."""
+
+    async def on_user_input(self, text: str, client_message_id: str | None) -> None:
+        """Lifecycle hook called when user input is received."""
+
+    async def on_error(self, error: Exception) -> None:
+        """Lifecycle hook called when an error occurs."""
+
+    async def on_event(self, event_type: str, data: dict[str, Any]) -> None:
+        """Lifecycle hook called for custom events."""
 
     def commands(self) -> Sequence[CommandSpec]:
         """Return :class:`CommandSpec` bindings to register.

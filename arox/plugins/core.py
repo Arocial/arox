@@ -69,7 +69,7 @@ class CorePlugin(Plugin):
         return "\n".join(lines)
 
     async def handle_reset(self, event: ResetEvent) -> str:
-        self.agent.reset()
+        await self.agent.reset()
         for provider in self.agent.get_slot(AGENT_RESET):
             provider()
         return "Reset complete."

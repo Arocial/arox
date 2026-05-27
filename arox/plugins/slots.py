@@ -36,3 +36,13 @@ PERSISTENT_CONTEXT = Slot[Callable[[], list[ModelMessage]]](
 
 # Returns a list of all active agents (MainAgent + Subagents)
 ALL_AGENTS = "all_agents"
+
+# Slot for getting the current LLM context ID
+LLM_CONTEXT_ID = Slot[Callable[[], str]](
+    "llm_context_id", "Provides the current LLM context ID"
+)
+
+# Slot for getting the current agent session
+AGENT_SESSION = Slot[Callable[[], Any]](
+    "agent_session", "Provides the current agent session"
+)

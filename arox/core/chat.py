@@ -150,16 +150,21 @@ class ChatAgent(MainAgent, DelegatableAgent):
 
                 user_input = reply.user_input
                 if user_input is not None:
-                    self.agent_session.add_event(
-                        "user_input",
-                        {
-                            "text": user_input,
-                            "client_message_id": reply.client_message_id,
-                        },
-                    )
+                    for plugin in self.plugins:
+                        await plugin.on_user_input(user_input, reply.client_message_id)
+                    # We still need to know the event index for UserTurnRecordedEvent.
+                    # If we move agent_session to SessionPlugin, we might need a way to get the index.
+                    # For now, let's assume SessionPlugin is present and we can get it.
+                    from arox.plugins.session import SessionPlugin
+
+                    session_plugin = self.get_plugin(SessionPlugin)
+                    event_index = -1
+                    if session_plugin and session_plugin.agent_session:
+                        event_index = len(session_plugin.agent_session.events) - 1
+
                     await self.agent_io.send(
                         UserTurnRecordedEvent(
-                            event_index=len(self.agent_session.events) - 1,
+                            event_index=event_index,
                             message_id=reply.client_message_id,
                         )
                     )
@@ -183,9 +188,8 @@ class ChatAgent(MainAgent, DelegatableAgent):
 
             except Exception as e:
                 logger.exception("An error occurred.")
-                self.agent_session.add_event(
-                    "error", {"error": f"{type(e).__name__}: {e!s}"}
-                )
+                for plugin in self.plugins:
+                    await plugin.on_error(e)
                 pending_exception = e
 
             # 6. Send StepDoneEvent to indicate the step is finished

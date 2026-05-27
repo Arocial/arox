@@ -55,7 +55,6 @@ from arox.core.io import (
     IOEndpoint,
     IOHost,
 )
-from arox.core.session import AgentSession, _serialize_messages
 from arox.core.skills import build_skill_catalog, discover_skills
 
 logger = logging.getLogger(__name__)
@@ -208,7 +207,7 @@ class LLMBaseAgent(IOHost):
         self.uuid = str(uuid.uuid4())
         self.name = name
         self.workspace = Path(workspace).absolute() if workspace else Path.cwd()
-        self.agent_session: AgentSession = AgentSession(agent_name=name)
+        self.app_session: Any | None = None
         self.llm_context_id: str = str(uuid.uuid4())
         self._slots: dict[Any, Any] = {}
         self.model_ref = None
@@ -256,7 +255,7 @@ class LLMBaseAgent(IOHost):
             output_type=(DeferredToolRequests, str),
         )
 
-        self.reset()
+        self.message_history: list[ModelMessage] = []
 
     async def handle_event(
         self, ctx: RunContext["AgentDeps"], events: AsyncIterable[AgentStreamEvent]
@@ -279,6 +278,12 @@ class LLMBaseAgent(IOHost):
                     spec.event_cls, spec.handler, spec.completer
                 )
         return plugins
+
+    def get_plugin(self, plugin_cls: type) -> Any | None:
+        for plugin in self.plugins:
+            if isinstance(plugin, plugin_cls):
+                return plugin
+        return None
 
     def provide_slot(self, slot: Any, provider: Any):
         """Register a provider for a specific slot."""
@@ -415,7 +420,7 @@ class LLMBaseAgent(IOHost):
         *,
         message_history: list[ModelMessage],
         deferred_tool_results: DeferredToolResults | None = None,
-        on_failure: Callable[[list[ModelMessage]], None] | None = None,
+        on_failure: Callable[[list[ModelMessage]], Any] | None = None,
     ) -> AgentRunResult[DeferredToolRequests | str]:  # ty: ignore[invalid-return-type]
         """Run a single LLM inference with fallback model handling.
 
@@ -452,7 +457,9 @@ class LLMBaseAgent(IOHost):
                     except asyncio.CancelledError:
                         if on_failure:
                             _complete_pending_tool_calls(messages)
-                            on_failure(messages)
+                            result = on_failure(messages)
+                            if asyncio.iscoroutine(result):
+                                await result
                         raise
                     except (
                         ModelAPIError,
@@ -463,7 +470,9 @@ class LLMBaseAgent(IOHost):
                         if is_last:
                             if on_failure:
                                 _complete_pending_tool_calls(messages)
-                                on_failure(messages)
+                                result = on_failure(messages)
+                                if asyncio.iscoroutine(result):
+                                    await result
                             raise
                         logger.warning(
                             "Model %s failed (%s), trying next fallback",
@@ -473,7 +482,9 @@ class LLMBaseAgent(IOHost):
                     except Exception:
                         if on_failure:
                             _complete_pending_tool_calls(messages)
-                            on_failure(messages)
+                            result = on_failure(messages)
+                            if asyncio.iscoroutine(result):
+                                await result
                         raise
         finally:
             if self.model_ref != primary_ref:
@@ -486,20 +497,9 @@ class LLMBaseAgent(IOHost):
     ) -> AgentRunResult[DeferredToolRequests | str]:
         await self._run_pre_step_hooks(input_content)
 
-        def _commit_failure(messages: list[ModelMessage]) -> None:
-            prev_len = len(self.message_history)
-            new_messages = messages[prev_len:]
-            self.message_history = messages
-            if new_messages:
-                self.agent_session.add_event(
-                    "agent_step",
-                    {
-                        "input": input_content,
-                        "new_messages": _serialize_messages(new_messages),
-                        "request_tokens": None,
-                        "response_tokens": None,
-                    },
-                )
+        async def _commit_failure(messages: list[ModelMessage]) -> None:
+            for plugin in self.plugins:
+                await plugin.on_agent_step_failure(input_content, messages)
 
         result = await self._run_inference(
             input_content,
@@ -508,40 +508,20 @@ class LLMBaseAgent(IOHost):
             on_failure=_commit_failure,
         )
         self.message_history = result.all_messages()
-        self._record_step_event(input_content, result)
+        for plugin in self.plugins:
+            await plugin.on_agent_step(input_content, result)
         await self._run_post_step_hooks(input_content, result)
         return result
 
-    def _record_step_event(
-        self,
-        input_content: str | None,
-        result: AgentRunResult[Any],
-    ):
-        new_messages = result.new_messages()
-        usage = result.usage
-        self.agent_session.add_event(
-            "agent_step",
-            {
-                "input": input_content,
-                "new_messages": _serialize_messages(new_messages),
-                "request_tokens": usage.input_tokens if usage else None,
-                "response_tokens": usage.output_tokens if usage else None,
-            },
-        )
-
-    def restore_session(self, agent_session: AgentSession):
-        self.agent_session = agent_session
-        self.message_history = agent_session.rebuild_message_history()
-        restored_id = agent_session.rebuild_llm_context_id()
-        if restored_id:
-            self.llm_context_id = restored_id
-        if self.model_ref:
-            self.set_model(self.model_ref)
-
-    def reset(self):
+    async def reset(self):
         self.message_history = []
         self.llm_context_id = str(uuid.uuid4())
-        self.agent_session.add_event("reset", {"llm_context_id": self.llm_context_id})
+        for plugin in self.plugins:
+            await plugin.on_agent_reset()
+
+    async def record_event(self, event_type: str, data: dict[str, Any]):
+        for plugin in self.plugins:
+            await plugin.on_event(event_type, data)
 
     def add_pre_step_hook(self, hook: PreStepHook):
         if not hasattr(self, "pre_step_hooks"):

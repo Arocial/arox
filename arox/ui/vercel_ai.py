@@ -477,6 +477,23 @@ class VercelStreamServer:
             workspace=request.workspace,
         )
 
+        from arox.core.session import AppSession, FileSessionStore
+
+        store = FileSessionStore()
+
+        if request.session_id:
+            app_session = await store.load_session(request.session_id)
+            if not app_session or not isinstance(app_session, AppSession):
+                raise HTTPException(
+                    status_code=404, detail="Session not found or invalid"
+                )
+        else:
+            app_session = AppSession.create(
+                main_agent.name, workspace=str(main_agent.workspace)
+            )
+
+        main_agent.app_session = app_session
+
         run_instance = AgentRun(main_agent=main_agent)
         self.io_adapter.run_instances[main_agent.uuid] = run_instance
 
@@ -484,6 +501,10 @@ class VercelStreamServer:
             async with self.io_adapter:
                 await self.io_adapter.register_host(main_agent)
                 async with main_agent:
+                    if request.session_id:
+                        await main_agent.agent_io.send(
+                            f"Session restored: {app_session.id}"
+                        )
                     await main_agent.show_agent_info()
                     await main_agent.run()
 
@@ -597,7 +618,10 @@ class VercelStreamServer:
         ]
 
         anchors_by_id: dict[str, int] = {}
-        agent_session = getattr(agent, "agent_session", None)
+        from arox.plugins.session import SessionPlugin
+
+        session_plugin = agent.get_plugin(SessionPlugin)
+        agent_session = session_plugin.agent_session if session_plugin else None
         if agent_session is not None:
             user_events = [
                 (i, ev)
