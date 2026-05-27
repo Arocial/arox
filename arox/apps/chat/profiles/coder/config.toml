@@ -39,6 +39,7 @@ plugins = [
     "file",
     "repo",
     "compaction",
+    "subagent",
 ]
 post_step_hooks = []
 

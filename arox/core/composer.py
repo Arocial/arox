@@ -177,43 +177,21 @@ class Composer(IOHost):
             workspace=self.workspace,
         )
 
-        from arox.plugins.slots import SUBAGENT
+        from arox.plugins.slots import DELEGATABLE_SUBAGENTS, SUBAGENT
 
         def get_subagent(name: str):
             return self.subagents.get(name)
 
         main_agent.provide_slot(SUBAGENT, get_subagent)
 
-        exposed_subagents = {
-            name: agent
-            for name, agent in self.subagents.items()
-            if isinstance(agent, DelegatableAgent)
-        }
+        def list_delegatable_subagents():
+            return [
+                agent
+                for agent in self.subagents.values()
+                if isinstance(agent, DelegatableAgent)
+            ]
 
-        if exposed_subagents:
-            subagent_descriptions = "\n".join(
-                f"- {name}: {agent_configs[name].description or 'No description'}"
-                for name in exposed_subagents
-            )
-
-            async def delegate_to_subagent(subagent_name: str, task: str) -> str:
-                f"""Delegate a task to a specific subagent.
-
-                Available subagents:
-                {subagent_descriptions}
-                """
-                agent = exposed_subagents.get(subagent_name)
-                if not agent:
-                    return f"Error: Subagent '{subagent_name}' not found. Available subagents: {', '.join(exposed_subagents.keys())}"
-
-                main_agent.agent_session.add_event(
-                    "subagent_call",
-                    {"subagent": agent.name, "task": task},
-                )
-                result = await agent.run_task(task)
-                return result or "Task completed with no output."
-
-            main_agent.add_local_tool(delegate_to_subagent)
+        main_agent.provide_slot(DELEGATABLE_SUBAGENTS, list_delegatable_subagents)
 
         if not isinstance(main_agent, MainAgent):
             raise TypeError(f"Main agent '{main_agent_name}' must be a MainAgent")

@@ -15,6 +15,12 @@ SUBAGENT = Slot[Callable[[str], Any]](
     "subagent", "Provides access to a subagent by name"
 )
 
+# Slot for listing the subagents that can be delegated tasks
+DELEGATABLE_SUBAGENTS = Slot[Callable[[], list[Any]]](
+    "delegatable_subagents",
+    "Provides the list of subagents that can be delegated tasks",
+)
+
 # Slot for getting agent info
 AGENT_INFO = Slot[Callable[[], str]](
     "agent_info", "Provides information about the agent's current state"

@@ -3,9 +3,8 @@ from dataclasses import dataclass
 from typing import ClassVar
 
 from arox.core.completion import CompletionItem, CompletionRequest
-from arox.core.llm_base import DelegatableAgent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin
-from arox.plugins.slots import AGENT_INFO, AGENT_RESET, SUBAGENT
+from arox.plugins.slots import AGENT_INFO, AGENT_RESET
 
 logger = logging.getLogger(__name__)
 
@@ -34,30 +33,12 @@ class ResetEvent(CommandEvent):
     description: ClassVar[str] = "Reset chat history and chat files - /reset"
 
 
-@dataclass(kw_only=True)
-class AgentCallEvent(CommandEvent):
-    slashes: ClassVar[tuple[str, ...]] = ("agent",)
-    description: ClassVar[str] = "Call a subagent - /agent <name> [task]"
-
-    subagent_name: str
-    task: str
-
-    @classmethod
-    def from_slash(cls, name, arg):
-        parts = arg.split(maxsplit=1) if arg else []
-        return cls(
-            subagent_name=parts[0] if parts else "",
-            task=parts[1] if len(parts) > 1 else "",
-        )
-
-
 class CorePlugin(Plugin):
     def commands(self):
         return [
             CommandSpec(SetModelEvent, self.handle_set_model, self.complete_model_ref),
             CommandSpec(InfoEvent, self.handle_info),
             CommandSpec(ResetEvent, self.handle_reset),
-            CommandSpec(AgentCallEvent, self.handle_agent_call),
         ]
 
     async def handle_set_model(self, event: SetModelEvent) -> str:
@@ -92,22 +73,3 @@ class CorePlugin(Plugin):
         for provider in self.agent.get_slot(AGENT_RESET):
             provider()
         return "Reset complete."
-
-    async def handle_agent_call(self, event: AgentCallEvent) -> str | None:
-        if not event.subagent_name:
-            return "Usage: /agent <name> [task]"
-
-        subagent = None
-        for get_subagent_func in self.agent.get_slot(SUBAGENT):
-            subagent = get_subagent_func(event.subagent_name)
-            if subagent:
-                break
-
-        if not isinstance(subagent, DelegatableAgent):
-            return f"Subagent '{event.subagent_name}' not found."
-
-        self.agent.agent_session.add_event(
-            "subagent_call",
-            {"subagent": subagent.name, "task": event.task},
-        )
-        return await subagent.run_task(event.task)

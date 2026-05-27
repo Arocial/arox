@@ -23,6 +23,7 @@ plugins = [
     "shell",
     "file",
     "compaction",
+    "subagent",
 ]
 post_step_hooks = []
 
