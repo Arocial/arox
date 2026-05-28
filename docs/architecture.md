@@ -62,7 +62,6 @@ Built-in adapters:
     - `history_processor()` — async hook that modifies message history before each LLM call.
 - **Slots** (`arox/core/slot.py`): typed tokens for loose coupling, used for both pull and push patterns. Producers call `agent.provide_slot(slot, impl)`; consumers pull or push notifications with `await agent.invoke_slot(slot, ...)`. Built-in slots live in `arox/plugins/slots.py` (e.g. `SUBAGENTS`, `PERSISTENT_CONTEXT`, `AGENT_RESET`).
 - **Skills** (`arox/core/skills.py`): discovered from `.arox/skills/` in the workspace and injected into the agent's system prompt as a catalog. `AgentConfig.skills` restricts which skills are visible to a given agent.
-- **Hooks**: `pre_step_hooks` / `post_step_hooks` declared in `AgentConfig` are resolved via entry points and attached around each inference step.
 
 ## Data flow
 

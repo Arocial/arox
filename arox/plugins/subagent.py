@@ -69,15 +69,6 @@ class SubagentPlugin(Plugin):
                 workspace=self.agent.workspace,
             )
 
-            # Load hooks for subagent
-            for hook_path in agent_config.pre_step_hooks:
-                hook_func = import_class(hook_path, group="arox.hooks")
-                subagent.add_pre_step_hook(hook_func)
-
-            for hook_path in agent_config.post_step_hooks:
-                hook_func = import_class(hook_path, group="arox.hooks")
-                subagent.add_post_step_hook(hook_func)
-
             self.subagents[agent_name] = subagent
 
         def list_subagents():

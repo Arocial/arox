@@ -97,8 +97,6 @@ class AgentConfig(BaseModel):
     mcp_servers: str | list[str] | None = None
     model_params: dict[str, Any] = Field(default_factory=dict)
     model_prompt: dict[str, str] = Field(default_factory=dict)
-    pre_step_hooks: list[str] = Field(default_factory=list)
-    post_step_hooks: list[str] = Field(default_factory=list)
     subagents: list[str] = Field(default_factory=list)
 
 

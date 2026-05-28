@@ -62,17 +62,6 @@ def create_main_agent(
 
     main_agent.session_id = session_id
 
-    # Load hooks
-    pre_step_hooks = agent_config.pre_step_hooks
-    for hook_path in pre_step_hooks:
-        hook_func = import_class(hook_path, group="arox.hooks")
-        main_agent.add_pre_step_hook(hook_func)
-
-    post_step_hooks = agent_config.post_step_hooks
-    for hook_path in post_step_hooks:
-        hook_func = import_class(hook_path, group="arox.hooks")
-        main_agent.add_post_step_hook(hook_func)
-
     if not isinstance(main_agent, MainAgent):
         raise TypeError(f"Main agent '{main_agent_name}' must be a MainAgent")
 

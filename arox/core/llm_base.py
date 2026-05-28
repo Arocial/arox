@@ -50,7 +50,6 @@ from tenacity import (
 
 from arox import utils
 from arox.core.config import AgentConfig, Config
-from arox.core.hooks import PostStepHook, PreStepHook
 from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
@@ -442,16 +441,6 @@ class LLMBaseAgent(IOHost):
             prompt += f"\n\n{self.skill_catalog}"
         return prompt
 
-    async def _run_pre_step_hooks(self, input_content: str | None):
-        if hasattr(self, "pre_step_hooks"):
-            for hook in self.pre_step_hooks:
-                await hook(self, input_content)
-
-    async def _run_post_step_hooks(self, input_content: str | None, result: Any = None):
-        if hasattr(self, "post_step_hooks"):
-            for hook in self.post_step_hooks:
-                await hook(self, input_content, result)
-
     async def _run_inference(
         self,
         input_content: str | None,
@@ -533,8 +522,6 @@ class LLMBaseAgent(IOHost):
         input_content: str | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
     ) -> AgentRunResult[DeferredToolRequests | str]:
-        await self._run_pre_step_hooks(input_content)
-
         async def _commit_failure(messages: list[ModelMessage]) -> None:
             await self.invoke_slot(AGENT_STEP_FAILURE, input_content, messages)
 
@@ -546,7 +533,6 @@ class LLMBaseAgent(IOHost):
         )
         self.message_history = result.all_messages()
         await self.invoke_slot(AGENT_STEP, input_content, result)
-        await self._run_post_step_hooks(input_content, result)
         await self.agent_io.send(AgentRunResultEvent(result))
         return result
 
@@ -557,16 +543,6 @@ class LLMBaseAgent(IOHost):
 
     async def record_event(self, event_type: str, data: dict[str, Any]):
         await self.invoke_slot(RECORD_EVENT, event_type, data)
-
-    def add_pre_step_hook(self, hook: PreStepHook):
-        if not hasattr(self, "pre_step_hooks"):
-            self.pre_step_hooks: list[PreStepHook] = []
-        self.pre_step_hooks.append(hook)
-
-    def add_post_step_hook(self, hook: PostStepHook):
-        if not hasattr(self, "post_step_hooks"):
-            self.post_step_hooks: list[PostStepHook] = []
-        self.post_step_hooks.append(hook)
 
 
 class MainAgent(LLMBaseAgent, ABC):

@@ -42,7 +42,6 @@ plugins = [
     "subagent",
     "session",
 ]
-post_step_hooks = []
 
 [agent.coder.model_prompt]
 claude = ''
