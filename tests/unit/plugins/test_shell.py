@@ -32,6 +32,9 @@ class MockAgent:
         self.workspace = workspace
         self.agent_io = CaptureIO()
         self._slots: dict = {}
+        from arox.core.config import Config
+
+        self.parsed_config = Config()
 
     def provide_slot(self, slot, provider):
         self._slots.setdefault(slot, []).append(provider)
@@ -392,3 +395,37 @@ async def test_background_kills_child_process_tree(plugin):
     await asyncio.sleep(0.2)
     with pytest.raises(ProcessLookupError):
         os.kill(child_pid, 0)
+
+
+@pytest.mark.asyncio
+async def test_env_vars_restoration(plugin, monkeypatch):
+    # Setup: mock app config with some env vars
+    plugin.agent.parsed_config.app.env_vars = {"TEST_VAR": "arox_value"}
+    plugin.agent.parsed_config.app.api_keys = {"test_provider": "arox_key"}
+
+    # Mock os.environ and original env
+    monkeypatch.setenv("TEST_VAR", "arox_value")
+    monkeypatch.setenv("TEST_PROVIDER_API_KEY", "arox_key")
+    monkeypatch.setenv("OTHER_VAR", "keep_me")
+
+    # We need to mock get_original_env_copy to return a state where TEST_VAR was different or missing
+    from arox.core.app import _ORIGINAL_ENV
+
+    original_env_mock = _ORIGINAL_ENV.copy()
+    original_env_mock["TEST_VAR"] = "original_value"
+    original_env_mock["OTHER_VAR"] = "keep_me"
+    # TEST_PROVIDER_API_KEY is missing from original_env_mock
+
+    monkeypatch.setattr(
+        "arox.plugins.shell.get_original_env_copy", lambda: original_env_mock
+    )
+
+    result = await plugin.shell(
+        command="echo TEST_VAR=$TEST_VAR && echo TEST_PROVIDER_API_KEY=$TEST_PROVIDER_API_KEY && echo OTHER_VAR=$OTHER_VAR",
+        description="Check env vars",
+    )
+
+    assert "TEST_VAR=original_value" in result
+    assert "TEST_PROVIDER_API_KEY=" in result
+    assert "TEST_PROVIDER_API_KEY=arox_key" not in result
+    assert "OTHER_VAR=keep_me" in result

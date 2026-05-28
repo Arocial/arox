@@ -12,6 +12,14 @@ from arox.utils import import_class
 
 logger = logging.getLogger(__name__)
 
+# Capture the environment before app_setup modifies it
+_ORIGINAL_ENV = os.environ.copy()
+
+
+def get_original_env_copy() -> dict[str, str]:
+    """Return a copy of the environment as it was before app_setup."""
+    return _ORIGINAL_ENV.copy()
+
 
 def app_setup(
     config_files: list[str | Path] | None = None,

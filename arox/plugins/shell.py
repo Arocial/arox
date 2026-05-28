@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from itertools import chain
 
+from arox.core.app import get_original_env_copy
 from arox.core.plugin import Plugin, tool
 from arox.plugins.slots import AGENT_INFO, AGENT_RESET
 
@@ -121,7 +122,7 @@ class ShellPlugin(Plugin):
         if sys.platform != "win32":
             kwargs["start_new_session"] = True
 
-        env = os.environ.copy()
+        env = get_original_env_copy()
         # Disable color output for self-adapting commands
         env["NO_COLOR"] = "1"
         env["TERM"] = "dumb"
