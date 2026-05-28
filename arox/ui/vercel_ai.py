@@ -42,6 +42,65 @@ from arox.plugins.slots import SUBAGENTS
 
 logger = logging.getLogger(__name__)
 
+_user_prompt_metadata_patched = False
+
+
+def _patch_vercel_user_prompt_metadata() -> None:
+    """Carry a user turn's ``USER_INPUT_ID_KEY`` through ``dump_messages``.
+
+    Stock ``_convert_user_prompt_part`` drops ``TextContent.metadata`` when it
+    builds the ``TextUIPart``, so the fork anchor can't ride along. We wrap it
+    and stash the id on the part's ``provider_metadata`` (the only
+    round-trippable slot), under an ``arox`` wrapper key so it can't collide
+    with pydantic_ai's own ``pydantic_ai`` wrapper. ``/state`` then hoists it to
+    message-level ``metadata.custom``.
+    """
+    global _user_prompt_metadata_patched
+    if _user_prompt_metadata_patched:
+        return
+
+    from pydantic_ai.messages import TextContent, UserPromptPart
+    from pydantic_ai.ui.vercel_ai import _adapter
+    from pydantic_ai.ui.vercel_ai.request_types import TextUIPart, UIMessagePart
+
+    from arox.core.session import USER_INPUT_ID_KEY
+
+    original = _adapter._convert_user_prompt_part
+
+    def _convert_with_metadata(part: UserPromptPart) -> list[UIMessagePart]:
+        ui_parts = original(part)
+        content = (
+            part.content if isinstance(part.content, (list, tuple)) else [part.content]
+        )
+        # Match each dumped TextUIPart back to its source TextContent by text,
+        # not by index: a CachePoint yields zero UI parts, so positions don't
+        # line up. This assumes text -> id is unambiguous within one part, which
+        # holds because arox builds exactly one TextContent per user input. The
+        # assert fails loudly if that ever stops being true.
+        ids_by_text: dict[str, str] = {}
+        for item in content:
+            if isinstance(item, TextContent) and isinstance(item.metadata, dict):
+                input_id = item.metadata.get(USER_INPUT_ID_KEY)
+                if input_id:
+                    existing = ids_by_text.get(item.content)
+                    assert existing is None or existing == str(input_id), (
+                        "ambiguous user_input_id: two TextContents in one "
+                        "UserPromptPart share text but carry different anchors"
+                    )
+                    ids_by_text[item.content] = str(input_id)
+        for ui_part in ui_parts:
+            if isinstance(ui_part, TextUIPart) and ui_part.text in ids_by_text:
+                ui_part.provider_metadata = {
+                    "arox": {USER_INPUT_ID_KEY: ids_by_text[ui_part.text]}
+                }
+        return ui_parts
+
+    _adapter._convert_user_prompt_part = _convert_with_metadata  # ty: ignore[invalid-assignment]
+    _user_prompt_metadata_patched = True
+
+
+_patch_vercel_user_prompt_metadata()
+
 
 class SuggestionItem(BaseModel):
     id: str
@@ -610,23 +669,36 @@ class VercelStreamServer:
             msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages
         ]
 
-        # Tag each user message with its USER_INPUT_ID_KEY (under metadata.custom,
-        # the only metadata slot @assistant-ui preserves for user messages) so the
-        # client reads the fork anchor straight off the message — the same shape it
-        # gets live via ``data-user-turn``, with no separate id mapping. Paired by
-        # order with the user turns in ``message_history``; compaction drops turns
-        # from both in lockstep, so they stay aligned.
-        from arox.core.session import USER_INPUT_ID_KEY, user_turns_from_history
+        # Each user message carries its USER_INPUT_ID_KEY on the dumped
+        # TextUIPart's ``provider_metadata`` (injected by
+        # ``_patch_vercel_user_prompt_metadata``). Hoist it to message-level
+        # ``metadata.custom`` — the only slot @assistant-ui preserves for user
+        # messages — so the client reads the fork anchor straight off the
+        # message, the same shape it gets live via ``data-user-turn``. The id
+        # travels with its own part, so no positional re-pairing is needed.
+        # Strip the internal wrapper afterward to leave the wire payload as it
+        # was before the patch.
+        from arox.core.session import USER_INPUT_ID_KEY
 
-        turn_ids = [input_id for input_id, _ in user_turns_from_history(messages)]
-        i = 0
         for msg in history:
             if msg.get("role") != "user":
                 continue
-            if i < len(turn_ids):
+            for part in msg.get("parts", []):
+                provider_metadata = part.get("provider_metadata")
+                if not isinstance(provider_metadata, dict):
+                    continue
+                arox_meta = provider_metadata.get("arox")
+                if not isinstance(arox_meta, dict):
+                    continue
+                input_id = arox_meta.get(USER_INPUT_ID_KEY)
+                if not input_id:
+                    continue
                 custom = msg.setdefault("metadata", {}).setdefault("custom", {})
-                custom[USER_INPUT_ID_KEY] = turn_ids[i]
-            i += 1
+                custom[USER_INPUT_ID_KEY] = input_id
+                provider_metadata.pop("arox", None)
+                if not provider_metadata:
+                    part.pop("provider_metadata", None)
+                break
 
         return {
             "history": history,
