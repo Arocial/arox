@@ -21,7 +21,7 @@ class TestAppSession:
     def test_create(self):
         session = AppSession.create("coder", title="test")
         assert session.main_agent == "coder"
-        assert len(session.id) == 12
+        assert len(session.id) == 36
         assert session.metadata == {"title": "test"}
         assert session.events == []
 

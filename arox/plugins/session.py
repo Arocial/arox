@@ -63,7 +63,7 @@ class AgentSession(Session):
 
     def truncated_copy(self, event_index: int) -> "AgentSession":
         return AgentSession(
-            id=uuid.uuid4().hex[:12],
+            id=str(uuid.uuid4()),
             agent_name=self.agent_name,
             owner_id=self.owner_id,
             owner_path=list(self.owner_path),

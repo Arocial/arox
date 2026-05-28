@@ -32,7 +32,7 @@ class SessionEvent(BaseModel):
 
 
 class Session(BaseModel):
-    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     session_type: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -63,7 +63,7 @@ class AppSession(Session):
     def fork_at(self, agent_name: str, event_index: int) -> AppSession:
         now = datetime.now(UTC)
         new = AppSession(
-            id=uuid.uuid4().hex[:12],
+            id=str(uuid.uuid4()),
             main_agent=self.main_agent,
             created_at=now,
             updated_at=now,
@@ -76,7 +76,7 @@ class AppSession(Session):
     def create(main_agent: str, **metadata: Any) -> AppSession:
         now = datetime.now(UTC)
         return AppSession(
-            id=uuid.uuid4().hex[:12],
+            id=str(uuid.uuid4()),
             main_agent=main_agent,
             created_at=now,
             updated_at=now,
