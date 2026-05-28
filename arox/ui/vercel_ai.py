@@ -610,22 +610,27 @@ class VercelStreamServer:
             msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages
         ]
 
-        # Ordered list of user-turn ids, derived from the USER_INPUT_ID_KEY
-        # metadata on the user messages in ``history`` so they stay aligned 1:1
-        # with those messages (compaction can drop turns from history). The
-        # client pairs these positionally with its own user messages to rebuild
-        # a ``message id -> event id`` map; the backend no longer stores any
-        # client-side message id.
-        from arox.core.session import user_turns_from_history
+        # Tag each user message with its USER_INPUT_ID_KEY (under metadata.custom,
+        # the only metadata slot @assistant-ui preserves for user messages) so the
+        # client reads the fork anchor straight off the message — the same shape it
+        # gets live via ``data-user-turn``, with no separate id mapping. Paired by
+        # order with the user turns in ``message_history``; compaction drops turns
+        # from both in lockstep, so they stay aligned.
+        from arox.core.session import USER_INPUT_ID_KEY, user_turns_from_history
 
-        user_turns: list[str] = [
-            input_id for input_id, _ in user_turns_from_history(messages)
-        ]
+        turn_ids = [input_id for input_id, _ in user_turns_from_history(messages)]
+        i = 0
+        for msg in history:
+            if msg.get("role") != "user":
+                continue
+            if i < len(turn_ids):
+                custom = msg.setdefault("metadata", {}).setdefault("custom", {})
+                custom[USER_INPUT_ID_KEY] = turn_ids[i]
+            i += 1
 
         return {
             "history": history,
             "model": getattr(agent, "provider_model", None),
-            "user_turns": user_turns,
         }
 
     async def list_sessions(self):
