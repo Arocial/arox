@@ -8,20 +8,14 @@ from pydantic_ai import DeferredToolResults
 from pydantic_ai.tools import DeferredToolRequests
 
 from arox.core.io import ReplyEvent, RequestEvent
-from arox.core.llm_base import DelegatableAgent, MainAgent
-from arox.plugins.slots import AGENT_ERROR, USER_INPUT
+from arox.core.llm_base import DelegatableAgent, MainAgent, UserInput
+from arox.plugins.slots import AGENT_ERROR
 
 logger = logging.getLogger(__name__)
 
 
 class StepDoneEvent:
     pass
-
-
-@dataclass
-class UserTurnRecordedEvent:
-    event_id: str | None = None
-    message_id: str | None = None
 
 
 @dataclass
@@ -70,15 +64,9 @@ class ChatInputEvent(RequestEvent):
 
 
 @dataclass
-class ChatInputReply(ReplyEvent):
+class ChatInputReply(UserInput, ReplyEvent):
     deferred_answers: dict[str, str | None] = field(default_factory=dict)
-    user_input: str | None = None
     retry: bool = False
-    # Opaque id assigned by the UI to the user message that produced this
-    # reply. Stored on the resulting ``user_input`` session event so the UI
-    # can later map UI messages back to absolute event indices without
-    # relying on positional ordering.
-    client_message_id: str | None = None
 
     def is_abort(self, request: ChatInputEvent) -> bool:
         for key, tool in request.deferred_tools.items():
@@ -149,33 +137,8 @@ class ChatAgent(MainAgent, DelegatableAgent):
                 else:
                     deferred_results = None
 
-                user_input = reply.user_input
-                if user_input is not None:
-                    await self.invoke_slot(USER_INPUT, user_input)
-
-                    # Read back the uuid of the user_input event just recorded so
-                    # the UI can map its client-side message id to a stable
-                    # backend event id (used for forking).
-                    from arox.plugins.session import SessionPlugin
-
-                    session_plugin = self.get_plugin(SessionPlugin)
-                    event_id = None
-                    if (
-                        session_plugin
-                        and session_plugin.agent_session
-                        and session_plugin.agent_session.events
-                    ):
-                        event_id = session_plugin.agent_session.events[-1].id
-
-                    await self.agent_io.send(
-                        UserTurnRecordedEvent(
-                            event_id=event_id,
-                            message_id=reply.client_message_id,
-                        )
-                    )
-
                 step_task = asyncio.create_task(
-                    self.step(user_input, deferred_tool_results=deferred_results)
+                    self.step(reply, deferred_tool_results=deferred_results)
                 )
                 self.foreground_task = step_task
                 try:

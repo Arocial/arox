@@ -38,8 +38,9 @@ class AgentSession(Session):
         history: list[ModelMessage] = []
         for event in self.events:
             if event.event_type == "agent_step":
-                raw = event.data.get("new_messages", [])
-                history.extend(_deserialize_messages(raw))
+                history.extend(
+                    _deserialize_messages(event.data.get("new_messages", []))
+                )
             elif event.event_type == "compaction":
                 raw = event.data.get("compacted_messages", [])
                 history = _deserialize_messages(raw)
@@ -203,23 +204,20 @@ class SessionPlugin(Plugin):
                 "reset", {"llm_context_id": self.agent.llm_context_id}
             )
 
-    async def on_agent_step(self, input_content: str | None, result: Any) -> None:
+    async def on_agent_step(self, result: Any) -> None:
         if self.agent_session:
             new_messages = result.new_messages()
             usage = result.usage
             self.agent_session.add_event(
                 "agent_step",
                 {
-                    "input": input_content,
                     "new_messages": _serialize_messages(new_messages),
                     "request_tokens": usage.input_tokens if usage else None,
                     "response_tokens": usage.output_tokens if usage else None,
                 },
             )
 
-    async def on_agent_step_failure(
-        self, input_content: str | None, messages: list[ModelMessage]
-    ) -> None:
+    async def on_agent_step_failure(self, messages: list[ModelMessage]) -> None:
         if self.agent_session:
             prev_len = len(self.agent.message_history)
             new_messages = messages[prev_len:]
@@ -227,7 +225,6 @@ class SessionPlugin(Plugin):
                 self.agent_session.add_event(
                     "agent_step",
                     {
-                        "input": input_content,
                         "new_messages": _serialize_messages(new_messages),
                         "request_tokens": None,
                         "response_tokens": None,
@@ -238,9 +235,9 @@ class SessionPlugin(Plugin):
         if self.agent_session:
             self.agent_session.add_event("command", {"command": command, "arg": arg})
 
-    async def on_user_input(self, text: str) -> None:
+    async def on_user_input(self, text: str, input_id: str) -> None:
         if self.agent_session:
-            self.agent_session.add_event("user_input", {"text": text})
+            self.agent_session.add_event("user_input", {"text": text}, id=input_id)
 
     async def on_error(self, error: Exception) -> None:
         if self.agent_session:

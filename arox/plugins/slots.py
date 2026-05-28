@@ -45,14 +45,14 @@ AGENT_RESET = Slot[Callable[[], Any]](
     aggregator=ResultAggregator.DISCARD,
 )
 
-# Emitted after a successful inference step. Payload: (input_content, result).
+# Emitted after a successful inference step. Payload: (result,).
 AGENT_STEP = Slot[Callable[..., Any]](
     "agent_step",
     "An agent step completed successfully",
     aggregator=ResultAggregator.DISCARD,
 )
 
-# Emitted when an inference step fails. Payload: (input_content, messages).
+# Emitted when an inference step fails. Payload: (messages,).
 AGENT_STEP_FAILURE = Slot[Callable[..., Any]](
     "agent_step_failure", "An agent step failed", aggregator=ResultAggregator.DISCARD
 )

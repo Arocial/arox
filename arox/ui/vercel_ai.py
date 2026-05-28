@@ -31,14 +31,13 @@ from arox.core.chat import (
     ChatInputEvent,
     ChatInputReply,
     StepDoneEvent,
-    UserTurnRecordedEvent,
 )
 from arox.core.completion import parse_request
 from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
 )
-from arox.core.llm_base import MainAgent
+from arox.core.llm_base import MainAgent, ServerIdMapping
 from arox.plugins.slots import SUBAGENTS
 
 logger = logging.getLogger(__name__)
@@ -244,12 +243,12 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         elif isinstance(event, StepDoneEvent):
             messages.append({"type": "step-done"})
 
-        elif isinstance(event, UserTurnRecordedEvent):
-            frame: dict = {"type": "data-user-turn"}
-            if event.event_id is not None:
-                frame["eventId"] = event.event_id
-            if event.message_id is not None:
-                frame["messageId"] = event.message_id
+        elif isinstance(event, ServerIdMapping):
+            frame = {
+                "type": "data-user-turn",
+                "eventId": event.event_id,
+                "messageId": event.client_id,
+            }
             messages.append(frame)
 
         return messages

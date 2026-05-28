@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 
 _message_adapter = TypeAdapter(ModelMessage)
 
+# Metadata key under which a user-turn's session-event id is stored on the
+# corresponding ``ModelRequest``. Set in-memory during a step and re-derived
+# from ``user_input`` events when a session is restored.
+USER_INPUT_ID_KEY = "user_input_id"
+
 
 def _serialize_messages(messages: Sequence[ModelMessage]) -> list[dict[str, Any]]:
     return [_message_adapter.dump_python(m, mode="json") for m in messages]
@@ -47,12 +52,17 @@ class Session(BaseModel):
         self,
         event_type: str,
         data: dict[str, Any] | None = None,
+        *,
+        id: str | None = None,
     ) -> SessionEvent:
-        event = SessionEvent(
-            timestamp=datetime.now(UTC),
-            event_type=event_type,
-            data=data or {},
-        )
+        kwargs: dict[str, Any] = {
+            "timestamp": datetime.now(UTC),
+            "event_type": event_type,
+            "data": data or {},
+        }
+        if id is not None:
+            kwargs["id"] = id
+        event = SessionEvent(**kwargs)
         self.events.append(event)
         return event
 

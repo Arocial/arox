@@ -28,8 +28,10 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
+    TextContent,
     ToolCallPart,
     ToolReturnPart,
+    UserContent,
 )
 from pydantic_ai.models import infer_model
 from pydantic_ai.providers import (
@@ -55,6 +57,7 @@ from arox.core.io import (
     IOEndpoint,
     IOHost,
 )
+from arox.core.session import USER_INPUT_ID_KEY
 from arox.core.skills import build_skill_catalog, discover_skills
 from arox.core.slot import ResultAggregator, Slot
 from arox.plugins.slots import (
@@ -62,6 +65,7 @@ from arox.plugins.slots import (
     AGENT_STEP,
     AGENT_STEP_FAILURE,
     RECORD_EVENT,
+    USER_INPUT,
 )
 
 logger = logging.getLogger(__name__)
@@ -194,6 +198,29 @@ def _complete_pending_tool_calls(messages: list[ModelMessage]) -> None:
         for cid, name in orphans
     ]
     messages.append(ModelRequest(parts=synthetic_parts))
+
+
+@dataclass
+class UserInput:
+    """A unit of user input passed to :meth:`LLMBaseAgent.step`.
+
+    ``client_message_id`` is an opaque id assigned by a client to the message that
+    produced this input; it is echoed back in :class:`ServerIdMapping` so the client
+    can map its own messages to backend session-event ids.
+    """
+
+    user_input: str | None = None
+    client_message_id: str | None = None
+
+
+@dataclass
+class ServerIdMapping:
+    """Maps a UI-assigned ``message_id`` to the ``event_id`` of the recorded
+    user-input session event, so the UI can resolve stable backend event ids
+    (used for forking) without relying on positional ordering."""
+
+    event_id: str | None = None
+    client_id: str | None = None
 
 
 @dataclass
@@ -420,7 +447,7 @@ class LLMBaseAgent(IOHost):
 
     async def _run_inference(
         self,
-        input_content: str | None,
+        user_prompt: str | list[UserContent] | None,
         *,
         message_history: list[ModelMessage],
         deferred_tool_results: DeferredToolResults | None = None,
@@ -429,10 +456,11 @@ class LLMBaseAgent(IOHost):
         """Run a single LLM inference with fallback model handling.
 
         Stateless w.r.t. the agent's own message_history / agent_session: the
-        caller passes message_history in and decides what to do with the
-        result. ``on_failure`` is invoked with the captured (and patched)
-        message list right before the final exception is re-raised, so callers
-        that *do* want to commit partial state can opt in.
+        caller passes the already-composed ``user_prompt`` and message_history
+        in and decides what to do with the result. ``on_failure`` is invoked
+        with the captured (and patched) message list right before the final
+        exception is re-raised, so callers that *do* want to commit partial
+        state can opt in.
         """
         primary_ref: str = self.model_ref or ""
         refs_to_try: list[str] = [primary_ref] + list(self.fallback_model_refs)
@@ -447,9 +475,7 @@ class LLMBaseAgent(IOHost):
                 with capture_run_messages() as messages:
                     try:
                         return await self.pydantic_agent.run(
-                            input_content + "\n"
-                            if isinstance(input_content, str)
-                            else input_content,
+                            user_prompt,
                             model=self.model,
                             event_stream_handler=self.handle_event,
                             model_settings=ModelSettings(**self.model_params),
@@ -496,20 +522,39 @@ class LLMBaseAgent(IOHost):
 
     async def step(
         self,
-        input_content: str | None = None,
+        user_input: UserInput | str | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
     ) -> AgentRunResult[DeferredToolRequests | str]:
+        if isinstance(user_input, UserInput):
+            text = user_input.user_input
+            client_message_id = user_input.client_message_id
+        else:
+            text = user_input
+            client_message_id = None
+
+        user_prompt: list[UserContent] | None = None
+        if text is not None:
+            input_id = str(uuid.uuid4())
+            await self.invoke_slot(USER_INPUT, text, input_id)
+            if client_message_id:
+                await self.agent_io.send(
+                    ServerIdMapping(event_id=input_id, client_id=client_message_id)
+                )
+            user_prompt = [
+                TextContent(content=text + "\n", metadata={USER_INPUT_ID_KEY: input_id})
+            ]
+
         async def _commit_failure(messages: list[ModelMessage]) -> None:
-            await self.invoke_slot(AGENT_STEP_FAILURE, input_content, messages)
+            await self.invoke_slot(AGENT_STEP_FAILURE, messages)
 
         result = await self._run_inference(
-            input_content,
+            user_prompt,
             message_history=self.message_history,
             deferred_tool_results=deferred_tool_results,
             on_failure=_commit_failure,
         )
         self.message_history = result.all_messages()
-        await self.invoke_slot(AGENT_STEP, input_content, result)
+        await self.invoke_slot(AGENT_STEP, result)
         await self.agent_io.send(AgentRunResultEvent(result))
         return result
 
