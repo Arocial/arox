@@ -246,10 +246,10 @@ class LLMBaseAgent(IOHost):
 
         self.parse_configs()
 
-        from arox.core.plugin import CommandManager
+        from arox.core.plugin import CommandManager, load_plugins
 
         self.command_manager = CommandManager(self)
-        self.plugins = self.load_plugins()
+        self.plugins = load_plugins(self)
         capabilities: list[AbstractCapability[AgentDeps]] = [
             cap for plugin in self.plugins for cap in plugin.capabilities()
         ]
@@ -269,26 +269,6 @@ class LLMBaseAgent(IOHost):
     ):
         async for event in events:
             await ctx.deps.agent_io.send(event)
-
-    def load_plugins(self):
-        plugin_classes = self.agent_config.plugins
-        plugins = []
-        for plugin_path in plugin_classes:
-            plugin_cls = utils.import_class(plugin_path, group="arox.plugins")
-            plugin = plugin_cls(self)
-            plugins.append(plugin)
-
-            # Register commands. Tools and capabilities are gathered later by
-            # _collect_capabilities() and fed to the pydantic_ai Agent.
-            for spec in plugin.commands():
-                self.command_manager.register(
-                    spec.event_cls, spec.handler, spec.completer
-                )
-
-            # Wire up push-slot subscriptions.
-            for slot, handler in plugin.subscribe():
-                self.provide_slot(slot, handler)
-        return plugins
 
     def get_plugin(self, plugin_cls: type) -> Any | None:
         for plugin in self.plugins:

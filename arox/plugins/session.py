@@ -122,16 +122,14 @@ class SessionPlugin(Plugin):
     def commands(self):
         return [CommandSpec(ForkEvent, self.handle_fork)]
 
-    def subscribe(self):
-        return [
-            (AGENT_RESET, self.on_agent_reset),
-            (AGENT_STEP, self.on_agent_step),
-            (AGENT_STEP_FAILURE, self.on_agent_step_failure),
-            (AGENT_COMMAND, self.on_agent_command),
-            (USER_INPUT, self.on_user_input),
-            (AGENT_ERROR, self.on_error),
-            (RECORD_EVENT, self.on_event),
-        ]
+    def on_load(self):
+        self.agent.provide_slot(AGENT_RESET, self.on_agent_reset)
+        self.agent.provide_slot(AGENT_STEP, self.on_agent_step)
+        self.agent.provide_slot(AGENT_STEP_FAILURE, self.on_agent_step_failure)
+        self.agent.provide_slot(AGENT_COMMAND, self.on_agent_command)
+        self.agent.provide_slot(USER_INPUT, self.on_user_input)
+        self.agent.provide_slot(AGENT_ERROR, self.on_error)
+        self.agent.provide_slot(RECORD_EVENT, self.on_event)
 
     async def on_start(self):
         await self.session_store.cleanup()

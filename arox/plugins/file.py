@@ -63,13 +63,12 @@ class FilePlugin(Plugin):
         self.session_files = []
         self.persistent_files: dict[str, str] = {}
 
-        self.agent.provide_slot(AGENT_INFO, self.get_info)
-        self.agent.provide_slot(PERSISTENT_CONTEXT, self.get_persistent_context)
-
         self.reset()
 
-    def subscribe(self):
-        return [(AGENT_RESET, self.reset)]
+    def on_load(self):
+        self.agent.provide_slot(AGENT_INFO, self.get_info)
+        self.agent.provide_slot(PERSISTENT_CONTEXT, self.get_persistent_context)
+        self.agent.provide_slot(AGENT_RESET, self.reset)
 
     def reset(self):
         self._pending_text_files = {}

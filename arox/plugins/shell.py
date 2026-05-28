@@ -105,10 +105,9 @@ class ShellPlugin(Plugin):
         self.workspace = self.agent.workspace.absolute()
         self._background: dict[str, BackgroundShell] = {}
 
+    def on_load(self):
         self.agent.provide_slot(AGENT_INFO, self._get_info)
-
-    def subscribe(self):
-        return [(AGENT_RESET, self._reset)]
+        self.agent.provide_slot(AGENT_RESET, self._reset)
 
     def _get_cmd(self, command: str) -> list[str]:
         shell_path = _select_shell()

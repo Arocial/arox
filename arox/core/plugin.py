@@ -13,7 +13,6 @@ from arox.core.completion import (
     CompletionRouter,
 )
 from arox.core.io import ReplyEvent, RequestEvent
-from arox.core.slot import Slot
 from arox.plugins.slots import AGENT_COMMAND
 
 logger = logging.getLogger(__name__)
@@ -210,16 +209,15 @@ class Plugin:
     async def on_stop(self) -> None:
         """Resource hook called when the agent stops (torn down in reverse order)."""
 
-    def subscribe(self) -> Sequence[tuple[Slot, Callable[..., Any]]]:
-        """Return ``(slot, handler)`` bindings for push-style event slots.
+    def on_load(self) -> None:
+        """Wire the plugin into the agent after construction.
 
-        Handlers fire when the agent calls :meth:`~LLMBaseAgent.invoke_slot` on the
-        matching :class:`~arox.core.slot.Slot` (reset, step, command, user
-        input, errors, ...). Handlers may be sync or async and their return
-        value is ignored. Use pull slots (:meth:`LLMBaseAgent.invoke_slot`) when
-        a value must be retrieved on demand.
+        Called once after the plugin is constructed and its :meth:`commands`
+        are registered (see :func:`load_plugins`). Override to register
+        push-style slot providers via ``self.agent.provide_slot(slot, handler)``
+        (reset, step, command, user input, errors, ...) or to perform any other
+        one-time agent wiring.
         """
-        return []
 
     def commands(self) -> Sequence[CommandSpec]:
         """Return :class:`CommandSpec` bindings to register.
@@ -277,3 +275,26 @@ class Plugin:
     ) -> list[ModelMessage]:
         """Process message history before sending to the model."""
         return messages
+
+
+def load_plugins(agent) -> list[Plugin]:
+    """Instantiate and wire up the plugins configured for ``agent``.
+
+    For each plugin class in ``agent.agent_config.plugins``: import and
+    construct it, register its slash commands, then call
+    :meth:`Plugin.on_load` so it can wire up slot providers and any other
+    one-time agent hooks. Tools and capabilities are gathered separately by
+    the agent from :meth:`Plugin.capabilities`.
+    """
+    from arox import utils
+
+    plugins: list[Plugin] = []
+    for plugin_path in agent.agent_config.plugins:
+        plugin_cls = utils.import_class(plugin_path, group="arox.plugins")
+        plugin = plugin_cls(agent)
+        plugins.append(plugin)
+
+        for spec in plugin.commands():
+            agent.command_manager.register(spec.event_cls, spec.handler, spec.completer)
+        plugin.on_load()
+    return plugins

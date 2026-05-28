@@ -65,8 +65,7 @@ class MockAgent:
                 return results
 
     def register(self, plugin):
-        for slot, handler in plugin.subscribe():
-            self.provide_slot(slot, handler)
+        plugin.on_load()
         return plugin
 
 
