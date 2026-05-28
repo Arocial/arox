@@ -6,6 +6,7 @@ from typing import Any, ClassVar
 from pydantic import Field
 from pydantic_ai.messages import ModelMessage
 
+from arox.core.completion import CompletionItem, CompletionRequest
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin
 from arox.core.session import (
     FileSessionStore,
@@ -54,14 +55,6 @@ class AgentSession(Session):
     def user_turn_anchors(self) -> list[int]:
         return [i for i, ev in enumerate(self.events) if ev.event_type == "user_input"]
 
-    def resolve_user_turn(self, n: int) -> int | None:
-        if n < 1:
-            return None
-        anchors = self.user_turn_anchors()
-        if len(anchors) < n:
-            return None
-        return anchors[-n]
-
     def truncated_copy(self, event_index: int) -> "AgentSession":
         return AgentSession(
             id=str(uuid.uuid4()),
@@ -81,26 +74,17 @@ register_session_type(AgentSession)
 class ForkEvent(CommandEvent):
     slashes: ClassVar[tuple[str, ...]] = ("fork",)
     description: ClassVar[str] = (
-        "Fork the session at a user turn - /fork [N] (relative) or /fork @<index> (absolute)"
+        "Fork the session at a user turn - /fork <event_id> (press Tab to choose)"
     )
 
-    n: int | None = 1
-    event_index: int | None = None
+    event_id: str | None = None
 
     @classmethod
     def from_slash(cls, name, arg):
         raw = (arg or "").strip()
-        if not raw:
-            return cls(n=1)
         if raw.startswith("@"):
-            try:
-                return cls(n=None, event_index=int(raw[1:]))
-            except ValueError:
-                return cls(n=1)
-        try:
-            return cls(n=max(int(raw), 1))
-        except ValueError:
-            return cls(n=1)
+            raw = raw[1:].strip()
+        return cls(event_id=raw or None)
 
 
 class SessionPlugin(Plugin):
@@ -120,7 +104,32 @@ class SessionPlugin(Plugin):
         ]
 
     def commands(self):
-        return [CommandSpec(ForkEvent, self.handle_fork)]
+        return [CommandSpec(ForkEvent, self.handle_fork, self.complete_fork)]
+
+    async def complete_fork(self, req: CompletionRequest):
+        session = self.agent_session
+        if not isinstance(session, AgentSession):
+            return
+        typed = req.current_token.lstrip("@").lower()
+        anchors = session.user_turn_anchors()
+        total = len(anchors)
+        for back, idx in enumerate(reversed(anchors), start=1):
+            ev = session.events[idx]
+            if typed and typed not in ev.id.lower():
+                continue
+            text = str((ev.data or {}).get("text", "")).strip().replace("\n", " ")
+            if len(text) > 40:
+                text = text[:40] + "…"
+            turn_no = total - back + 1
+            label = f"@{back} (turn {turn_no})"
+            if text:
+                label = f"{label}: {text}"
+            yield CompletionItem(
+                value=ev.id,
+                label=label,
+                group="fork",
+                score=float(total - back),
+            )
 
     def on_load(self):
         self.agent.provide_slot(AGENT_RESET, self.on_agent_reset)
@@ -229,15 +238,9 @@ class SessionPlugin(Plugin):
         if self.agent_session:
             self.agent_session.add_event("command", {"command": command, "arg": arg})
 
-    async def on_user_input(self, text: str, client_message_id: str | None) -> None:
+    async def on_user_input(self, text: str) -> None:
         if self.agent_session:
-            self.agent_session.add_event(
-                "user_input",
-                {
-                    "text": text,
-                    "client_message_id": client_message_id,
-                },
-            )
+            self.agent_session.add_event("user_input", {"text": text})
 
     async def on_error(self, error: Exception) -> None:
         if self.agent_session:
@@ -298,17 +301,14 @@ class SessionPlugin(Plugin):
         if not isinstance(agent_session, AgentSession):
             return "Cannot fork: invalid agent session."
 
-        if event.event_index is not None:
-            target = event.event_index
-            anchors = set(agent_session.user_turn_anchors())
-            if target not in anchors:
-                return f"Cannot fork at @{target}: not a user-turn anchor."
-        else:
-            n = event.n or 1
-            resolved = agent_session.resolve_user_turn(n)
-            if resolved is None:
-                return f"Cannot fork {n} user turn(s) back: not enough history."
-            target = resolved
+        if not event.event_id:
+            return "Cannot fork: specify a user turn (press Tab to choose one)."
+
+        target = agent_session.index_of_event(event.event_id)
+        if target is None:
+            return f"Cannot fork at {event.event_id}: event not found."
+        if agent_session.events[target].event_type != "user_input":
+            return f"Cannot fork at {event.event_id}: not a user-turn anchor."
 
         new_app_session = self.app_session.fork_at(self.agent.name, target)
         new_agent_session = agent_session.truncated_copy(target)

@@ -62,7 +62,7 @@ AGENT_COMMAND = Slot[Callable[..., Any]](
     "agent_command", "A slash command was parsed", aggregator=ResultAggregator.DISCARD
 )
 
-# Emitted when user input is received. Payload: (text, client_message_id).
+# Emitted when user input is received. Payload: (text,).
 USER_INPUT = Slot[Callable[..., Any]](
     "user_input", "User input was received", aggregator=ResultAggregator.DISCARD
 )

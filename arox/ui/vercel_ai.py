@@ -245,10 +245,9 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             messages.append({"type": "step-done"})
 
         elif isinstance(event, UserTurnRecordedEvent):
-            frame: dict = {
-                "type": "data-user-turn",
-                "eventIndex": event.event_index,
-            }
+            frame: dict = {"type": "data-user-turn"}
+            if event.event_id is not None:
+                frame["eventId"] = event.event_id
             if event.message_id is not None:
                 frame["messageId"] = event.message_id
             messages.append(frame)
@@ -612,29 +611,24 @@ class VercelStreamServer:
             msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages
         ]
 
-        anchors_by_id: dict[str, int] = {}
+        # Ordered list of user-turn event ids. The client pairs these
+        # positionally with its own user messages to rebuild a
+        # ``message id -> event id`` map; the backend no longer stores any
+        # client-side message id.
         from arox.plugins.session import SessionPlugin
 
         session_plugin = agent.get_plugin(SessionPlugin)
         agent_session = session_plugin.agent_session if session_plugin else None
+        user_turns: list[str] = []
         if agent_session is not None:
-            user_events = [
-                (i, ev)
-                for i, ev in enumerate(agent_session.events)
-                if ev.event_type == "user_input"
+            user_turns = [
+                ev.id for ev in agent_session.events if ev.event_type == "user_input"
             ]
-            user_msgs = [m for m in ui_messages if getattr(m, "role", None) == "user"]
-            for k, (event_idx, ev) in enumerate(user_events):
-                stored = (ev.data or {}).get("client_message_id")
-                if stored:
-                    anchors_by_id[stored] = event_idx
-                elif k < len(user_msgs):
-                    anchors_by_id[user_msgs[k].id] = event_idx
 
         return {
             "history": history,
             "model": getattr(agent, "provider_model", None),
-            "user_turn_anchors": anchors_by_id,
+            "user_turns": user_turns,
         }
 
     async def list_sessions(self):

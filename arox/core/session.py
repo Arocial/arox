@@ -25,6 +25,7 @@ def _deserialize_messages(data: list[dict[str, Any]]) -> list[ModelMessage]:
 
 
 class SessionEvent(BaseModel):
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     timestamp: datetime
     event_type: str
     agent_name: str = ""
@@ -54,6 +55,12 @@ class Session(BaseModel):
         )
         self.events.append(event)
         return event
+
+    def index_of_event(self, event_id: str) -> int | None:
+        for i, ev in enumerate(self.events):
+            if ev.id == event_id:
+                return i
+        return None
 
 
 _SESSION_TYPES: dict[str, type[Session]] = {}

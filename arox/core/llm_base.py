@@ -371,8 +371,6 @@ class LLMBaseAgent(IOHost):
         self.additional_prompt = additional_prompt
         self.model = model
 
-
-
     def parse_configs(self):
         # Load default metadata using configargparse
         self.raw_system_prompt = self.agent_config.system_prompt

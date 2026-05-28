@@ -20,7 +20,7 @@ class StepDoneEvent:
 
 @dataclass
 class UserTurnRecordedEvent:
-    event_index: int
+    event_id: str | None = None
     message_id: str | None = None
 
 
@@ -151,23 +151,25 @@ class ChatAgent(MainAgent, DelegatableAgent):
 
                 user_input = reply.user_input
                 if user_input is not None:
-                    await self.invoke_slot(
-                        USER_INPUT, user_input, reply.client_message_id
-                    )
+                    await self.invoke_slot(USER_INPUT, user_input)
 
-                    # We still need to know the event index for UserTurnRecordedEvent.
-                    # If we move agent_session to SessionPlugin, we might need a way to get the index.
-                    # For now, let's assume SessionPlugin is present and we can get it.
+                    # Read back the uuid of the user_input event just recorded so
+                    # the UI can map its client-side message id to a stable
+                    # backend event id (used for forking).
                     from arox.plugins.session import SessionPlugin
 
                     session_plugin = self.get_plugin(SessionPlugin)
-                    event_index = -1
-                    if session_plugin and session_plugin.agent_session:
-                        event_index = len(session_plugin.agent_session.events) - 1
+                    event_id = None
+                    if (
+                        session_plugin
+                        and session_plugin.agent_session
+                        and session_plugin.agent_session.events
+                    ):
+                        event_id = session_plugin.agent_session.events[-1].id
 
                     await self.agent_io.send(
                         UserTurnRecordedEvent(
-                            event_index=event_index,
+                            event_id=event_id,
                             message_id=reply.client_message_id,
                         )
                     )

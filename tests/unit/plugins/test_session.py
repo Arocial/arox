@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from arox.core.completion import CompletionRequest
 from arox.core.session import AppSession
 from arox.plugins.session import AgentSession, ForkEvent, SessionPlugin
 
@@ -42,49 +43,66 @@ def _make_plugin(main_agent_session: AgentSession):
 
 
 def test_fork_event_parsing():
-    assert ForkEvent.from_slash("fork", "").n == 1
-    assert ForkEvent.from_slash("fork", "3").n == 3
-    e = ForkEvent.from_slash("fork", "@5")
-    assert e.n is None and e.event_index == 5
-    # Bad input falls back to default.
-    assert ForkEvent.from_slash("fork", "abc").n == 1
+    assert ForkEvent.from_slash("fork", "").event_id is None
+    assert ForkEvent.from_slash("fork", "abc").event_id == "abc"
+    # A leading '@' is stripped.
+    assert ForkEvent.from_slash("fork", "@abc").event_id == "abc"
 
 
 @pytest.mark.asyncio
-async def test_handle_fork_relative_success():
+async def test_handle_fork_success():
     ag = AgentSession(agent_name="main")
-    ag.add_event("user_input", {"text": "hi"})
+    e0 = ag.add_event("user_input", {"text": "hi"})
     ag.add_event("agent_step", {})
-    ag.add_event("user_input", {"text": "again"})
+    e2 = ag.add_event("user_input", {"text": "again"})
     plugin = _make_plugin(ag)
 
-    msg = await plugin.handle_fork(ForkEvent(n=1))
+    msg = await plugin.handle_fork(ForkEvent(event_id=e2.id))
     assert "Forked at event @2" in msg
 
-    msg = await plugin.handle_fork(ForkEvent(n=2))
+    msg = await plugin.handle_fork(ForkEvent(event_id=e0.id))
     assert "Forked at event @0" in msg
 
 
 @pytest.mark.asyncio
-async def test_handle_fork_absolute_anchor_check():
+async def test_handle_fork_anchor_check():
     ag = AgentSession(agent_name="main")
-    ag.add_event("user_input", {"text": "hi"})
-    ag.add_event("agent_step", {})
+    e0 = ag.add_event("user_input", {"text": "hi"})
+    e1 = ag.add_event("agent_step", {})
     plugin = _make_plugin(ag)
 
-    # @0 is a user-turn anchor → succeeds.
-    msg = await plugin.handle_fork(ForkEvent(n=None, event_index=0))
+    # A user_input event is a valid anchor → succeeds.
+    msg = await plugin.handle_fork(ForkEvent(event_id=e0.id))
     assert "Forked at event @0" in msg
 
-    # @1 is an agent_step, not an anchor → rejected.
-    msg = await plugin.handle_fork(ForkEvent(n=None, event_index=1))
+    # An agent_step event is not an anchor → rejected.
+    msg = await plugin.handle_fork(ForkEvent(event_id=e1.id))
     assert "not a user-turn anchor" in msg
 
 
 @pytest.mark.asyncio
-async def test_handle_fork_not_enough_history():
+async def test_handle_fork_missing_or_unknown():
     ag = AgentSession(agent_name="main")
+    ag.add_event("user_input", {"text": "hi"})
     plugin = _make_plugin(ag)
 
-    msg = await plugin.handle_fork(ForkEvent(n=1))
-    assert "not enough history" in msg
+    # No event id supplied.
+    msg = await plugin.handle_fork(ForkEvent())
+    assert "specify a user turn" in msg
+
+    # Unknown event id.
+    msg = await plugin.handle_fork(ForkEvent(event_id="does-not-exist"))
+    assert "event not found" in msg
+
+
+@pytest.mark.asyncio
+async def test_complete_fork_lists_user_turns_newest_first():
+    ag = AgentSession(agent_name="main")
+    e0 = ag.add_event("user_input", {"text": "first"})
+    ag.add_event("agent_step", {})
+    e2 = ag.add_event("user_input", {"text": "second"})
+    plugin = _make_plugin(ag)
+
+    req = CompletionRequest(text="/fork ", cursor=6, current_token="")
+    items = [it async for it in plugin.complete_fork(req)]
+    assert [it.value for it in items] == [e2.id, e0.id]

@@ -166,9 +166,6 @@ class TestAgentSession:
         agent_session.add_event("user_input", {"text": "b"})  # 2
         agent_session.add_event("agent_step", {"new_messages": []})  # 3
         assert agent_session.user_turn_anchors() == [0, 2]
-        assert agent_session.resolve_user_turn(1) == 2
-        assert agent_session.resolve_user_turn(2) == 0
-        assert agent_session.resolve_user_turn(3) is None
 
     def test_truncated_copy(self):
         agent_session = AgentSession(agent_name="main")
