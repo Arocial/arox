@@ -143,7 +143,6 @@ def main(profile: str | None = None):
                         await main_agent.agent_io.send(
                             f"Session restored: {app_session.id}"
                         )
-                    await main_agent.show_agent_info()
                     await main_agent.run()
 
         if args.ui == "headless":

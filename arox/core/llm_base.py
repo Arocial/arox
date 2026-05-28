@@ -391,8 +391,7 @@ class LLMBaseAgent(IOHost):
         self.additional_prompt = additional_prompt
         self.model = model
 
-    async def show_agent_info(self):
-        await self.agent_io.send(f"Using model {self.provider_model} for {self.name}")
+
 
     def parse_configs(self):
         # Load default metadata using configargparse
