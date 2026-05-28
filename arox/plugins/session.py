@@ -12,6 +12,7 @@ from arox.core.session import (
     Session,
     _deserialize_messages,
     _serialize_messages,
+    register_session_type,
 )
 from arox.plugins.slots import (
     AGENT_COMMAND,
@@ -71,6 +72,9 @@ class AgentSession(Session):
             extra=dict(self.extra),
             forked_from={self.agent_name: event_index},
         )
+
+
+register_session_type(AgentSession)
 
 
 @dataclass(kw_only=True)

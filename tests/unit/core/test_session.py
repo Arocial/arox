@@ -270,6 +270,8 @@ class TestFileSessionStore:
             agent_session.id, owner_path=[session.id]
         )
         assert loaded_agent is not None
+        assert isinstance(loaded_agent, AgentSession)
+        assert loaded_agent.agent_name == "main"
         assert len(loaded_agent.events) == 2
         assert loaded_agent.events[0].event_type == "user_input"
         assert loaded_agent.events[1].event_type == "agent_step"

@@ -56,6 +56,15 @@ class Session(BaseModel):
         return event
 
 
+_SESSION_TYPES: dict[str, type[Session]] = {}
+
+
+def register_session_type(cls: type[Session]) -> None:
+    """Register a Session subclass so the store can deserialize it by session_type."""
+    type_name = cls.model_fields["session_type"].default
+    _SESSION_TYPES[type_name] = cls
+
+
 class AppSession(Session):
     session_type: str = "app"
     main_agent: str
@@ -82,6 +91,9 @@ class AppSession(Session):
             updated_at=now,
             metadata=metadata,
         )
+
+
+register_session_type(AppSession)
 
 
 class SessionStore(Protocol):
@@ -150,13 +162,8 @@ class FileSessionStore:
 
         raw = json.loads(meta_path.read_text())
         session_type = raw.get("session_type")
-        if session_type == "app":
-            return AppSession.model_validate(raw)
-        else:
-            # We will return a generic Session here, or the caller can parse it.
-            # Since AgentSession is moved to plugins, we can just return Session and let the caller re-parse if needed,
-            # or we can just return the raw dict? Let's return Session.
-            return Session.model_validate(raw)
+        model = _SESSION_TYPES.get(session_type, Session)
+        return model.model_validate(raw)
 
     async def save_session(self, session: Session) -> None:
         session.updated_at = datetime.now(UTC)
