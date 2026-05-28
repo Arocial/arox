@@ -14,6 +14,7 @@ from arox.core.session import (
     _deserialize_messages,
     _serialize_messages,
     register_session_type,
+    user_turns_from_history,
 )
 from arox.plugins.slots import (
     AGENT_COMMAND,
@@ -52,9 +53,6 @@ class AgentSession(Session):
             if event.event_type in ("compaction", "reset"):
                 context_id = event.data.get("llm_context_id")
         return context_id
-
-    def user_turn_anchors(self) -> list[int]:
-        return [i for i, ev in enumerate(self.events) if ev.event_type == "user_input"]
 
     def truncated_copy(self, event_index: int) -> "AgentSession":
         return AgentSession(
@@ -108,17 +106,14 @@ class SessionPlugin(Plugin):
         return [CommandSpec(ForkEvent, self.handle_fork, self.complete_fork)]
 
     async def complete_fork(self, req: CompletionRequest):
-        session = self.agent_session
-        if not isinstance(session, AgentSession):
-            return
+        history = getattr(self.agent, "message_history", None) or []
+        turns = user_turns_from_history(history)
         typed = req.current_token.lstrip("@").lower()
-        anchors = session.user_turn_anchors()
-        total = len(anchors)
-        for back, idx in enumerate(reversed(anchors), start=1):
-            ev = session.events[idx]
-            if typed and typed not in ev.id.lower():
+        total = len(turns)
+        for back, (input_id, text) in enumerate(reversed(turns), start=1):
+            if typed and typed not in input_id.lower():
                 continue
-            text = str((ev.data or {}).get("text", "")).strip().replace("\n", " ")
+            text = text.replace("\n", " ")
             if len(text) > 40:
                 text = text[:40] + "…"
             turn_no = total - back + 1
@@ -126,7 +121,7 @@ class SessionPlugin(Plugin):
             if text:
                 label = f"{label}: {text}"
             yield CompletionItem(
-                value=ev.id,
+                value=input_id,
                 label=label,
                 group="fork",
                 score=float(total - back),

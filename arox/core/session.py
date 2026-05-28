@@ -9,7 +9,12 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field, TypeAdapter
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    TextContent,
+    UserPromptPart,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +24,58 @@ _message_adapter = TypeAdapter(ModelMessage)
 # corresponding ``ModelRequest``. Set in-memory during a step and re-derived
 # from ``user_input`` events when a session is restored.
 USER_INPUT_ID_KEY = "user_input_id"
+
+
+def user_input_id_of(message: ModelMessage) -> str | None:
+    """Return the user-turn id tagged on ``message`` via ``USER_INPUT_ID_KEY``.
+
+    The id lives on the user prompt's ``TextContent`` metadata and is the
+    canonical fork anchor; returns ``None`` for non-user messages.
+    """
+    if not isinstance(message, ModelRequest):
+        return None
+    for part in message.parts:
+        if not isinstance(part, UserPromptPart):
+            continue
+        content = part.content
+        items = content if isinstance(content, (list, tuple)) else [content]
+        for item in items:
+            if isinstance(item, TextContent) and isinstance(item.metadata, dict):
+                input_id = item.metadata.get(USER_INPUT_ID_KEY)
+                if input_id:
+                    return input_id
+    return None
+
+
+def _user_message_text(message: ModelMessage) -> str:
+    if not isinstance(message, ModelRequest):
+        return ""
+    chunks: list[str] = []
+    for part in message.parts:
+        if not isinstance(part, UserPromptPart):
+            continue
+        content = part.content
+        items = content if isinstance(content, (list, tuple)) else [content]
+        for item in items:
+            if isinstance(item, str):
+                chunks.append(item)
+            elif isinstance(item, TextContent):
+                chunks.append(item.content)
+    return "".join(chunks).strip()
+
+
+def user_turns_from_history(history: Sequence[ModelMessage]) -> list[tuple[str, str]]:
+    """List ``(input_id, text)`` for every user turn present in ``history``.
+
+    Turns whose context was dropped by compaction are absent, so the result
+    stays aligned 1:1 with the user messages actually in ``history``.
+    """
+    turns: list[tuple[str, str]] = []
+    for message in history:
+        input_id = user_input_id_of(message)
+        if input_id:
+            turns.append((input_id, _user_message_text(message)))
+    return turns
 
 
 def _serialize_messages(messages: Sequence[ModelMessage]) -> list[dict[str, Any]]:

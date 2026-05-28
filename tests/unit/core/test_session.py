@@ -159,14 +159,6 @@ class TestAgentSession:
         )
         assert agent_session.rebuild_llm_context_id() == "ctx_second"
 
-    def test_user_turn_anchors(self):
-        agent_session = AgentSession(agent_name="main")
-        agent_session.add_event("user_input", {"text": "a"})  # 0
-        agent_session.add_event("agent_step", {"new_messages": []})  # 1
-        agent_session.add_event("user_input", {"text": "b"})  # 2
-        agent_session.add_event("agent_step", {"new_messages": []})  # 3
-        assert agent_session.user_turn_anchors() == [0, 2]
-
     def test_truncated_copy(self):
         agent_session = AgentSession(agent_name="main")
         agent_session.add_event("user_input", {"text": "first"})

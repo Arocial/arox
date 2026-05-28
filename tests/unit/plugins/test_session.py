@@ -95,6 +95,24 @@ async def test_handle_fork_missing_or_unknown():
     assert "event not found" in msg
 
 
+def _tagged_user_message(text: str, input_id: str):
+    from pydantic_ai.messages import ModelRequest, TextContent, UserPromptPart
+
+    from arox.core.session import USER_INPUT_ID_KEY
+
+    return ModelRequest(
+        parts=[
+            UserPromptPart(
+                content=[
+                    TextContent(
+                        content=text + "\n", metadata={USER_INPUT_ID_KEY: input_id}
+                    )
+                ]
+            )
+        ]
+    )
+
+
 @pytest.mark.asyncio
 async def test_complete_fork_lists_user_turns_newest_first():
     ag = AgentSession(agent_name="main")
@@ -102,7 +120,14 @@ async def test_complete_fork_lists_user_turns_newest_first():
     ag.add_event("agent_step", {})
     e2 = ag.add_event("user_input", {"text": "second"})
     plugin = _make_plugin(ag)
+    # Candidates are derived from the live message history's USER_INPUT_ID_KEY
+    # metadata, not the user_input events directly.
+    plugin.agent.message_history = [
+        _tagged_user_message("first", e0.id),
+        _tagged_user_message("second", e2.id),
+    ]
 
     req = CompletionRequest(text="/fork ", cursor=6, current_token="")
     items = [it async for it in plugin.complete_fork(req)]
     assert [it.value for it in items] == [e2.id, e0.id]
+    assert [it.label for it in items] == ["@1 (turn 2): second", "@2 (turn 1): first"]

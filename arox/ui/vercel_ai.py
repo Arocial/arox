@@ -610,19 +610,17 @@ class VercelStreamServer:
             msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages
         ]
 
-        # Ordered list of user-turn event ids. The client pairs these
-        # positionally with its own user messages to rebuild a
-        # ``message id -> event id`` map; the backend no longer stores any
+        # Ordered list of user-turn ids, derived from the USER_INPUT_ID_KEY
+        # metadata on the user messages in ``history`` so they stay aligned 1:1
+        # with those messages (compaction can drop turns from history). The
+        # client pairs these positionally with its own user messages to rebuild
+        # a ``message id -> event id`` map; the backend no longer stores any
         # client-side message id.
-        from arox.plugins.session import SessionPlugin
+        from arox.core.session import user_turns_from_history
 
-        session_plugin = agent.get_plugin(SessionPlugin)
-        agent_session = session_plugin.agent_session if session_plugin else None
-        user_turns: list[str] = []
-        if agent_session is not None:
-            user_turns = [
-                ev.id for ev in agent_session.events if ev.event_type == "user_input"
-            ]
+        user_turns: list[str] = [
+            input_id for input_id, _ in user_turns_from_history(messages)
+        ]
 
         return {
             "history": history,
