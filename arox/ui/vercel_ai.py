@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import override
 
@@ -71,10 +73,6 @@ class SessionInfo(BaseModel):
     created_at: str
     updated_at: str
     metadata: dict
-
-
-from dataclasses import dataclass
-from enum import Enum
 
 
 class AgentTaskStatus(str, Enum):

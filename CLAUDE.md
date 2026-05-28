@@ -5,12 +5,14 @@
 ```bash
 uv sync              # Install dependencies
 uv run pytest        # Run all tests
-./tools/lint         # Run ruff linter and formatter
+uv run ruff format   # Format code
+uv run ruff check --fix  # Lint and auto-fix (config in pyproject.toml)
+uv run ty check      # Type check
 uv run arox-coder    # Run the Coder app interactively (text UI, default)
 uv run mkdocs serve  # Serve docs at http://127.0.0.1:3420
 ```
 
-**Before committing**: run `./tools/lint` `uv run pytest` and fix.
+**Before committing**: run `uv run ruff format && uv run ruff check --fix && uv run ty check`, and `uv run pytest`, then fix any issues.
 
 ## Architecture
 

@@ -43,12 +43,14 @@ uv run pytest
 
 ## Linting and Formatting
 
-We use `ruff` for fast linting and formatting. A convenience script is provided in the `tools/` directory.
+We use `ruff` for fast linting and formatting (configured in `pyproject.toml`) and `ty` for type checking.
 
-To run the linter and formatter:
+Before committing, run all of the following and fix any issues:
 
 ```bash
-./tools/lint
+uv run ruff format       # Format code
+uv run ruff check --fix  # Lint and auto-fix
+uv run ty check          # Type check
 ```
 
 ## Building Documentation

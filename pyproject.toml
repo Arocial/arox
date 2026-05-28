@@ -61,15 +61,13 @@ session = "arox.plugins.session:SessionPlugin"
 [tool.setuptools.packages.find]
 where = ["."]
 
-[tool.pyrefly]
-project-includes = [
-    "**/*.py*",
-    "**/*.ipynb",
-]
+[tool.ruff.lint]
+extend-select = ["I"]
 
 [dependency-groups]
 dev = [
-    "pyrefly>=1.0.0",
+    "ruff>=0.15.14",
+    "ty>=0.0.40",
     "pytest>=8.3.4",
     "pytest-asyncio>=1.0.0",
     "pytest-profiling>=1.8.1",
