@@ -14,6 +14,7 @@ from pydantic_ai import (
     AbstractToolset,
     Agent,
     AgentRunResult,
+    AgentRunResultEvent,
     AgentStreamEvent,
     FunctionToolset,
     ModelSettings,
@@ -546,6 +547,7 @@ class LLMBaseAgent(IOHost):
         self.message_history = result.all_messages()
         await self.invoke_slot(AGENT_STEP, input_content, result)
         await self._run_post_step_hooks(input_content, result)
+        await self.agent_io.send(AgentRunResultEvent(result))
         return result
 
     async def reset(self):
