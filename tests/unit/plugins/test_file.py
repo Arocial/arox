@@ -126,28 +126,6 @@ class TestFileEdit:
             assert "import yaml" not in updated_content
 
     @pytest.mark.asyncio
-    async def test_replace_in_file_with_placeholder(self):
-        """Test replacement with ...omit lines... placeholder"""
-        with tempfile.TemporaryDirectory() as temp_dir:
-            file_path = Path(temp_dir) / "test.py"
-            file_path.write_text(original_content)
-
-            old_str = """import yaml
-...omit lines...
-from pathlib import Path"""
-            new_str = """import json
-
-from pathlib import Path"""
-
-            result = await self.tool.replace_in_file(str(file_path), old_str, new_str)
-
-            assert "Successfully updated" in result
-            updated_content = file_path.read_text()
-            assert "import json" in updated_content
-            assert "import yaml" not in updated_content
-            assert "def test():" in updated_content  # Should preserve content after
-
-    @pytest.mark.asyncio
     async def test_replace_in_file_nonexistent(self):
         """Test replacement on non-existent file"""
         result = await self.tool.replace_in_file("/nonexistent/file.py", "old", "new")
@@ -183,3 +161,16 @@ from pathlib import Path"""
                 assert "Successfully updated" in result
                 updated_content = file_path.read_text()
                 assert f"{lines[0]}\nreplaced\n{lines[-1]}" == updated_content
+
+    @pytest.mark.asyncio
+    async def test_replace_in_file_ambiguous_exact(self):
+        """Exact match appearing more than once is refused, not guessed."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            file_path = Path(temp_dir) / "test.py"
+            content = "x = 1\ny = 2\nx = 1\n"
+            file_path.write_text(content)
+
+            result = await self.tool.replace_in_file(str(file_path), "x = 1", "x = 9")
+
+            assert "multiple locations" in result
+            assert file_path.read_text() == content  # unchanged

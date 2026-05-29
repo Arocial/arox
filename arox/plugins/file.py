@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_alnum_regex = re.compile(r"(?ui)\W")
+_whitespace_regex = re.compile(r"\s+")
 
 # When set, failed `replace_in_file` matches are dumped to this directory
 # (a copy of the target file plus the old/new strings) for later debugging.
@@ -345,20 +345,19 @@ class FilePlugin(Plugin):
                 return f"File not found: {file_path}"
 
             orig_content = file_path.read_text()
-            content = orig_content
 
-            m, start_pos, end_pos = self._find_with_placeholder(content, old_str)
-            if m:
-                content = content[:start_pos] + new_str + content[end_pos:]
-            else:
-                if old_str in content:
-                    content = content.replace(old_str, new_str, 1)
-                else:
-                    content = self._fuzzy_replace(old_str, new_str, content)
-
-            if content:
-                file_path.write_text(content)
+            new_content, status = self._resolve_replacement(
+                orig_content, old_str, new_str
+            )
+            if status == "ok" and new_content is not None:
+                file_path.write_text(new_content)
                 msg = f"Successfully updated {file_path}"
+            elif status == "ambiguous":
+                msg = (
+                    f"old_str matches multiple locations in {file_path}. "
+                    "Make it unique by including more surrounding context."
+                )
+                self._dump_failed_replace(file_path, old_str, new_str)
             else:
                 msg = f"Cannot find a match for passed old_str in {file_path}"
                 self._dump_failed_replace(file_path, old_str, new_str)
@@ -368,6 +367,26 @@ class FilePlugin(Plugin):
             msg = f"Error replacing in file `{path}` with exception: {e!s}"
             logger.info(msg)
             return msg
+
+    def _resolve_replacement(
+        self, content: str, old_str: str, new_str: str
+    ) -> tuple[str | None, str]:
+        """Locate `old_str` and produce the replaced content.
+
+        Returns ``(new_content, status)`` where status is ``"ok"``,
+        ``"ambiguous"`` or ``"not_found"``. Every path requires `old_str` to
+        identify exactly one location; matching multiple places yields
+        ``"ambiguous"`` (we refuse rather than guess which one to edit).
+        """
+        # 1. Exact substring match.
+        count = content.count(old_str)
+        if count > 1:
+            return None, "ambiguous"
+        if count == 1:
+            return content.replace(old_str, new_str, 1), "ok"
+
+        # 2. Whitespace-tolerant fuzzy match.
+        return self._fuzzy_replace(old_str, new_str, content)
 
     def _dump_failed_replace(self, file_path: Path, old_str: str, new_str: str) -> None:
         """Dump a failed `replace_in_file` match to a debug directory.
@@ -391,77 +410,94 @@ class FilePlugin(Plugin):
         except Exception as e:
             logger.warning("Failed to dump replace_in_file debug context: %s", e)
 
-    def _match_placeholder(self, content):
-        return re.search(
-            r"^[^a-zA-Z]*" + re.escape("...omit lines...") + r"[^a-zA-Z]*$",
-            content,
-            re.MULTILINE,
+    @staticmethod
+    def _strip_lines(s: str) -> str:
+        """Strip leading/trailing whitespace from each line, preserving line count.
+
+        Makes fuzzy matching insensitive to indentation and trailing-space
+        differences. Every line keeps a trailing ``\\n`` so that line offsets in
+        the result stay in 1:1 correspondence with the original text's lines.
+        """
+        return "".join(line.strip() + "\n" for line in s.splitlines(keepends=True))
+
+    def _fuzzy_replace(
+        self, old_str: str, new_str: str, content: str
+    ) -> tuple[str | None, str]:
+        # Bail out on degenerate needles: a search string that is empty or only
+        # whitespace would otherwise match almost anywhere after stripping.
+        cleaned_old = _whitespace_regex.sub("", old_str)
+        if not cleaned_old:
+            return None, "not_found"
+
+        match_range = self._find_fuzzy_range(old_str, content)
+        if match_range is None:
+            return None, "not_found"
+
+        start, end = match_range
+        # Ambiguity check: drop the matched lines and try again. The matched
+        # range is line-aligned, so removing it leaves clean line boundaries.
+        # A second fuzzy match means `old_str` is not unique and we refuse to
+        # guess which location to edit.
+        remainder = content[:start] + content[end:]
+        if self._find_fuzzy_range(old_str, remainder) is not None:
+            return None, "ambiguous"
+
+        return content[:start] + new_str + content[end:], "ok"
+
+    def _find_fuzzy_range(self, old_str: str, content: str) -> tuple[int, int] | None:
+        """Locate a single whitespace-tolerant match of `old_str` in `content`.
+
+        Returns the ``(start, end)`` character range of the match, or ``None``
+        when no sufficiently good match is found.
+        """
+        align = fuzz.partial_ratio_alignment(
+            self._strip_lines(old_str), self._strip_lines(content)
         )
-
-    def _find_with_placeholder(self, content: str, search_pattern: str) -> tuple:
-        m = self._match_placeholder(search_pattern)
-        if not m:
-            return None, None, None
-
-        before = search_pattern[: m.start() - 1]
-        after = search_pattern[m.end() + 1 :]
-
-        if not before or not after:
-            return None, None, None
-
-        escaped_before = re.escape(before)
-        escaped_after = re.escape(after)
-
-        pattern = escaped_before + r".*?" + escaped_after
-        match = re.search(pattern, content, re.DOTALL)
-
-        if match:
-            return content[match.start() : match.end()], match.start(), match.end()
-
-        return None, None, None
-
-    def _fuzzy_replace(self, old_str: str, new_str: str, content: str) -> str | None:
-        align = fuzz.partial_ratio_alignment(old_str, content)
         if align and align.score > 98:
-            improved_range = self._improve_fuzz_match(content, old_str, align)
-            if improved_range:
-                start, end = improved_range
-                return content[:start] + new_str + content[end:]
+            return self._improve_fuzz_match(content, old_str, align)
+        return None
 
     def _improve_fuzz_match(
         self, content: str, old_str: str, align
     ) -> tuple[int, int] | None:
+        # ``align`` offsets index into the line-stripped form of content (see
+        # _fuzzy_replace), while the replacement slices the original content.
+        # Both line-start tables are derived from the same line list, so a line
+        # index is valid in either one.
         content_lines = content.splitlines(keepends=True)
-        line_starts = []
-        curr = 0
+        content_starts: list[int] = []
+        stripped_starts: list[int] = []
+        c_curr = s_curr = 0
         for line in content_lines:
-            line_starts.append(curr)
-            curr += len(line)
-        line_starts.append(curr)
+            content_starts.append(c_curr)
+            stripped_starts.append(s_curr)
+            c_curr += len(line)
+            s_curr += len(line.strip()) + 1  # +1 for the "\n" added by _strip_lines
+        content_starts.append(c_curr)
+        stripped_starts.append(s_curr)
 
-        def boundary_index(pos: int) -> int:
-            for i in range(len(line_starts) - 1):
-                if line_starts[i] <= pos < line_starts[i + 1]:
+        def line_index(starts: list[int], pos: int) -> int:
+            for i in range(len(starts) - 1):
+                if starts[i] <= pos < starts[i + 1]:
                     return i
-            return len(line_starts) - 1
+            return len(starts) - 1
 
         def neighbors(idx: int, offsets: tuple[int, ...]) -> list[int]:
             seen: set[int] = set()
             for d in offsets:
-                j = max(0, min(len(line_starts) - 1, idx + d))
-                seen.add(line_starts[j])
+                j = max(0, min(len(content_starts) - 1, idx + d))
+                seen.add(content_starts[j])
             return sorted(seen)
 
         dest_start, dest_end = align.dest_start, align.dest_end
-        start_candidates = neighbors(boundary_index(dest_start), (-1, 0, 1))
+        start_line = line_index(stripped_starts, dest_start)
         # dest_end is exclusive; subtract 1 to find the line it sits inside.
-        end_candidates = neighbors(
-            boundary_index(max(dest_start, dest_end - 1)), (0, 1, 2)
-        )
+        end_line = line_index(stripped_starts, max(dest_start, dest_end - 1))
+        start_candidates = neighbors(start_line, (-1, 0, 1))
+        end_candidates = neighbors(end_line, (0, 1, 2))
 
         def clean_str(sentence: str) -> str:
-            string_out = _alnum_regex.sub("", sentence)
-            return string_out.strip().lower()
+            return _whitespace_regex.sub("", sentence)
 
         cleaned_old = clean_str(old_str)
         for s in start_candidates:
