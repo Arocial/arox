@@ -39,8 +39,8 @@ plugins = [
     "file",
     "repo",
     "compaction",
-    "subagent",
     "session",
+    "subagent",
 ]
 
 [agent.coder.model_prompt]

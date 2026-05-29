@@ -73,6 +73,16 @@ class Session(BaseModel):
         return None
 
 
+def derive_child_session_id(owner_session_id: str, agent_name: str) -> str:
+    """Derive a stable session id for an agent nested under ``owner_session_id``.
+
+    Deterministic in ``(owner_session_id, agent_name)`` so that a subagent's
+    session can be located on resume without persisting a separate index: the
+    owner re-derives the same id from its own (possibly forked) session id.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{owner_session_id}/{agent_name}"))
+
+
 _SESSION_TYPES: dict[str, type[Session]] = {}
 
 
@@ -82,39 +92,8 @@ def register_session_type(cls: type[Session]) -> None:
     _SESSION_TYPES[type_name] = cls
 
 
-class AppSession(Session):
-    session_type: str = "app"
-    main_agent: str
-
-    def fork_at(self, agent_name: str, event_index: int) -> AppSession:
-        now = datetime.now(UTC)
-        new = AppSession(
-            id=str(uuid.uuid4()),
-            main_agent=self.main_agent,
-            created_at=now,
-            updated_at=now,
-            metadata=dict(self.metadata),
-            forked_from={agent_name: event_index},
-        )
-        return new
-
-    @staticmethod
-    def create(main_agent: str, **metadata: Any) -> AppSession:
-        now = datetime.now(UTC)
-        return AppSession(
-            id=str(uuid.uuid4()),
-            main_agent=main_agent,
-            created_at=now,
-            updated_at=now,
-            metadata=metadata,
-        )
-
-
-register_session_type(AppSession)
-
-
 class SessionStore(Protocol):
-    async def list_sessions(self, main_agent: str) -> list[AppSession]: ...
+    async def list_sessions(self, session_type: str = "agent") -> list[Session]: ...
     async def load_session(
         self, session_id: str, owner_path: list[str] | None = None
     ) -> Session | None: ...
@@ -146,10 +125,10 @@ class FileSessionStore:
     ) -> Path:
         return self._session_dir(session_id, owner_path) / "session.json"
 
-    async def list_sessions(self, main_agent: str) -> list[AppSession]:
+    async def list_sessions(self, session_type: str = "agent") -> list[Session]:
         if not self.base_dir.exists():
             return []
-        sessions = []
+        sessions: list[Session] = []
         for d in self.base_dir.iterdir():
             if not d.is_dir():
                 continue
@@ -158,12 +137,10 @@ class FileSessionStore:
                 continue
             try:
                 raw = json.loads(meta_path.read_text())
-                if (
-                    raw.get("main_agent") == main_agent
-                    and raw.get("session_type") == "app"
-                ):
-                    session = AppSession.model_validate(raw)
-                    sessions.append(session)
+                if raw.get("session_type") != session_type:
+                    continue
+                model = _SESSION_TYPES.get(session_type, Session)
+                sessions.append(model.model_validate(raw))
             except Exception:
                 logger.warning(f"Failed to load session from {d}", exc_info=True)
 

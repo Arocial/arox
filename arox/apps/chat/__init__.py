@@ -111,37 +111,33 @@ def main(profile: str | None = None):
         else:
             raise ValueError(f"Unknown UI: {args.ui}")
 
-        main_agent = create_main_agent(
-            parsed_config,
-            io_adapter=io_adapter,
-            session_id=args.session,
-        )
-
         async def run_all():
-            from arox.core.session import AppSession, FileSessionStore
+            from arox.core.session import FileSessionStore
+            from arox.plugins.session import AgentSession
+            from arox.plugins.slots import SET_SESSION
 
-            store = FileSessionStore()
-
+            session_store = FileSessionStore(
+                max_age_days=parsed_config.app.session_max_age_days
+            )
             if args.session:
-                app_session = await store.load_session(args.session)
-                if not app_session or not isinstance(app_session, AppSession):
+                session = await session_store.load_session(args.session)
+                if not session or not isinstance(session, AgentSession):
                     print(
                         f"Session {args.session} not found or invalid.", file=sys.stderr
                     )
                     sys.exit(1)
-            else:
-                app_session = AppSession.create(
-                    main_agent.name, workspace=str(main_agent.workspace)
-                )
 
-            main_agent.app_session = app_session
+            main_agent = create_main_agent(parsed_config, io_adapter=io_adapter)
+            # The main agent owns the root session (empty owner path); hand it
+            # the id to resume and the shared store before it starts.
+            await main_agent.invoke_slot(SET_SESSION, args.session, [], session_store)
 
             async with io_adapter:
                 await io_adapter.register_host(main_agent)
                 async with main_agent:
                     if args.session:
                         await main_agent.agent_io.send(
-                            f"Session restored: {app_session.id}"
+                            f"Session restored: {args.session}"
                         )
                     await main_agent.run()
 

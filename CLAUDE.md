@@ -23,7 +23,7 @@ An **App** is a runnable process that owns one `IOAdapter` and hosts a **MainAge
 Agent types and which agent to instantiate come from config (`arox/core/config.py`): `AppConfig` / `AgentConfig` are resolved by `load_config` from layered YAML plus CLI overrides.
 
 **Session management** is handled by the `SessionPlugin` (`arox/plugins/session.py`):
-- `AppSession` aggregates per-agent `AgentSession` entries (message history + metadata) under one session id.
+- The main agent's `AgentSession` (message history + metadata) is the top-level session for a run; subagents keep their own `AgentSession`s nested beneath it.
 - `SessionStore` (default `FileSessionStore`) persists sessions to disk with an age-based cleanup.
 - On agent start, sessions are restored into each agent; on exit they are saved back. Resuming is done via the `session_id` passed to the App.
 

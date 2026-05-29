@@ -42,7 +42,6 @@ def app_setup(
 def create_main_agent(
     parsed_config: Config,
     io_adapter: Any,
-    session_id: str | None = None,
     workspace: Path | str | None = None,
 ) -> MainAgent:
     main_agent_name = parsed_config.app.main_agent
@@ -67,8 +66,6 @@ def create_main_agent(
         local_toolset=local_toolset,
         workspace=workspace,
     )
-
-    main_agent.session_id = session_id
 
     if not isinstance(main_agent, MainAgent):
         raise TypeError(f"Main agent '{main_agent_name}' must be a MainAgent")

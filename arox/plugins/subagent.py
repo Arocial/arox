@@ -7,7 +7,8 @@ from pydantic_ai.tools import ToolDefinition
 
 from arox.core.llm_base import DelegatableAgent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, ToolDef
-from arox.plugins.slots import SUBAGENTS
+from arox.core.session import derive_child_session_id
+from arox.plugins.slots import AGENT_SESSION, SESSION_STORE, SET_SESSION, SUBAGENTS
 from arox.utils import import_class
 
 logger = logging.getLogger(__name__)
@@ -77,8 +78,32 @@ class SubagentPlugin(Plugin):
         self.agent.provide_slot(SUBAGENTS, list_subagents)
 
     async def on_start(self):
+        # Link each subagent's session under the main agent session: derive a
+        # stable child session id from the main session and hand it, the owner
+        # path and the shared session store to the subagent via the SET_SESSION
+        # slot. Its SessionPlugin then nests its session beneath the main one
+        # (via ``owner_id``) and resumes it on the next run.
+        main_session = await self.agent.invoke_slot(AGENT_SESSION)
+        session_store = await self.agent.invoke_slot(SESSION_STORE)
+        # A configured session store with no session yet means the SessionPlugin
+        # hasn't run its on_start: this plugin is ordered before it. on_start
+        # runs in plugin-list order, so subagents would silently get no session.
+        if session_store is not None and main_session is None:
+            raise RuntimeError(
+                "SubagentPlugin.on_start ran before the session was initialized; "
+                "order the 'session' plugin before 'subagent' in the agent config."
+            )
         for subagent in self.subagents.values():
+            if main_session is not None:
+                await subagent.invoke_slot(
+                    SET_SESSION,
+                    self._child_session_id(main_session.id, subagent.name),
+                    [*main_session.owner_path, main_session.id],
+                    session_store,
+                )
             await self.agent._stack.enter_async_context(subagent)
+
+    _child_session_id = staticmethod(derive_child_session_id)
 
     def commands(self):
         return [CommandSpec(AgentCallEvent, self.handle_agent_call)]

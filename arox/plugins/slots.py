@@ -33,7 +33,24 @@ LLM_CONTEXT_ID = Slot[Callable[[], str]](
 
 # Slot for getting the current agent session
 AGENT_SESSION = Slot[Callable[[], Any]](
-    "agent_session", "Provides the current agent session"
+    "agent_session",
+    "Provides the current agent session",
+    aggregator=ResultAggregator.FIRST,
+)
+
+# Slot for getting the agent's session store.
+SESSION_STORE = Slot[Callable[[], Any]](
+    "session_store",
+    "Provides the agent's session store",
+    aggregator=ResultAggregator.FIRST,
+)
+
+# Slot for configuring the agent's session before it starts.
+# Payload: (session_id, owner_path, session_store).
+SET_SESSION = Slot[Callable[..., Any]](
+    "set_session",
+    "Sets the agent's session id, owner path and session store",
+    aggregator=ResultAggregator.DISCARD,
 )
 
 # --- Push slots (handlers invoked by agent.notify) ---

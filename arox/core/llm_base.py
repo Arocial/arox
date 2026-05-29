@@ -241,7 +241,6 @@ class LLMBaseAgent(IOHost):
         self.uuid = str(uuid.uuid4())
         self.name = name
         self.workspace = Path(workspace).absolute() if workspace else Path.cwd()
-        self.app_session: Any | None = None
         self.llm_context_id: str = str(uuid.uuid4())
         self._slots: dict[Any, Any] = {}
         self.model_ref = None

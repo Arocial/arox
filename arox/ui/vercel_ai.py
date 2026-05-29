@@ -523,29 +523,28 @@ class VercelStreamServer:
             config_files=self.config_files, cli_args=self.cli_args
         )
 
-        main_agent = create_main_agent(
-            parsed_config,
-            io_adapter=self.io_adapter,
-            session_id=request.session_id,
-            workspace=request.workspace,
+        from arox.core.session import FileSessionStore
+        from arox.plugins.session import AgentSession
+        from arox.plugins.slots import SET_SESSION
+
+        session_store = FileSessionStore(
+            max_age_days=parsed_config.app.session_max_age_days
         )
-
-        from arox.core.session import AppSession, FileSessionStore
-
-        store = FileSessionStore()
-
         if request.session_id:
-            app_session = await store.load_session(request.session_id)
-            if not app_session or not isinstance(app_session, AppSession):
+            session = await session_store.load_session(request.session_id)
+            if not session or not isinstance(session, AgentSession):
                 raise HTTPException(
                     status_code=404, detail="Session not found or invalid"
                 )
-        else:
-            app_session = AppSession.create(
-                main_agent.name, workspace=str(main_agent.workspace)
-            )
 
-        main_agent.app_session = app_session
+        main_agent = create_main_agent(
+            parsed_config,
+            io_adapter=self.io_adapter,
+            workspace=request.workspace,
+        )
+        # The main agent owns the root session (empty owner path); hand it the
+        # id to resume and the shared store before it starts.
+        await main_agent.invoke_slot(SET_SESSION, request.session_id, [], session_store)
 
         run_instance = AgentRun(main_agent=main_agent)
         self.io_adapter.run_instances[main_agent.uuid] = run_instance
@@ -556,7 +555,7 @@ class VercelStreamServer:
                 async with main_agent:
                     if request.session_id:
                         await main_agent.agent_io.send(
-                            f"Session restored: {app_session.id}"
+                            f"Session restored: {request.session_id}"
                         )
                     await main_agent.run()
 
@@ -708,23 +707,25 @@ class VercelStreamServer:
     async def list_sessions(self):
         from arox.core.config import load_config
         from arox.core.session import FileSessionStore
+        from arox.plugins.session import AgentSession
 
-        # Sessions are persisted with ``main_agent`` set to the main agent's
-        # name (see ``SessionPlugin``), so filter by the configured main agent.
+        # The top-level session is the main agent's own AgentSession; filter to
+        # the configured main agent so subagent sessions don't leak in.
         parsed_config = load_config(self.config_files, self.cli_args)
         main_agent = parsed_config.app.main_agent
 
         store = FileSessionStore()
-        sessions = await store.list_sessions(main_agent)
+        sessions = await store.list_sessions()
         return [
             SessionInfo(
                 id=s.id,
-                main_agent=s.main_agent,
+                main_agent=s.agent_name,
                 created_at=s.created_at.isoformat(),
                 updated_at=s.updated_at.isoformat(),
                 metadata=s.metadata,
             )
             for s in sessions
+            if isinstance(s, AgentSession) and s.agent_name == main_agent
         ]
 
     async def delete_session(self, session_id: str):

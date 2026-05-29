@@ -16,19 +16,23 @@ from arox.core.completion import CompletionItem, CompletionRequest
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin
 from arox.core.session import (
     USER_INPUT_ID_KEY,
-    FileSessionStore,
     Session,
+    SessionStore,
     _deserialize_messages,
     _serialize_messages,
+    derive_child_session_id,
     register_session_type,
 )
 from arox.plugins.slots import (
     AGENT_COMMAND,
     AGENT_ERROR,
     AGENT_RESET,
+    AGENT_SESSION,
     AGENT_STEP,
     AGENT_STEP_FAILURE,
     RECORD_EVENT,
+    SESSION_STORE,
+    SET_SESSION,
     SUBAGENTS,
     USER_INPUT,
 )
@@ -60,15 +64,46 @@ class AgentSession(Session):
                 context_id = event.data.get("llm_context_id")
         return context_id
 
-    def truncated_copy(self, event_index: int) -> "AgentSession":
+    def fork_at(self, event_id: str | None, owner_path: list[str]) -> "AgentSession":
+        """Branch a new session off this one, nested under ``owner_path``.
+
+        With ``event_id`` the new session is a truncated copy holding the events
+        up to (but excluding) that anchor, tagged via ``forked_from``. With
+        ``event_id`` set to ``None`` it starts empty and unforked.
+
+        ``owner_path`` is the chain of owner session ids the branch nests under
+        (empty roots it at the top level); the owner id is corrected to its last
+        element rather than inherited from this session. A nested branch derives
+        its id from the owner so the owner re-derives the same id on resume; a
+        root branch gets a fresh uuid.
+
+        Raises ``ValueError`` if ``event_id`` is given but not found.
+        """
+        forked_from: dict[str, int] | None
+        if event_id is None:
+            events = []
+            forked_from = None
+        else:
+            event_index = self.index_of_event(event_id)
+            if event_index is None:
+                raise ValueError(f"event {event_id} not found")
+            events = [ev.model_copy(deep=True) for ev in self.events[:event_index]]
+            forked_from = {self.agent_name: event_index}
+        owner_path = list(owner_path)
+        owner_id = owner_path[-1] if owner_path else None
+        new_id = (
+            derive_child_session_id(owner_id, self.agent_name)
+            if owner_id
+            else str(uuid.uuid4())
+        )
         return AgentSession(
-            id=str(uuid.uuid4()),
+            id=new_id,
             agent_name=self.agent_name,
-            owner_id=self.owner_id,
-            owner_path=list(self.owner_path),
-            events=[ev.model_copy(deep=True) for ev in self.events[:event_index]],
+            owner_id=owner_id,
+            owner_path=owner_path,
+            events=events,
             extra=dict(self.extra),
-            forked_from={self.agent_name: event_index},
+            forked_from=forked_from,
         )
 
     @staticmethod
@@ -151,16 +186,25 @@ class SessionPlugin(Plugin):
 
     def __init__(self, agent):
         super().__init__(agent)
-        self.session_store = FileSessionStore(
-            max_age_days=self.agent.parsed_config.app.session_max_age_days
-        )
-        self.app_session = None
         self.agent_session = None
+        # All configured via the SET_SESSION slot before ``on_start`` by the
+        # owning App / SubagentPlugin: the shared session store, the session id
+        # to resume, and the chain of owner session ids it nests under (empty
+        # for the root).
+        self.session_store: SessionStore | None = None
+        self._session_id: str | None = None
+        self._session_owner_path: list[str] = []
+
+    @property
+    def _store(self) -> SessionStore:
+        assert self.session_store is not None, "SET_SESSION must run before on_start"
+        return self.session_store
+
+    async def _subagents_of(self, agent):
+        return [a for a in await agent.invoke_slot(SUBAGENTS) or [] if a != agent]
 
     async def _get_subagents(self):
-        return [
-            a for a in await self.agent.invoke_slot(SUBAGENTS) or [] if a != self.agent
-        ]
+        return await self._subagents_of(self.agent)
 
     def commands(self):
         return [CommandSpec(ForkEvent, self.handle_fork, self.complete_fork)]
@@ -188,6 +232,9 @@ class SessionPlugin(Plugin):
             )
 
     def on_load(self):
+        self.agent.provide_slot(AGENT_SESSION, lambda: self.agent_session)
+        self.agent.provide_slot(SESSION_STORE, lambda: self.session_store)
+        self.agent.provide_slot(SET_SESSION, self.on_set_session)
         self.agent.provide_slot(AGENT_RESET, self.on_agent_reset)
         self.agent.provide_slot(AGENT_STEP, self.on_agent_step)
         self.agent.provide_slot(AGENT_STEP_FAILURE, self.on_agent_step_failure)
@@ -196,44 +243,43 @@ class SessionPlugin(Plugin):
         self.agent.provide_slot(AGENT_ERROR, self.on_error)
         self.agent.provide_slot(RECORD_EVENT, self.on_event)
 
+    def on_set_session(
+        self,
+        session_id: str | None,
+        owner_path: list[str] | None,
+        session_store: SessionStore,
+    ):
+        """Configure the session store, id to resume and owner path it nests under.
+
+        Called via the :data:`SET_SESSION` slot before :meth:`on_start`. The
+        main agent's session is the root (empty ``owner_path``); a subagent's
+        session is nested under its owner (see :class:`SubagentPlugin`).
+        """
+        self.session_store = session_store
+        self._session_id = session_id
+        self._session_owner_path = list(owner_path or [])
+
     async def on_start(self):
-        await self.session_store.cleanup()
-
-        # The host app should have set self.agent.app_session
-        self.app_session = getattr(self.agent, "app_session", None)
-
-        if self.app_session:
-            # Initialize MainAgent's AgentSession
-            agent_session_id = self.app_session.metadata.get(
-                f"{self.agent.name}_session_id"
-            )
-            if agent_session_id:
-                loaded_agent_session = await self.session_store.load_session(
-                    agent_session_id, owner_path=[self.app_session.id]
-                )
-                if loaded_agent_session and isinstance(
-                    loaded_agent_session, AgentSession
-                ):
-                    self.restore_agent_session(loaded_agent_session)
-                else:
-                    await self._create_fresh_agent_session(
-                        self.app_session.id, [self.app_session.id]
-                    )
-            else:
-                await self._create_fresh_agent_session(
-                    self.app_session.id, [self.app_session.id]
-                )
-                assert self.agent_session is not None
-                self.app_session.metadata[f"{self.agent.name}_session_id"] = (
-                    self.agent_session.id
-                )
-                await self.session_store.save_session(self.app_session)
-        else:
-            # Fallback if no app_session is provided (e.g. subagents or tests)
-            # Subagents should have their owner_id set by the parent agent during creation,
-            # but for now we just create a fresh one if it doesn't exist.
-            if not self.agent_session:
-                await self._create_fresh_agent_session("unknown", ["unknown"])
+        # Both the root and nested subagent sessions follow the same rule: resume
+        # ``session_id`` under ``owner_path`` when it exists on disk, otherwise
+        # create it there. The root simply has an empty owner path and no owner.
+        if self.agent_session:
+            return
+        owner_path = list(self._session_owner_path)
+        owner_id = owner_path[-1] if owner_path else None
+        # Only the root prunes expired sessions; nested subagents share the same
+        # store and would just re-scan the same top-level dirs redundantly.
+        if owner_id is None:
+            await self._store.cleanup()
+        restore_id = self._session_id
+        if restore_id:
+            loaded = await self._store.load_session(restore_id, owner_path)
+            if loaded and isinstance(loaded, AgentSession):
+                self.restore_agent_session(loaded)
+                return
+        await self._create_fresh_agent_session(
+            owner_id, owner_path, session_id=restore_id
+        )
 
     def restore_agent_session(self, agent_session: AgentSession):
         self.agent_session = agent_session
@@ -244,10 +290,20 @@ class SessionPlugin(Plugin):
         if self.agent.model_ref:
             self.agent.set_model(self.agent.model_ref)
 
-    async def _create_fresh_agent_session(self, owner_id: str, owner_path: list[str]):
-        self.agent_session = AgentSession(
-            agent_name=self.agent.name, owner_id=owner_id, owner_path=owner_path
-        )
+    async def _create_fresh_agent_session(
+        self,
+        owner_id: str | None,
+        owner_path: list[str],
+        session_id: str | None = None,
+    ):
+        kwargs: dict[str, Any] = {
+            "agent_name": self.agent.name,
+            "owner_id": owner_id,
+            "owner_path": owner_path,
+        }
+        if session_id:
+            kwargs["id"] = session_id
+        self.agent_session = AgentSession(**kwargs)
         await self.agent.reset()
 
     async def on_stop(self):
@@ -304,41 +360,35 @@ class SessionPlugin(Plugin):
         if self.agent_session:
             self.agent_session.add_event(event_type, data)
 
+    def _last_user_messages(self, limit: int = 2) -> list[str]:
+        """The most recent user-message texts, oldest first (for display)."""
+        history = getattr(self.agent, "message_history", None) or []
+        found: list[str] = []
+        for msg in reversed(history):
+            if isinstance(msg, ModelRequest):
+                for part in msg.parts:
+                    if not isinstance(part, UserPromptPart):
+                        continue
+                    content = part.content
+                    if isinstance(content, str):
+                        found.append(content)
+                    elif isinstance(content, (list, tuple)):
+                        text_parts = [c for c in content if isinstance(c, str)]
+                        if text_parts:
+                            found.append(" ".join(text_parts))
+                    if len(found) >= limit:
+                        break
+            if len(found) >= limit:
+                break
+        return list(reversed(found))
+
     async def save(self):
-        # Save current agent's session
         if self.agent_session:
-            # Update last_user_messages for MainAgent
-            if self.app_session:
-                last_user_messages = []
-                if hasattr(self.agent, "message_history"):
-                    from pydantic_ai.messages import ModelRequest, UserPromptPart
+            last_user_messages = self._last_user_messages()
+            if last_user_messages:
+                self.agent_session.metadata["last_user_messages"] = last_user_messages
 
-                    for msg in reversed(self.agent.message_history):
-                        if isinstance(msg, ModelRequest):
-                            for part in msg.parts:
-                                if isinstance(part, UserPromptPart):
-                                    content = part.content
-                                    if isinstance(content, str):
-                                        last_user_messages.append(content)
-                                    elif isinstance(content, (list, tuple)):
-                                        text_parts = [
-                                            c for c in content if isinstance(c, str)
-                                        ]
-                                        if text_parts:
-                                            last_user_messages.append(
-                                                " ".join(text_parts)
-                                            )
-                                    if len(last_user_messages) >= 2:
-                                        break
-                        if len(last_user_messages) >= 2:
-                            break
-                if last_user_messages:
-                    self.app_session.metadata["last_user_messages"] = list(
-                        reversed(last_user_messages)
-                    )
-                await self.session_store.save_session(self.app_session)
-
-            await self.session_store.save_session(self.agent_session)
+            await self._store.save_session(self.agent_session)
 
         # Broadcast to subagents
         for subagent in await self._get_subagents():
@@ -346,9 +396,6 @@ class SessionPlugin(Plugin):
                 await subagent_plugin.save()
 
     async def handle_fork(self, event: ForkEvent) -> str:
-        if not self.app_session:
-            return "Cannot fork: not a main agent or no app session."
-
         agent_session = self.agent_session
         if not isinstance(agent_session, AgentSession):
             return "Cannot fork: invalid agent session."
@@ -362,47 +409,33 @@ class SessionPlugin(Plugin):
         if agent_session.events[target].event_type != "user_input":
             return f"Cannot fork at {event.event_id}: not a user-turn anchor."
 
-        new_app_session = self.app_session.fork_at(self.agent.name, target)
-        new_agent_session = agent_session.truncated_copy(target)
-        new_agent_session.owner_id = new_app_session.id
-        new_agent_session.owner_path = [new_app_session.id]
+        # Branch the session itself: a truncated copy is the new top-level
+        # session, rooted (no owner) regardless of where the original sat.
+        new_agent_session = agent_session.fork_at(event.event_id, [])
+        await self._store.save_session(new_agent_session)
 
-        new_app_session.metadata[f"{self.agent.name}_session_id"] = new_agent_session.id
-
-        self.app_session.add_event(
-            "fork",
-            {
-                "agent_name": self.agent.name,
-                "event_index": target,
-                "new_session_id": new_app_session.id,
-            },
-        )
-        await self.session_store.save_session(self.app_session)
-
-        # Save new sessions
-        await self.session_store.save_session(new_app_session)
-        await self.session_store.save_session(new_agent_session)
-
-        # Broadcast fork/reset to subagents
-        for subagent in await self._get_subagents():
-            if subagent_plugin := subagent.get_plugin(SessionPlugin):
-                await subagent_plugin.reset_for_fork(
-                    new_app_session.id, [new_app_session.id, new_agent_session.id]
-                )
+        # Re-root each subagent (and its nested subagents) under the new branch.
+        await self._fork_subagents(self.agent, [new_agent_session.id])
 
         return (
-            f"Forked at event @{target}. New branch session id: {new_app_session.id}\n"
-            f"Resume with: --resume {new_app_session.id}"
+            f"Forked at event @{target}. New branch session id: {new_agent_session.id}\n"
+            f"Resume with: --resume {new_agent_session.id}"
         )
 
-    async def reset_for_fork(self, owner_id: str, owner_path: list[str]):
-        await self._create_fresh_agent_session(owner_id, owner_path)
-        assert self.agent_session is not None
-        await self.session_store.save_session(self.agent_session)
+    async def _fork_subagents(self, agent, owner_path: list[str]) -> None:
+        """Persist an empty fork of each subagent session beneath ``owner_path``.
 
-        for subagent in await self._get_subagents():
-            if subagent_plugin := subagent.get_plugin(SessionPlugin):
-                await subagent_plugin.reset_for_fork(
-                    self.agent_session.id,
-                    owner_path + [self.agent_session.id],
-                )
+        Each subagent's session is re-rooted under the new branch via
+        :meth:`AgentSession.fork_at` and saved so a later resume re-derives it
+        (``fork_at`` derives the child id from its owner); the live subagents
+        keep their own sessions. Recurses so nested subagents nest beneath
+        their forked owner. Subagents that never started have no session and
+        are skipped — resume recreates them empty regardless.
+        """
+        for subagent in await self._subagents_of(agent):
+            sub_session = await subagent.invoke_slot(AGENT_SESSION)
+            if not sub_session:
+                continue
+            forked = sub_session.fork_at(None, owner_path)
+            await self._store.save_session(forked)
+            await self._fork_subagents(subagent, owner_path + [forked.id])

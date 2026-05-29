@@ -9,35 +9,11 @@ from pydantic_ai.messages import (
 )
 
 from arox.core.session import (
-    AppSession,
     FileSessionStore,
     _deserialize_messages,
     _serialize_messages,
 )
 from arox.plugins.session import AgentSession
-
-
-class TestAppSession:
-    def test_create(self):
-        session = AppSession.create("coder", title="test")
-        assert session.main_agent == "coder"
-        assert len(session.id) == 36
-        assert session.metadata == {"title": "test"}
-        assert session.events == []
-
-    def test_add_event(self):
-        session = AppSession.create("coder")
-        event = session.add_event("system", {"msg": "started"})
-        assert event.event_type == "system"
-        assert len(session.events) == 1
-
-    def test_fork_at(self):
-        session = AppSession.create("coder", title="t")
-        forked = session.fork_at("main", 2)
-
-        assert forked.id != session.id
-        assert forked.forked_from == {"main": 2}
-        assert forked.metadata == session.metadata
 
 
 class TestAgentSession:
@@ -159,8 +135,8 @@ class TestAgentSession:
         )
         assert agent_session.rebuild_llm_context_id() == "ctx_second"
 
-    def test_truncated_copy(self):
-        agent_session = AgentSession(agent_name="main")
+    def test_fork_at_event(self):
+        agent_session = AgentSession(agent_name="main", owner_id="parent")
         agent_session.add_event("user_input", {"text": "first"})
         agent_session.add_event(
             "agent_step",
@@ -173,20 +149,45 @@ class TestAgentSession:
                 ),
             },
         )
-        agent_session.add_event("user_input", {"text": "second"})
+        anchor = agent_session.add_event("user_input", {"text": "second"})
 
-        truncated = agent_session.truncated_copy(2)
-        # Independent object
-        assert truncated is not agent_session
-        assert len(truncated.events) == 2
+        forked = agent_session.fork_at(anchor.id, [])
+        # Independent object truncated just before the anchor event
+        assert forked is not agent_session
+        assert forked.id != agent_session.id
+        assert len(forked.events) == 2
+        assert forked.forked_from == {"main": 2}
+        # owner info is corrected to the (empty) owner path, not inherited
+        assert forked.owner_id is None
+        assert forked.owner_path == []
         # Original is untouched
         assert len(agent_session.events) == 3
 
-        history = truncated.rebuild_message_history()
+        history = forked.rebuild_message_history()
         assert len(history) == 2
         part = history[0].parts[0]
         assert isinstance(part, UserPromptPart)
         assert part.content == "first"
+
+    def test_fork_at_none_creates_empty(self):
+        from arox.core.session import derive_child_session_id
+
+        agent_session = AgentSession(agent_name="main", owner_id="parent")
+        agent_session.add_event("user_input", {"text": "first"})
+
+        forked = agent_session.fork_at(None, ["newowner"])
+        assert forked.events == []
+        assert forked.forked_from is None
+        # owner taken from the path, id derived so the owner can re-find it
+        assert forked.owner_id == "newowner"
+        assert forked.owner_path == ["newowner"]
+        assert forked.id == derive_child_session_id("newowner", "main")
+
+    def test_fork_at_missing_event_raises(self):
+        agent_session = AgentSession(agent_name="main")
+        agent_session.add_event("user_input", {"text": "first"})
+        with pytest.raises(ValueError):
+            agent_session.fork_at("does-not-exist", [])
 
     def test_non_step_events_ignored_in_rebuild(self):
         agent_session = AgentSession(agent_name="main")
@@ -230,9 +231,10 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_save_and_load(self, store):
-        session = AppSession.create("coder")
+        # A top-level main-agent session with a subagent session nested under it.
+        session = AgentSession(agent_name="coder")
         agent_session = AgentSession(
-            agent_name="main", owner_id=session.id, owner_path=[session.id]
+            agent_name="sub", owner_id=session.id, owner_path=[session.id]
         )
         agent_session.add_event("user_input", {"text": "hello"})
         agent_session.add_event(
@@ -253,14 +255,15 @@ class TestFileSessionStore:
         loaded = await store.load_session(session.id)
         assert loaded is not None
         assert loaded.id == session.id
-        assert loaded.main_agent == "coder"
+        assert isinstance(loaded, AgentSession)
+        assert loaded.agent_name == "coder"
 
         loaded_agent = await store.load_session(
             agent_session.id, owner_path=[session.id]
         )
         assert loaded_agent is not None
         assert isinstance(loaded_agent, AgentSession)
-        assert loaded_agent.agent_name == "main"
+        assert loaded_agent.agent_name == "sub"
         assert len(loaded_agent.events) == 2
         assert loaded_agent.events[0].event_type == "user_input"
         assert loaded_agent.events[1].event_type == "agent_step"
@@ -272,31 +275,43 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_list_sessions(self, store):
-        s1 = AppSession.create("coder")
-        s2 = AppSession.create("coder")
-        s3 = AppSession.create("other")
+        s1 = AgentSession(agent_name="coder")
+        s2 = AgentSession(agent_name="coder")
+        s3 = AgentSession(agent_name="other")
 
         await store.save_session(s1)
         await store.save_session(s2)
         await store.save_session(s3)
 
-        coder_sessions = await store.list_sessions("coder")
+        sessions = await store.list_sessions()
+        assert len(sessions) == 3
+        # The store lists all agent sessions; filtering by agent_name is a
+        # caller concern.
+        coder_sessions = [
+            s
+            for s in sessions
+            if isinstance(s, AgentSession) and s.agent_name == "coder"
+        ]
         assert len(coder_sessions) == 2
         ids = {s.id for s in coder_sessions}
         assert s1.id in ids
         assert s2.id in ids
 
-        other_sessions = await store.list_sessions("other")
+        other_sessions = [
+            s
+            for s in sessions
+            if isinstance(s, AgentSession) and s.agent_name == "other"
+        ]
         assert len(other_sessions) == 1
 
     @pytest.mark.asyncio
     async def test_list_sessions_empty(self, store):
-        result = await store.list_sessions("coder")
+        result = await store.list_sessions()
         assert result == []
 
     @pytest.mark.asyncio
     async def test_delete_session(self, store):
-        session = AppSession.create("coder")
+        session = AgentSession(agent_name="coder")
         await store.save_session(session)
 
         loaded = await store.load_session(session.id)
@@ -312,7 +327,7 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_save_overwrites(self, store):
-        session = AppSession.create("coder")
+        session = AgentSession(agent_name="coder")
         agent_s = AgentSession(
             agent_name="main", owner_id=session.id, owner_path=[session.id]
         )
@@ -337,11 +352,11 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_cleanup_deletes_expired(self, store):
-        old_session = AppSession.create("coder")
+        old_session = AgentSession(agent_name="coder")
         await store.save_session(old_session)
         self._backdate_session(store, old_session, days=60)
 
-        new_session = AppSession.create("coder")
+        new_session = AgentSession(agent_name="coder")
         await store.save_session(new_session)
 
         deleted = await store.cleanup(max_age_days=30)
@@ -352,7 +367,7 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_cleanup_keeps_recent(self, store):
-        session = AppSession.create("coder")
+        session = AgentSession(agent_name="coder")
         await store.save_session(session)
 
         deleted = await store.cleanup(max_age_days=30)
@@ -367,7 +382,7 @@ class TestFileSessionStore:
     @pytest.mark.asyncio
     async def test_cleanup_uses_default_max_age(self, tmp_path):
         store = FileSessionStore(base_dir=tmp_path / "sessions", max_age_days=7)
-        old_session = AppSession.create("coder")
+        old_session = AgentSession(agent_name="coder")
         await store.save_session(old_session)
         self._backdate_session(store, old_session, days=10)
 

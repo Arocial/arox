@@ -23,8 +23,8 @@ plugins = [
     "shell",
     "file",
     "compaction",
-    "subagent",
     "session",
+    "subagent",
 ]
 
 [agent.general.model_params]
