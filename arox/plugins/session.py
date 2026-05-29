@@ -351,7 +351,11 @@ class SessionPlugin(Plugin):
                     if isinstance(content, str):
                         found.append(content)
                     elif isinstance(content, (list, tuple)):
-                        text_parts = [c for c in content if isinstance(c, str)]
+                        text_parts = [
+                            c if isinstance(c, str) else c.content
+                            for c in content
+                            if isinstance(c, (str, TextContent))
+                        ]
                         if text_parts:
                             found.append(" ".join(text_parts))
                     if len(found) >= limit:
