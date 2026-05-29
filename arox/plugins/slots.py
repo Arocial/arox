@@ -46,7 +46,8 @@ SESSION_STORE = Slot[Callable[[], Any]](
 )
 
 # Slot for configuring the agent's session before it starts.
-# Payload: (session_id, owner_path, session_store).
+# Payload: (session_id, owner_path, session_store, agent_session=None). A given
+# ``agent_session`` is adopted as-is, skipping the load by id.
 SET_SESSION = Slot[Callable[..., Any]](
     "set_session",
     "Sets the agent's session id, owner path and session store",

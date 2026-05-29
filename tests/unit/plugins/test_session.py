@@ -6,7 +6,6 @@ from arox.core.completion import CompletionRequest
 from arox.core.session import FileSessionStore
 from arox.plugins.session import AgentSession, ForkEvent, SessionPlugin
 from arox.plugins.slots import AGENT_SESSION
-from arox.plugins.subagent import SubagentPlugin
 
 
 def _make_plugin(main_agent_session: AgentSession):
@@ -126,8 +125,8 @@ async def test_complete_fork_lists_user_turns_newest_first():
     assert [it.label for it in items] == ["@1 (turn 2): second", "@2 (turn 1): first"]
 
 
-def _make_subagent_plugin(session_id: str | None, owner_path: list[str]):
-    """A non-root SessionPlugin wired onto a mock subagent."""
+def _make_subagent_plugin():
+    """A SessionPlugin wired onto a mock subagent (session not yet resolved)."""
 
     class MockSubagent:
         def __init__(self):
@@ -159,66 +158,75 @@ def _make_subagent_plugin(session_id: str | None, owner_path: list[str]):
     agent = MockSubagent()
     plugin = SessionPlugin(agent)
     agent.plugins.append(plugin)
-    # The owning SubagentPlugin would feed these in via the SET_SESSION slot.
-    plugin.on_set_session(session_id, owner_path, FileSessionStore())
     return plugin
 
 
-def test_child_session_id_is_stable_and_distinct():
-    main_id = "main-session-1"
-    a = SubagentPlugin._child_session_id(main_id, "compaction")
-    # Deterministic for the same (owner, name)...
-    assert a == SubagentPlugin._child_session_id(main_id, "compaction")
-    # ...but distinct across owner sessions and across subagent names.
-    assert a != SubagentPlugin._child_session_id("main-session-2", "compaction")
-    assert a != SubagentPlugin._child_session_id(main_id, "reviewer")
-
-
 @pytest.mark.asyncio
-async def test_subagent_session_nested_under_owner_and_resumes():
+async def test_subagent_session_nests_under_owner_and_resumes(tmp_path):
+    store = FileSessionStore(base_dir=tmp_path / "sessions")
     main_id = "main-session-1"
-    child_id = SubagentPlugin._child_session_id(main_id, "compaction")
 
-    # First run: the child session is created beneath the owner.
-    plugin = _make_subagent_plugin(child_id, [main_id])
-    await plugin.on_start()
+    # First run: a fresh child session is created nested beneath the owner.
+    plugin = _make_subagent_plugin()
+    await plugin.on_set_session(None, [main_id], store)
     session = plugin.agent_session
     assert session is not None
-    assert session.id == child_id
     assert session.owner_id == main_id
     assert session.owner_path == [main_id]
 
     session.add_event("user_input", {"text": "remember me"})
     await plugin.save()
 
-    # Second run with the same derived id/owner resumes the saved session.
-    resumed = _make_subagent_plugin(child_id, [main_id])
-    await resumed.on_start()
-    assert resumed.agent_session is not None
-    assert resumed.agent_session.id == child_id
-    event_types = [e.event_type for e in resumed.agent_session.events]
-    assert "user_input" in event_types
+    # Persisted nested under the owner, so the owner's recursive load finds it.
+    reloaded = await store.load_session(session.id, owner_path=[main_id])
+    assert reloaded is not None
+    assert [e.event_type for e in reloaded.events] == ["user_input"]
+
+    # Second run: the owner hands the loaded session back as a preset.
+    resumed = _make_subagent_plugin()
+    await resumed.on_set_session(None, [main_id], store, reloaded)
+    assert resumed.agent_session is reloaded
+    assert [e.event_type for e in resumed.agent_session.events] == ["user_input"]
 
 
 @pytest.mark.asyncio
-async def test_fork_reroots_subagent_under_derived_child_id(tmp_path):
-    """A forked branch saves its subagents under the id resume re-derives.
+async def test_set_session_adopts_preset_without_loading():
+    # A subsession the owner already loaded off the session tree.
+    preset = AgentSession(agent_name="compaction", owner_id="main", owner_path=["main"])
+    preset.add_event("user_input", {"text": "remembered"})
+
+    plugin = _make_subagent_plugin()
+
+    async def fail(*args, **kwargs):
+        raise AssertionError("the store must not be touched when a preset is given")
+
+    store = SimpleNamespace(load_session=fail, cleanup=fail)
+    await plugin.on_set_session(None, ["main"], store, preset)
+
+    # Adopted as-is and its history rebuilt; the store was never queried.
+    assert plugin.agent_session is preset
+    assert plugin.agent.message_history == preset.rebuild_message_history()
+
+
+@pytest.mark.asyncio
+async def test_fork_reroots_subagents_under_new_branch(tmp_path):
+    """A forked branch re-roots its subsessions beneath the new branch.
 
     Otherwise the fork-time subagent session would be orphaned and resume would
     silently start from an empty session.
     """
-    from arox.core.session import FileSessionStore, derive_child_session_id
-
     store = FileSessionStore(base_dir=tmp_path / "sessions")
 
-    # A started subagent reachable from the main agent via the SUBAGENTS slot.
-    sub_plugin = _make_subagent_plugin(None, [])
-    sub_plugin.session_store = store
-    await sub_plugin.on_start()
+    # A started subagent whose live session is linked under the main session.
+    sub_plugin = _make_subagent_plugin()
+    await sub_plugin.on_set_session(None, ["owner"], store)
     sub_agent = sub_plugin.agent
 
     main_session = AgentSession(agent_name="main")
     e0 = main_session.add_event("user_input", {"text": "hi"})
+    # SubagentPlugin would link the live subagent session here; the fork reads
+    # subsessions from children rather than routing through the live subagent.
+    main_session.children.append(sub_plugin.agent_session)
 
     class MainAgent:
         name = "main"
@@ -241,8 +249,10 @@ async def test_fork_reroots_subagent_under_derived_child_id(tmp_path):
     msg = await main_plugin.handle_fork(ForkEvent(event_id=e0.id))
     new_branch_id = msg.splitlines()[0].rsplit(":", 1)[-1].strip()
 
-    expected_child = derive_child_session_id(new_branch_id, sub_agent.name)
-    loaded = await store.load_session(expected_child, owner_path=[new_branch_id])
-    assert loaded is not None
-    assert loaded.id == expected_child
-    assert loaded.owner_id == new_branch_id
+    # The new branch, loaded recursively, carries the re-rooted subsession.
+    loaded = await store.load_session(new_branch_id)
+    assert isinstance(loaded, AgentSession)
+    assert [c.agent_name for c in loaded.children] == [sub_agent.name]
+    child = loaded.children[0]
+    assert child.owner_id == new_branch_id
+    assert child.owner_path == [new_branch_id]

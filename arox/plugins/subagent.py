@@ -7,7 +7,6 @@ from pydantic_ai.tools import ToolDefinition
 
 from arox.core.llm_base import DelegatableAgent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, ToolDef
-from arox.core.session import derive_child_session_id
 from arox.plugins.slots import AGENT_SESSION, SESSION_STORE, SET_SESSION, SUBAGENTS
 from arox.utils import import_class
 
@@ -78,11 +77,10 @@ class SubagentPlugin(Plugin):
         self.agent.provide_slot(SUBAGENTS, list_subagents)
 
     async def on_start(self):
-        # Link each subagent's session under the main agent session: derive a
-        # stable child session id from the main session and hand it, the owner
-        # path and the shared session store to the subagent via the SET_SESSION
-        # slot. Its SessionPlugin then nests its session beneath the main one
-        # (via ``owner_id``) and resumes it on the next run.
+        # Link each subagent's session under the main agent session: hand the
+        # subagent its owner path and the shared session store via the SET_SESSION
+        # slot. Its SessionPlugin then nests its session beneath the main one (via
+        # ``owner_id``), so the main agent's recursive load resumes it next run.
         main_session = await self.agent.invoke_slot(AGENT_SESSION)
         session_store = await self.agent.invoke_slot(SESSION_STORE)
         # A configured session store with no session yet means the SessionPlugin
@@ -93,17 +91,31 @@ class SubagentPlugin(Plugin):
                 "SubagentPlugin.on_start ran before the session was initialized; "
                 "order the 'session' plugin before 'subagent' in the agent config."
             )
+        # Subsessions already loaded under the main session (by load_session's
+        # recursive load) are handed to their subagent as-is, so each subagent
+        # adopts its session off the shared tree instead of re-loading it from
+        # disk. A subagent without a loaded session gets a fresh one, which we
+        # attach to the main session's children so /fork can find it.
+        existing = (
+            {c.agent_name: c for c in main_session.children}
+            if main_session is not None
+            else {}
+        )
         for subagent in self.subagents.values():
+            preset = existing.get(subagent.name)
             if main_session is not None:
                 await subagent.invoke_slot(
                     SET_SESSION,
-                    self._child_session_id(main_session.id, subagent.name),
+                    None,
                     [*main_session.owner_path, main_session.id],
                     session_store,
+                    preset,
                 )
             await self.agent._stack.enter_async_context(subagent)
-
-    _child_session_id = staticmethod(derive_child_session_id)
+            if main_session is not None and preset is None:
+                sub_session = await subagent.invoke_slot(AGENT_SESSION)
+                if sub_session is not None:
+                    main_session.children.append(sub_session)
 
     def commands(self):
         return [CommandSpec(AgentCallEvent, self.handle_agent_call)]

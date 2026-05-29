@@ -47,6 +47,10 @@ class Session(BaseModel):
     owner_path: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
     events: list[SessionEvent] = Field(default_factory=list)
+    # Sessions owned by this one (its subsessions). The on-disk nesting under
+    # this session's directory is the source of truth: ``load_session`` rebuilds
+    # this dynamically and ``save_session`` ignores it.
+    children: list["Session"] = Field(default_factory=list, exclude=True)
 
     def add_event(
         self,
@@ -71,16 +75,6 @@ class Session(BaseModel):
             if ev.id == event_id:
                 return i
         return None
-
-
-def derive_child_session_id(owner_session_id: str, agent_name: str) -> str:
-    """Derive a stable session id for an agent nested under ``owner_session_id``.
-
-    Deterministic in ``(owner_session_id, agent_name)`` so that a subagent's
-    session can be located on resume without persisting a separate index: the
-    owner re-derives the same id from its own (possibly forked) session id.
-    """
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{owner_session_id}/{agent_name}"))
 
 
 _SESSION_TYPES: dict[str, type[Session]] = {}
@@ -150,6 +144,7 @@ class FileSessionStore:
     async def load_session(
         self, session_id: str, owner_path: list[str] | None = None
     ) -> Session | None:
+        owner_path = owner_path or []
         meta_path = self._session_meta_path(session_id, owner_path)
         if not meta_path.exists():
             return None
@@ -157,7 +152,28 @@ class FileSessionStore:
         raw = json.loads(meta_path.read_text())
         session_type = raw.get("session_type")
         model = _SESSION_TYPES.get(session_type, Session)
-        return model.model_validate(raw)
+        session = model.model_validate(raw)
+
+        # Recursively load the sessions owned by this one. A subsession is
+        # persisted in a subdirectory of this session's directory (see
+        # ``_session_dir``), so its owner path is this session appended to ours.
+        # Loading them here lets callers find a subsession directly instead of
+        # routing through the live subagent.
+        session_dir = self._session_dir(session_id, owner_path)
+        child_owner_path = [*owner_path, session_id]
+        for child_dir in sorted(session_dir.iterdir()):
+            if not child_dir.is_dir() or not (child_dir / "session.json").exists():
+                continue
+            try:
+                child = await self.load_session(child_dir.name, child_owner_path)
+            except Exception:
+                logger.warning(
+                    f"Failed to load child session {child_dir}", exc_info=True
+                )
+                continue
+            if child is not None:
+                session.children.append(child)
+        return session
 
     async def save_session(self, session: Session) -> None:
         session.updated_at = datetime.now(UTC)

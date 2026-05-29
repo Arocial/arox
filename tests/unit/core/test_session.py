@@ -170,18 +170,16 @@ class TestAgentSession:
         assert part.content == "first"
 
     def test_fork_at_none_creates_empty(self):
-        from arox.core.session import derive_child_session_id
-
         agent_session = AgentSession(agent_name="main", owner_id="parent")
         agent_session.add_event("user_input", {"text": "first"})
 
         forked = agent_session.fork_at(None, ["newowner"])
         assert forked.events == []
         assert forked.forked_from is None
-        # owner taken from the path, id derived so the owner can re-find it
+        # owner taken from the path; a fresh id is minted (located by nesting)
         assert forked.owner_id == "newowner"
         assert forked.owner_path == ["newowner"]
-        assert forked.id == derive_child_session_id("newowner", "main")
+        assert forked.id != agent_session.id
 
     def test_fork_at_missing_event_raises(self):
         agent_session = AgentSession(agent_name="main")
@@ -267,6 +265,37 @@ class TestFileSessionStore:
         assert len(loaded_agent.events) == 2
         assert loaded_agent.events[0].event_type == "user_input"
         assert loaded_agent.events[1].event_type == "agent_step"
+
+    @pytest.mark.asyncio
+    async def test_load_rebuilds_children_recursively(self, store):
+        # main -> sub -> grandchild nesting, each persisted under its owner.
+        main = AgentSession(agent_name="main")
+        sub = AgentSession(agent_name="sub", owner_id=main.id, owner_path=[main.id])
+        grand = AgentSession(
+            agent_name="grand", owner_id=sub.id, owner_path=[main.id, sub.id]
+        )
+        await store.save_session(main)
+        await store.save_session(sub)
+        await store.save_session(grand)
+
+        loaded = await store.load_session(main.id)
+        assert loaded is not None
+        # Subsessions are built dynamically on load from the on-disk nesting.
+        assert [c.id for c in loaded.children] == [sub.id]
+        loaded_sub = loaded.children[0]
+        assert [c.id for c in loaded_sub.children] == [grand.id]
+
+    @pytest.mark.asyncio
+    async def test_children_excluded_from_serialization(self, store):
+        main = AgentSession(agent_name="main")
+        sub = AgentSession(agent_name="sub", owner_id=main.id, owner_path=[main.id])
+        await store.save_session(main)
+        await store.save_session(sub)
+
+        import json
+
+        raw = json.loads(store._session_meta_path(main.id).read_text())
+        assert "children" not in raw
 
     @pytest.mark.asyncio
     async def test_load_nonexistent(self, store):

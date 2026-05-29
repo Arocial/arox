@@ -20,7 +20,6 @@ from arox.core.session import (
     SessionStore,
     _deserialize_messages,
     _serialize_messages,
-    derive_child_session_id,
     register_session_type,
 )
 from arox.plugins.slots import (
@@ -33,7 +32,6 @@ from arox.plugins.slots import (
     RECORD_EVENT,
     SESSION_STORE,
     SET_SESSION,
-    SUBAGENTS,
     USER_INPUT,
 )
 
@@ -44,6 +42,7 @@ class AgentSession(Session):
     session_type: str = "agent"
     agent_name: str
     extra: dict[str, Any] = Field(default_factory=dict)
+    children: list["AgentSession"] = Field(default_factory=list, exclude=True)
 
     def rebuild_message_history(self) -> list[ModelMessage]:
         history: list[ModelMessage] = []
@@ -91,11 +90,8 @@ class AgentSession(Session):
             forked_from = {self.agent_name: event_index}
         owner_path = list(owner_path)
         owner_id = owner_path[-1] if owner_path else None
-        new_id = (
-            derive_child_session_id(owner_id, self.agent_name)
-            if owner_id
-            else str(uuid.uuid4())
-        )
+        new_id = str(uuid.uuid4())
+
         return AgentSession(
             id=new_id,
             agent_name=self.agent_name,
@@ -187,24 +183,11 @@ class SessionPlugin(Plugin):
     def __init__(self, agent):
         super().__init__(agent)
         self.agent_session = None
-        # All configured via the SET_SESSION slot before ``on_start`` by the
-        # owning App / SubagentPlugin: the shared session store, the session id
-        # to resume, and the chain of owner session ids it nests under (empty
-        # for the root).
         self.session_store: SessionStore | None = None
-        self._session_id: str | None = None
-        self._session_owner_path: list[str] = []
 
     @property
     def _store(self) -> SessionStore:
-        assert self.session_store is not None, "SET_SESSION must run before on_start"
         return self.session_store
-
-    async def _subagents_of(self, agent):
-        return [a for a in await agent.invoke_slot(SUBAGENTS) or [] if a != agent]
-
-    async def _get_subagents(self):
-        return await self._subagents_of(self.agent)
 
     def commands(self):
         return [CommandSpec(ForkEvent, self.handle_fork, self.complete_fork)]
@@ -243,42 +226,37 @@ class SessionPlugin(Plugin):
         self.agent.provide_slot(AGENT_ERROR, self.on_error)
         self.agent.provide_slot(RECORD_EVENT, self.on_event)
 
-    def on_set_session(
+    async def on_set_session(
         self,
         session_id: str | None,
         owner_path: list[str] | None,
         session_store: SessionStore,
+        agent_session: "AgentSession | None" = None,
     ):
-        """Configure the session store, id to resume and owner path it nests under.
+        """Resolve the agent's session: adopt, resume or create it.
 
-        Called via the :data:`SET_SESSION` slot before :meth:`on_start`. The
-        main agent's session is the root (empty ``owner_path``); a subagent's
-        session is nested under its owner (see :class:`SubagentPlugin`).
+        Called via the :data:`SET_SESSION` slot before the agent runs. The main
+        agent's session is the root (empty ``owner_path``); a subagent's session
+        nests under its owner (see :class:`SubagentPlugin`). When ``agent_session``
+        is given it is adopted directly, skipping the load — the owner already
+        loaded this subsession off the session tree.
         """
         self.session_store = session_store
-        self._session_id = session_id
-        self._session_owner_path = list(owner_path or [])
-
-    async def on_start(self):
-        # Both the root and nested subagent sessions follow the same rule: resume
-        # ``session_id`` under ``owner_path`` when it exists on disk, otherwise
-        # create it there. The root simply has an empty owner path and no owner.
-        if self.agent_session:
+        if agent_session is not None:
+            self.restore_agent_session(agent_session)
             return
-        owner_path = list(self._session_owner_path)
-        owner_id = owner_path[-1] if owner_path else None
         # Only the root prunes expired sessions; nested subagents share the same
         # store and would just re-scan the same top-level dirs redundantly.
-        if owner_id is None:
+        if not owner_path:
             await self._store.cleanup()
-        restore_id = self._session_id
-        if restore_id:
-            loaded = await self._store.load_session(restore_id, owner_path)
+        if session_id:
+            loaded = await self._store.load_session(session_id, owner_path)
             if loaded and isinstance(loaded, AgentSession):
                 self.restore_agent_session(loaded)
                 return
+        owner_id = owner_path[-1] if owner_path else None
         await self._create_fresh_agent_session(
-            owner_id, owner_path, session_id=restore_id
+            owner_id, owner_path or [], session_id=session_id
         )
 
     def restore_agent_session(self, agent_session: AgentSession):
@@ -383,17 +361,15 @@ class SessionPlugin(Plugin):
         return list(reversed(found))
 
     async def save(self):
+        # Persist only our own session. Each subagent is entered into this
+        # agent's exit stack with its own SessionPlugin.on_stop, so subsessions
+        # save themselves when the run exits; recursing into ``children`` here
+        # would just re-save the same sessions.
         if self.agent_session:
             last_user_messages = self._last_user_messages()
             if last_user_messages:
                 self.agent_session.metadata["last_user_messages"] = last_user_messages
-
             await self._store.save_session(self.agent_session)
-
-        # Broadcast to subagents
-        for subagent in await self._get_subagents():
-            if subagent_plugin := subagent.get_plugin(SessionPlugin):
-                await subagent_plugin.save()
 
     async def handle_fork(self, event: ForkEvent) -> str:
         agent_session = self.agent_session
@@ -415,27 +391,18 @@ class SessionPlugin(Plugin):
         await self._store.save_session(new_agent_session)
 
         # Re-root each subagent (and its nested subagents) under the new branch.
-        await self._fork_subagents(self.agent, [new_agent_session.id])
+        await self._fork_children(agent_session, [new_agent_session.id])
 
         return (
             f"Forked at event @{target}. New branch session id: {new_agent_session.id}\n"
             f"Resume with: --resume {new_agent_session.id}"
         )
 
-    async def _fork_subagents(self, agent, owner_path: list[str]) -> None:
-        """Persist an empty fork of each subagent session beneath ``owner_path``.
-
-        Each subagent's session is re-rooted under the new branch via
-        :meth:`AgentSession.fork_at` and saved so a later resume re-derives it
-        (``fork_at`` derives the child id from its owner); the live subagents
-        keep their own sessions. Recurses so nested subagents nest beneath
-        their forked owner. Subagents that never started have no session and
-        are skipped — resume recreates them empty regardless.
-        """
-        for subagent in await self._subagents_of(agent):
-            sub_session = await subagent.invoke_slot(AGENT_SESSION)
-            if not sub_session:
-                continue
+    async def _fork_children(
+        self, agent_session: AgentSession, owner_path: list[str]
+    ) -> None:
+        """Persist an empty fork of each subsession beneath ``owner_path``."""
+        for sub_session in agent_session.children:
             forked = sub_session.fork_at(None, owner_path)
             await self._store.save_session(forked)
-            await self._fork_subagents(subagent, owner_path + [forked.id])
+            await self._fork_children(sub_session, owner_path + [forked.id])
