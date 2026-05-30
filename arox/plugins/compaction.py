@@ -100,7 +100,6 @@ class CompactionPlugin(Plugin):
             await agent.agent_io.send("No history to compact.")
             return
 
-        messages_before = len(agent.message_history)
         compacted_messages = await self._compact(
             messages_to_compact, extra_instructions=event.extra_instructions
         )
@@ -109,14 +108,37 @@ class CompactionPlugin(Plugin):
             return
 
         agent.message_history = compacted_messages
-        agent.llm_context_id = str(uuid.uuid4())
+        await self._record_compaction(
+            compacted_messages, messages_before=len(messages_to_compact)
+        )
 
+    async def _record_compaction(
+        self, base: list[ModelMessage], *, messages_before: int
+    ) -> None:
+        """Rotate the LLM context id and persist a ``compaction`` event.
+
+        Shared by manual ``/compact`` and the automatic ``history_processor``
+        path so both rotate the cache key and record the new baseline the same
+        way. ``base`` is the post-compaction history the event stores; on
+        restore, :meth:`AgentSession.rebuild_message_history` replays it and then
+        extends it with any later ``agent_step`` messages, so the rebuilt history
+        matches the live one.
+
+        The two paths pass different bases. Manual compaction runs between turns,
+        so ``base`` is the full compacted history and the *next* step's
+        ``agent_step`` extends it. Automatic compaction runs mid-step, where the
+        last compacted message is stamped with this run's id and is captured by
+        *this* step's ``agent_step``; the caller therefore drops it from ``base``
+        to avoid recording it twice.
+        """
+        agent = self.agent
+        agent.llm_context_id = str(uuid.uuid4())
         await agent.record_event(
             "compaction",
             {
                 "messages_before": messages_before,
-                "messages_after": len(agent.message_history),
-                "compacted_messages": _serialize_messages(compacted_messages),
+                "messages_after": len(base),
+                "compacted_messages": _serialize_messages(base),
                 "llm_context_id": agent.llm_context_id,
             },
         )
@@ -134,14 +156,24 @@ class CompactionPlugin(Plugin):
         tokens = current_total - self._last_total_tokens
         self._last_total_tokens = current_total
 
-        if tokens > threshold:
-            logger.info(
-                f"Last request size ({tokens} tokens) exceeds threshold ({threshold}). "
-                "Triggering automatic compaction."
-            )
-            return await self._compact(messages)
+        if tokens <= threshold or not messages:
+            return messages
 
-        return messages
+        logger.info(
+            f"Last request size ({tokens} tokens) exceeds threshold ({threshold}). "
+            "Triggering automatic compaction."
+        )
+        compacted = await self._compact(messages)
+        if compacted is messages:
+            return messages
+
+        # ``compacted`` ends with a ModelRequest that pydantic_ai stamps with
+        # this run's id, so it lands in this step's ``agent_step`` via
+        # ``new_messages()``. Record only the messages before it as the
+        # compaction base; the rebuilt history then replays base + that
+        # agent_step and matches the live history exactly.
+        await self._record_compaction(compacted[:-1], messages_before=len(messages))
+        return compacted
 
     async def _find_compaction_agent(self) -> CompactionAgent | None:
         for sub in await self.agent.invoke_slot(SUBAGENTS) or []:
