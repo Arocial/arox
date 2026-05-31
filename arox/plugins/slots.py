@@ -90,7 +90,7 @@ AGENT_ERROR = Slot[Callable[..., Any]](
     "agent_error", "An error occurred during a run", aggregator=ResultAggregator.DISCARD
 )
 
-# Generic record channel used by record_event(). Payload: (event_type, data).
+# Generic record channel. Payload: (event_type, data).
 RECORD_EVENT = Slot[Callable[..., Any]](
     "record_event", "A custom event was recorded", aggregator=ResultAggregator.DISCARD
 )

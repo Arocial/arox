@@ -14,7 +14,7 @@ from pydantic_ai.messages import (
 from arox.core.llm_base import LLMBaseAgent
 from arox.plugins.compaction import CompactionAgent, CompactionPlugin
 from arox.plugins.session import AgentSession
-from arox.plugins.slots import PERSISTENT_CONTEXT, SUBAGENTS
+from arox.plugins.slots import PERSISTENT_CONTEXT, RECORD_EVENT, SUBAGENTS
 
 
 class _FakeCompactionAgent(CompactionAgent):
@@ -46,14 +46,15 @@ class _MockAgent:
         return None
 
     async def invoke_slot(self, slot, *args, **kwargs):
+        if slot is RECORD_EVENT:
+            event_type, data = args
+            self.session.add_event(event_type, data)
+            return []
         if slot is SUBAGENTS:
             return [self._compaction_agent]
         if slot is PERSISTENT_CONTEXT:
             return [self._persistent] if self._persistent else []
         return None
-
-    async def record_event(self, event_type, data):
-        self.session.add_event(event_type, data)
 
 
 def _plugin(agent: _MockAgent) -> CompactionPlugin:

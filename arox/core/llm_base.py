@@ -64,7 +64,6 @@ from arox.plugins.slots import (
     AGENT_RESET,
     AGENT_STEP,
     AGENT_STEP_FAILURE,
-    RECORD_EVENT,
     USER_INPUT,
 )
 
@@ -561,9 +560,6 @@ class LLMBaseAgent(IOHost):
         self.message_history = []
         self.llm_context_id = str(uuid.uuid4())
         await self.invoke_slot(AGENT_RESET)
-
-    async def record_event(self, event_type: str, data: dict[str, Any]):
-        await self.invoke_slot(RECORD_EVENT, event_type, data)
 
 
 class MainAgent(LLMBaseAgent, ABC):

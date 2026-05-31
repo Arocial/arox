@@ -7,7 +7,13 @@ from pydantic_ai.tools import ToolDefinition
 
 from arox.core.llm_base import DelegatableAgent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, ToolDef
-from arox.plugins.slots import AGENT_SESSION, SESSION_STORE, SET_SESSION, SUBAGENTS
+from arox.plugins.slots import (
+    AGENT_SESSION,
+    RECORD_EVENT,
+    SESSION_STORE,
+    SET_SESSION,
+    SUBAGENTS,
+)
 from arox.utils import import_class
 
 logger = logging.getLogger(__name__)
@@ -165,7 +171,8 @@ class SubagentPlugin(Plugin):
                 f"Available subagents: {', '.join(subagents)}"
             )
 
-        await self.agent.record_event(
+        await self.agent.invoke_slot(
+            RECORD_EVENT,
             "subagent_call",
             {"subagent": agent.name, "task": task},
         )
@@ -184,7 +191,8 @@ class SubagentPlugin(Plugin):
         if not isinstance(subagent, DelegatableAgent):
             return f"Subagent '{event.subagent_name}' not found."
 
-        await self.agent.record_event(
+        await self.agent.invoke_slot(
+            RECORD_EVENT,
             "subagent_call",
             {"subagent": subagent.name, "task": event.task},
         )

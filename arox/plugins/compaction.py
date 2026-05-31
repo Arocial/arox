@@ -13,7 +13,7 @@ from pydantic_ai import (
 from arox.core.llm_base import LLMBaseAgent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin
 from arox.core.session import _serialize_messages
-from arox.plugins.slots import PERSISTENT_CONTEXT, SUBAGENTS
+from arox.plugins.slots import PERSISTENT_CONTEXT, RECORD_EVENT, SUBAGENTS
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +133,8 @@ class CompactionPlugin(Plugin):
         """
         agent = self.agent
         agent.llm_context_id = str(uuid.uuid4())
-        await agent.record_event(
+        await agent.invoke_slot(
+            RECORD_EVENT,
             "compaction",
             {
                 "messages_before": messages_before,

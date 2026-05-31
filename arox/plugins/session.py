@@ -187,6 +187,7 @@ class SessionPlugin(Plugin):
 
     @property
     def _store(self) -> SessionStore:
+        assert self.session_store is not None
         return self.session_store
 
     def commands(self):
