@@ -130,6 +130,7 @@ class SessionInfo(BaseModel):
     main_agent: str
     created_at: str
     updated_at: str
+    workspace: str | None
     metadata: dict
 
 
@@ -722,6 +723,7 @@ class VercelStreamServer:
                 main_agent=s.agent_name,
                 created_at=s.created_at.isoformat(),
                 updated_at=s.updated_at.isoformat(),
+                workspace=s.workspace,
                 metadata=s.metadata,
             )
             for s in sessions

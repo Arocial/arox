@@ -41,6 +41,7 @@ logger = logging.getLogger(__name__)
 class AgentSession(Session):
     session_type: str = "agent"
     agent_name: str
+    workspace: str | None = None
     extra: dict[str, Any] = Field(default_factory=dict)
     children: list["AgentSession"] = Field(default_factory=list, exclude=True)
 
@@ -99,6 +100,7 @@ class AgentSession(Session):
         return AgentSession(
             id=new_id,
             agent_name=self.agent_name,
+            workspace=self.workspace,
             owner_id=owner_id,
             owner_path=owner_path,
             events=events,
@@ -280,6 +282,9 @@ class SessionPlugin(Plugin):
     ):
         kwargs: dict[str, Any] = {
             "agent_name": self.agent.name,
+            "workspace": str(self.agent.workspace)
+            if getattr(self.agent, "workspace", None)
+            else None,
             "owner_id": owner_id,
             "owner_path": owner_path,
         }
