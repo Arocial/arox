@@ -51,9 +51,13 @@ class AgentSession(Session):
                 history.extend(
                     _deserialize_messages(event.data.get("new_messages", []))
                 )
-            elif event.event_type == "compaction":
+            elif event.event_type == "compaction" and event.data.get("step_boundary"):
                 raw = event.data.get("compacted_messages", [])
                 history = _deserialize_messages(raw)
+            elif event.event_type == "reset" or (
+                event.event_type == "compaction" and not event.data.get("step_boundary")
+            ):
+                history = []
         return history
 
     def rebuild_llm_context_id(self) -> str | None:

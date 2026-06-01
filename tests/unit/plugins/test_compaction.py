@@ -171,15 +171,14 @@ async def test_auto_compaction_records_event_and_stays_consistent():
 
     from arox.core.session import _deserialize_messages, _serialize_messages
 
-    assert _deserialize_messages(compaction.data["compacted_messages"]) == out[:-1]
+    assert _deserialize_messages(compaction.data["compacted_messages"]) == out
 
-    # pydantic_ai stamps out[-1] with this run's id, so the step's agent_step
-    # records [out[-1], response]. Replaying base + that step must reproduce the
-    # live post-step history exactly.
+    # Since step_boundary=False clears the base history during rebuild, the
+    # subsequent agent_step provides the full post-compaction history.
     response = _reply("answer")
     agent.session.add_event(
         "agent_step",
-        {"new_messages": _serialize_messages([out[-1], response])},
+        {"new_messages": _serialize_messages([*out, response])},
     )
     rebuilt = agent.session.rebuild_message_history()
     assert rebuilt == [*out, response]

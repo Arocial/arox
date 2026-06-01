@@ -86,7 +86,10 @@ class TestAgentSession:
         ]
         agent_session.add_event(
             "compaction",
-            {"compacted_messages": _serialize_messages(compacted)},
+            {
+                "step_boundary": True,
+                "compacted_messages": _serialize_messages(compacted),
+            },
         )
         # Step 3 after compaction
         agent_session.add_event(
