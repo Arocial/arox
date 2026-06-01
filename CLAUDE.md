@@ -12,7 +12,7 @@ uv run arox-coder    # Run the Coder app interactively (text UI, default)
 uv run mkdocs serve  # Serve docs at http://127.0.0.1:3420
 ```
 
-**Before committing**: run `uv run ruff format && uv run ruff check --fix && uv run ty check`, and `uv run pytest`, then fix any issues.
+**Before committing**: run `uv run poe pre-commit`, then fix any issues.
 
 ## Architecture
 

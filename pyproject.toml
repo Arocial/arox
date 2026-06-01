@@ -61,6 +61,14 @@ session = "arox.plugins.session:SessionPlugin"
 [tool.setuptools.packages.find]
 where = ["."]
 
+[tool.poe.tasks]
+format = "ruff format"
+check = "ruff check --fix"
+typecheck = "ty check"
+test = "pytest"
+lint = ["format", "check", "typecheck"]
+pre-commit = ["lint", "test"]
+
 [tool.ruff.lint]
 extend-select = ["I"]
 
@@ -74,4 +82,5 @@ dev = [
     "pytest-repeat",
     "remote-pdb",
     "mkdocs-material>=9.5.0",
+    "poethepoet>=0.46.0",
 ]
