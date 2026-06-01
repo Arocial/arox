@@ -18,14 +18,14 @@ uv run mkdocs serve  # Serve docs at http://127.0.0.1:3420
 
 ### Hierarchy: App → MainAgent (with Plugins)
 
-An **App** is a runnable process that owns one `IOAdapter` and hosts a **MainAgent**. The `MainAgent` runs the user-facing loop and is driven by `AppConfig` and `AgentConfig`. Subagents are managed by the `SubagentPlugin`, which instantiates them and exposes them to the main agent as callable tools (and via the `SUBAGENT` slot) so it can delegate tasks directly.
+An **App** is a runnable process that owns one `IOAdapter` and hosts a **MainAgent**. The `MainAgent` runs the user-facing loop and is driven by `AppConfig` and `AgentConfig`. Subagents are managed by the `SubagentPlugin`, which instantiates them and exposes them to the main agent as callable tools (and via the `SUBAGENTS` slot) so it can delegate tasks directly. Subagents can be defined statically in the configuration or created dynamically at runtime (persisted in the session).
 
 Agent types and which agent to instantiate come from config (`arox/core/config.py`): `AppConfig` / `AgentConfig` are resolved by `load_config` from layered YAML plus CLI overrides.
 
-**Session management** is handled by the `SessionPlugin` (`arox/plugins/session.py`):
-- The main agent's `AgentSession` (message history + metadata) is the top-level session for a run; subagents keep their own `AgentSession`s nested beneath it.
-- `SessionStore` (default `FileSessionStore`) persists sessions to disk with an age-based cleanup.
-- On agent start, sessions are restored into each agent; on exit they are saved back. Resuming is done via the `session_id` passed to the App.
+**Session management** is integrated directly into `LLMBaseAgent` via `arox/core/session.py`:
+- Every agent is instantiated with an `AgentSession` (tracking message history and metadata). The main agent's `AgentSession` is the top-level session for a run; subagents keep their own `AgentSession`s nested beneath it.
+- `SessionManager` coordinates with `SessionStore` (default `FileSessionStore`) to persist sessions to disk with an age-based cleanup.
+- Sessions are explicitly passed as constructor dependencies. Resuming is done via the `session_id` passed to the App. The `SessionPlugin` now primarily provides the `/fork` command.
 
 ### IO system
 

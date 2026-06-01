@@ -1,19 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Annotated, Any, Literal, Protocol, Union, cast
 
-from pydantic import BaseModel, Field, TypeAdapter
-from pydantic_ai.messages import ModelMessage
+from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from pydantic_ai.messages import (
+    ModelMessage,
+)
+
+from arox.core.config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
-_message_adapter = TypeAdapter(ModelMessage)
 
 # Metadata key under which a user-turn's session-event id is stored on the
 # corresponding ``ModelRequest``. Set in-memory during a step and re-derived
@@ -21,20 +25,89 @@ _message_adapter = TypeAdapter(ModelMessage)
 USER_INPUT_ID_KEY = "user_input_id"
 
 
-def _serialize_messages(messages: Sequence[ModelMessage]) -> list[dict[str, Any]]:
-    return [_message_adapter.dump_python(m, mode="json") for m in messages]
-
-
-def _deserialize_messages(data: list[dict[str, Any]]) -> list[ModelMessage]:
-    return [_message_adapter.validate_python(d) for d in data]
-
-
 class SessionEvent(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
-    timestamp: datetime
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     event_type: str
     agent_name: str = ""
-    data: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_data(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "data" in data:
+            extra = data.pop("data")
+            if isinstance(extra, dict):
+                data.update(extra)
+        return data
+
+
+class ResetEvent(SessionEvent):
+    event_type: Literal["reset"] = "reset"
+    llm_context_id: str = ""
+
+
+class StepEvent(SessionEvent):
+    event_type: Literal["agent_step"] = "agent_step"
+    new_messages: list[ModelMessage] = Field(default_factory=list)
+    request_tokens: int | None = None
+    response_tokens: int | None = None
+
+
+class CommandEvent(SessionEvent):
+    event_type: Literal["command"] = "command"
+    command: str = ""
+    arg: str | None = None
+
+
+class UserInputEvent(SessionEvent):
+    event_type: Literal["user_input"] = "user_input"
+    text: str = ""
+
+
+class ErrorEvent(SessionEvent):
+    event_type: Literal["error"] = "error"
+    error: str = ""
+
+
+class SubagentCallEvent(SessionEvent):
+    event_type: Literal["subagent_call"] = "subagent_call"
+    subagent: str = ""
+    task: str = ""
+
+
+class SubagentCreatedEvent(SessionEvent):
+    event_type: Literal["subagent_created"] = "subagent_created"
+    subagent: str = ""
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class SubagentDeletedEvent(SessionEvent):
+    event_type: Literal["subagent_deleted"] = "subagent_deleted"
+    subagent: str = ""
+    session_id: str | None = None
+
+
+class CompactionEvent(SessionEvent):
+    event_type: Literal["compaction"] = "compaction"
+    compacted_messages: list[ModelMessage] = Field(default_factory=list)
+    step_boundary: bool = False
+    llm_context_id: str = ""
+
+
+AnySessionEvent = Annotated[
+    Union[
+        ResetEvent,
+        StepEvent,
+        CommandEvent,
+        UserInputEvent,
+        ErrorEvent,
+        SubagentCallEvent,
+        SubagentCreatedEvent,
+        SubagentDeletedEvent,
+        CompactionEvent,
+    ],
+    Field(discriminator="event_type"),
+]
 
 
 class Session(BaseModel):
@@ -43,32 +116,87 @@ class Session(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     forked_from: dict[str, int] | None = None
-    owner_id: str | None = None
     owner_path: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    events: list[SessionEvent] = Field(default_factory=list)
-    # Sessions owned by this one (its subsessions). The on-disk nesting under
-    # this session's directory is the source of truth: ``load_session`` rebuilds
-    # this dynamically and ``save_session`` ignores it.
-    children: list["Session"] = Field(default_factory=list, exclude=True)
+    events: list[AnySessionEvent] = Field(default_factory=list)
+    # Session ids owned by this one (its subsessions).
+    children: list[str] = Field(default_factory=list)
+
+    manager: Any = Field(default=None, exclude=True, repr=False)
+    owner: Any = Field(default=None, exclude=True, repr=False)
+    _save_task: Any = PrivateAttr(default=None)
+
+    async def save(self) -> None:
+        if self._save_task is not None and not self._save_task.done():
+            self._save_task.cancel()
+        if self.manager:
+            await self.manager.save_session(self)
+
+    def _schedule_save(self) -> None:
+        if not self.manager:
+            return
+        if self._save_task is not None and not self._save_task.done():
+            self._save_task.cancel()
+
+        async def _debounced_save():
+            try:
+                await asyncio.sleep(0.1)
+                await self.save()
+            except asyncio.CancelledError:
+                pass
+
+        try:
+            loop = asyncio.get_running_loop()
+            self._save_task = loop.create_task(_debounced_save())
+        except RuntimeError:
+            pass
 
     def add_event(
         self,
-        event_type: str,
+        event_or_type: AnySessionEvent | str,
         data: dict[str, Any] | None = None,
         *,
         id: str | None = None,
-    ) -> SessionEvent:
-        kwargs: dict[str, Any] = {
-            "timestamp": datetime.now(UTC),
-            "event_type": event_type,
-            "data": data or {},
-        }
-        if id is not None:
-            kwargs["id"] = id
-        event = SessionEvent(**kwargs)
-        self.events.append(event)
-        return event
+    ) -> AnySessionEvent:
+        if isinstance(event_or_type, str):
+            # Backward compatibility
+            event_type = event_or_type
+            kwargs = {
+                "event_type": event_type,
+                "agent_name": getattr(self, "agent_name", ""),
+            }
+            if id:
+                kwargs["id"] = id
+            if data:
+                kwargs.update(data)
+
+            # Map to specific class if possible
+            event_classes = {
+                "reset": ResetEvent,
+                "agent_step": StepEvent,
+                "command": CommandEvent,
+                "user_input": UserInputEvent,
+                "error": ErrorEvent,
+                "subagent_call": SubagentCallEvent,
+                "subagent_created": SubagentCreatedEvent,
+                "subagent_deleted": SubagentDeletedEvent,
+                "compaction": CompactionEvent,
+            }
+            cls = event_classes.get(event_type, SessionEvent)
+            # If it's SessionEvent, we need to handle it specially since it's not in AnySessionEvent union
+            # but for the sake of this method returning AnySessionEvent, we'll just validate it.
+            # Pydantic might complain if we return SessionEvent where AnySessionEvent is expected
+            # but at runtime it should be fine for the list.
+            event = cls.model_validate(kwargs)
+        else:
+            event = event_or_type
+
+        self.events.append(cast(AnySessionEvent, event))
+        self._schedule_save()
+        return cast(AnySessionEvent, event)
+
+    async def build_instance(self, session_manager: SessionManager, **kwargs) -> Any:
+        raise NotImplementedError
 
     def index_of_event(self, event_id: str) -> int | None:
         for i, ev in enumerate(self.events):
@@ -77,16 +205,221 @@ class Session(BaseModel):
         return None
 
 
-_SESSION_TYPES: dict[str, type[Session]] = {}
+class AgentSession(Session):
+    session_type: str = "agent"
+    agent_name: str
+    agent_config: AgentConfig = Field(default_factory=AgentConfig)
+    agent_source: Literal["static", "dynamic"] = "dynamic"
+    workspace: str | None = None
+    llm_context_id: str | None = None
+    extra: dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def create_initial(
+        cls,
+        parsed_config: Any,
+        workspace: str | Path | None = None,
+    ) -> AgentSession:
+        """Create a fresh session for the main agent from config."""
+        agent_name = parsed_config.app.main_agent
+        agent_config = parsed_config.agent.get(agent_name) or AgentConfig()
+        ws = str(Path(workspace).absolute()) if workspace else str(Path.cwd())
+        return cls(
+            id=str(uuid.uuid4()),
+            agent_name=agent_name,
+            agent_config=agent_config.model_copy(deep=True),
+            agent_source="static",
+            workspace=ws,
+            llm_context_id=str(uuid.uuid4()),
+        )
+
+    async def build_instance(self, session_manager: SessionManager, **kwargs) -> Any:
+        from arox.utils import import_class
+
+        agent_cls = import_class(self.agent_config.type, group="arox.agents")
+
+        return agent_cls(
+            session=self,
+            **kwargs,
+        )
+
+    def rebuild_message_history(self) -> list[ModelMessage]:
+        history: list[ModelMessage] = []
+        for event in self.events:
+            if isinstance(event, StepEvent):
+                history.extend(event.new_messages)
+            elif isinstance(event, CompactionEvent) and event.step_boundary:
+                history = list(event.compacted_messages)
+            elif isinstance(event, ResetEvent) or (
+                isinstance(event, CompactionEvent) and not event.step_boundary
+            ):
+                history = []
+        return history
+
+    def rebuild_llm_context_id(self) -> str | None:
+        context_id = self.llm_context_id
+        for event in self.events:
+            if isinstance(event, (CompactionEvent, ResetEvent)):
+                context_id = event.llm_context_id
+        return context_id
+
+    def record_reset(self, llm_context_id: str) -> None:
+        self.llm_context_id = llm_context_id
+        self.add_event(
+            ResetEvent(llm_context_id=llm_context_id, agent_name=self.agent_name)
+        )
+        self.metadata.pop("last_user_messages", None)
+
+    def record_step(
+        self,
+        new_messages: Sequence[ModelMessage],
+        request_tokens: int | None = None,
+        response_tokens: int | None = None,
+    ) -> None:
+        self.add_event(
+            StepEvent(
+                new_messages=list(new_messages),
+                request_tokens=request_tokens,
+                response_tokens=response_tokens,
+                agent_name=self.agent_name,
+            )
+        )
+
+    def record_command(self, command: str, arg: str | None) -> None:
+        self.add_event(
+            CommandEvent(command=command, arg=arg, agent_name=self.agent_name)
+        )
+
+    def record_user_input(self, text: str, input_id: str) -> None:
+        self.add_event(
+            UserInputEvent(id=input_id, text=text, agent_name=self.agent_name)
+        )
+        last_user_messages = self.metadata.get("last_user_messages", [])
+        last_user_messages.append(text)
+        self.metadata["last_user_messages"] = last_user_messages[-2:]
+
+    def record_error(self, error: Exception) -> None:
+        self.add_event(
+            ErrorEvent(
+                error=f"{type(error).__name__}: {error!s}", agent_name=self.agent_name
+            )
+        )
+
+    def record_subagent_call(self, subagent_name: str, task: str) -> None:
+        self.add_event(
+            SubagentCallEvent(
+                subagent=subagent_name, task=task, agent_name=self.agent_name
+            )
+        )
+
+    def record_subagent_created(
+        self, subagent_name: str, config_data: dict[str, Any]
+    ) -> None:
+        self.add_event(
+            SubagentCreatedEvent(
+                subagent=subagent_name, config=config_data, agent_name=self.agent_name
+            )
+        )
+
+    def record_subagent_deleted(
+        self, subagent_name: str, session_id: str | None
+    ) -> None:
+        self.add_event(
+            SubagentDeletedEvent(
+                subagent=subagent_name,
+                session_id=session_id,
+                agent_name=self.agent_name,
+            )
+        )
+
+    def record_compaction(
+        self,
+        compacted_messages: list[ModelMessage],
+        step_boundary: bool,
+        llm_context_id: str,
+    ) -> None:
+        self.llm_context_id = llm_context_id
+        self.add_event(
+            CompactionEvent(
+                step_boundary=step_boundary,
+                compacted_messages=compacted_messages,
+                llm_context_id=llm_context_id,
+                agent_name=self.agent_name,
+            )
+        )
+
+    def fork_at(self, event_id: str | None, owner: AgentSession | None) -> AgentSession:
+        """Branch a new session off this one
+
+        With ``event_id`` the new session is a truncated copy holding the events
+        up to (but excluding) that anchor, tagged via ``forked_from``. With
+        ``event_id`` set to ``None`` it starts empty and unforked.
+        """
+        forked_from: dict[str, int] | None
+        if event_id is None:
+            events = []
+            forked_from = None
+        else:
+            event_index = self.index_of_event(event_id)
+            if event_index is None:
+                raise ValueError(f"event {event_id} not found")
+            events = [ev.model_copy(deep=True) for ev in self.events[:event_index]]
+            forked_from = {self.agent_name: event_index}
+        new_id = str(uuid.uuid4())
+
+        new_session = AgentSession(
+            id=new_id,
+            agent_name=self.agent_name,
+            agent_config=self.agent_config.model_copy(deep=True),
+            agent_source=self.agent_source,
+            workspace=self.workspace,
+            llm_context_id=self.llm_context_id,
+            owner_path=[*owner.owner_path, owner.id] if owner else [],
+            events=events,
+            extra=dict(self.extra),
+            forked_from=forked_from,
+        )
+        new_session.manager = self.manager
+        new_session.owner = owner
+        if owner:
+            owner.children.append(new_session.id)
+        return new_session
 
 
-def register_session_type(cls: type[Session]) -> None:
-    """Register a Session subclass so the store can deserialize it by session_type."""
-    type_name = cls.model_fields["session_type"].default
-    _SESSION_TYPES[type_name] = cls
+class SessionManager:
+    def __init__(self, session_store: "SessionStore"):
+        self.session_store = session_store
+        self._session_types: dict[str, type[Session]] = {}
+        self.session_store.set_session_types(self._session_types)
+
+    def register_session_type(self, cls: type[Session]) -> None:
+        """Register a Session subclass so the store can deserialize it by session_type."""
+        type_name = cls.model_fields["session_type"].default
+        self._session_types[type_name] = cls
+
+    async def save_session(self, session: Session) -> None:
+        await self.session_store.save_session(session)
+
+    async def load_session(self, session_id, owner: Session | None) -> Session | None:
+        owner_path = [*owner.owner_path, owner.id] if owner else []
+        session = await self.session_store.load_session(session_id, owner_path)
+        if session:
+            session.owner = owner
+        return session
+
+    async def build_from_session(
+        self, session_id: str, owner: Session | None = None, **kwargs
+    ) -> Any:
+
+        session = await self.load_session(session_id, owner)
+        if not session:
+            return None
+        session.manager = self
+        return await session.build_instance(self, **kwargs)
 
 
 class SessionStore(Protocol):
+    def set_session_types(self, session_types: dict[str, type[Session]]) -> None: ...
     async def list_sessions(self, session_type: str = "agent") -> list[Session]: ...
     async def load_session(
         self, session_id: str, owner_path: list[str] | None = None
@@ -104,6 +437,10 @@ class FileSessionStore:
             base_dir = Path.home() / ".local" / "share" / "arox" / "sessions"
         self.base_dir = base_dir
         self.max_age_days = max_age_days
+        self._session_types: dict[str, type[Session]] = {}
+
+    def set_session_types(self, session_types: dict[str, type[Session]]) -> None:
+        self._session_types = session_types
 
     def _session_dir(
         self, session_id: str, owner_path: list[str] | None = None
@@ -133,7 +470,7 @@ class FileSessionStore:
                 raw = json.loads(meta_path.read_text())
                 if raw.get("session_type") != session_type:
                     continue
-                model = _SESSION_TYPES.get(session_type, Session)
+                model = self._session_types.get(session_type, Session)
                 sessions.append(model.model_validate(raw))
             except Exception:
                 logger.warning(f"Failed to load session from {d}", exc_info=True)
@@ -151,29 +488,8 @@ class FileSessionStore:
 
         raw = json.loads(meta_path.read_text())
         session_type = raw.get("session_type")
-        model = _SESSION_TYPES.get(session_type, Session)
-        session = model.model_validate(raw)
-
-        # Recursively load the sessions owned by this one. A subsession is
-        # persisted in a subdirectory of this session's directory (see
-        # ``_session_dir``), so its owner path is this session appended to ours.
-        # Loading them here lets callers find a subsession directly instead of
-        # routing through the live subagent.
-        session_dir = self._session_dir(session_id, owner_path)
-        child_owner_path = [*owner_path, session_id]
-        for child_dir in sorted(session_dir.iterdir()):
-            if not child_dir.is_dir() or not (child_dir / "session.json").exists():
-                continue
-            try:
-                child = await self.load_session(child_dir.name, child_owner_path)
-            except Exception:
-                logger.warning(
-                    f"Failed to load child session {child_dir}", exc_info=True
-                )
-                continue
-            if child is not None:
-                session.children.append(child)
-        return session
+        model = self._session_types.get(session_type, Session)
+        return model.model_validate(raw)
 
     async def save_session(self, session: Session) -> None:
         session.updated_at = datetime.now(UTC)

@@ -31,29 +31,6 @@ LLM_CONTEXT_ID = Slot[Callable[[], str]](
     "llm_context_id", "Provides the current LLM context ID"
 )
 
-# Slot for getting the current agent session
-AGENT_SESSION = Slot[Callable[[], Any]](
-    "agent_session",
-    "Provides the current agent session",
-    aggregator=ResultAggregator.FIRST,
-)
-
-# Slot for getting the agent's session store.
-SESSION_STORE = Slot[Callable[[], Any]](
-    "session_store",
-    "Provides the agent's session store",
-    aggregator=ResultAggregator.FIRST,
-)
-
-# Slot for configuring the agent's session before it starts.
-# Payload: (session_id, owner_path, session_store, agent_session=None). A given
-# ``agent_session`` is adopted as-is, skipping the load by id.
-SET_SESSION = Slot[Callable[..., Any]](
-    "set_session",
-    "Sets the agent's session id, owner path and session store",
-    aggregator=ResultAggregator.DISCARD,
-)
-
 # --- Push slots (handlers invoked by agent.notify) ---
 
 # Emitted after the agent's message history and llm_context_id are cleared.
@@ -80,17 +57,8 @@ AGENT_COMMAND = Slot[Callable[..., Any]](
     "agent_command", "A slash command was parsed", aggregator=ResultAggregator.DISCARD
 )
 
-# Emitted when user input is received. Payload: (text,).
-USER_INPUT = Slot[Callable[..., Any]](
-    "user_input", "User input was received", aggregator=ResultAggregator.DISCARD
-)
 
 # Emitted when the run loop catches an error. Payload: (error,).
 AGENT_ERROR = Slot[Callable[..., Any]](
     "agent_error", "An error occurred during a run", aggregator=ResultAggregator.DISCARD
-)
-
-# Generic record channel. Payload: (event_type, data).
-RECORD_EVENT = Slot[Callable[..., Any]](
-    "record_event", "A custom event was recorded", aggregator=ResultAggregator.DISCARD
 )

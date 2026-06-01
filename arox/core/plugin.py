@@ -129,6 +129,7 @@ class CommandManager:
             return None
         try:
             await self.agent.invoke_slot(AGENT_COMMAND, name, arg)
+            self.agent.session.record_command(name, arg)
             event = event_cls.from_slash(name, arg)
             if event is not None and not isinstance(event, CommandEvent):
                 logger.warning(

@@ -1,9 +1,9 @@
 import pytest
-from pydantic_ai import FunctionToolset
 from pydantic_ai.models.test import TestModel
 
 from arox.core.app import app_setup
 from arox.core.chat import ChatAgent
+from arox.core.session import AgentSession
 from arox.ui.headless import HeadlessIOAdapter
 
 
@@ -21,21 +21,16 @@ system_prompt = "Hi there."
         cli_args={"workspace": str(tmp_path)},
     )
 
-    from arox.core.llm_base import AgentDeps
-
-    local_toolset = FunctionToolset[AgentDeps]()
-
     io_adapter = HeadlessIOAdapter(prompt="say hello")
     agent = ChatAgent(
-        "dummy_chat",
         parsed_config,
         io_adapter=io_adapter,
-        local_toolset=local_toolset,
+        session=AgentSession(id="dummy", agent_name="dummy_chat"),
     )
 
     test_model = TestModel(custom_output_text="hello world")
-    with agent.pydantic_agent.override(model=test_model):
-        async with io_adapter, agent:
+    async with io_adapter, agent:
+        with agent.pydantic_agent.override(model=test_model):
             await agent.run()
 
     captured = capsys.readouterr()
@@ -57,15 +52,11 @@ system_prompt = "Hi there."
         cli_args={"workspace": str(tmp_path)},
     )
 
-    from arox.core.llm_base import AgentDeps
-
-    local_toolset = FunctionToolset[AgentDeps]()
     io_adapter = HeadlessIOAdapter(prompt="boom")
     agent = ChatAgent(
-        "dummy_chat",
         parsed_config,
         io_adapter=io_adapter,
-        local_toolset=local_toolset,
+        session=AgentSession(id="dummy", agent_name="dummy_chat"),
     )
 
     async def failing_step(*args, **kwargs):

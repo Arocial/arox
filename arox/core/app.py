@@ -4,10 +4,10 @@ from pathlib import Path
 from typing import Any
 
 import logfire
-from pydantic_ai import FunctionToolset
 
 from arox.core.config import Config, ObservabilityConfig, load_config
-from arox.core.llm_base import AgentDeps, MainAgent
+from arox.core.llm_base import MainAgent
+from arox.core.session import AgentSession
 from arox.utils import import_class
 
 logger = logging.getLogger(__name__)
@@ -42,6 +42,7 @@ def app_setup(
 def create_main_agent(
     parsed_config: Config,
     io_adapter: Any,
+    session: AgentSession,
     workspace: Path | str | None = None,
 ) -> MainAgent:
     main_agent_name = parsed_config.app.main_agent
@@ -57,13 +58,10 @@ def create_main_agent(
             f"Unknown agent type: {main_agent_type} for main agent {main_agent_name}"
         )
 
-    local_toolset = FunctionToolset[AgentDeps]()
-
     main_agent = main_agent_cls(
-        main_agent_name,
         parsed_config,
         io_adapter=io_adapter,
-        local_toolset=local_toolset,
+        session=session,
         workspace=workspace,
     )
 

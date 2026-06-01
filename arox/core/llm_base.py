@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import fastmcp
 from httpx import AsyncClient, HTTPStatusError, Timeout, TransportError
@@ -57,14 +57,16 @@ from arox.core.io import (
     IOEndpoint,
     IOHost,
 )
-from arox.core.session import USER_INPUT_ID_KEY
+from arox.core.session import (
+    USER_INPUT_ID_KEY,
+    AgentSession,
+)
 from arox.core.skills import build_skill_catalog, discover_skills
 from arox.core.slot import ResultAggregator, Slot
 from arox.plugins.slots import (
     AGENT_RESET,
     AGENT_STEP,
     AGENT_STEP_FAILURE,
-    USER_INPUT,
 )
 
 logger = logging.getLogger(__name__)
@@ -230,64 +232,62 @@ class AgentDeps:
 class LLMBaseAgent(IOHost):
     def __init__(
         self,
-        name: str,
         parsed_config: Config,
         io_adapter: AbstractIOAdapter,
-        local_toolset: FunctionToolset[AgentDeps] | None = None,
+        session: AgentSession,
         workspace: Path | str | None = None,
     ):
         super().__init__(io_adapter)
         self.uuid = str(uuid.uuid4())
-        self.name = name
-        self.workspace = Path(workspace).absolute() if workspace else Path.cwd()
-        self.llm_context_id: str = str(uuid.uuid4())
         self._slots: dict[Any, Any] = {}
+        self.parsed_config = parsed_config
+        self.session = session
+
         self.model_ref = None
         self.additional_prompt = ""
 
-        self.parsed_config = parsed_config
-        self.agent_config: AgentConfig = parsed_config.agent.get(name) or AgentConfig()
-
-        # Manage tools
-        self.local_toolset = local_toolset
-        toolsets: list[AbstractToolset[AgentDeps]] = (
-            [local_toolset] if local_toolset else []
-        )
-
-        mcp_server_configs = self.parsed_config.mcp_servers
-        allowed_mcp_servers = self.agent_config.mcp_servers
-        if allowed_mcp_servers is not None:
-            if isinstance(allowed_mcp_servers, str):
-                allowed_mcp_servers = [allowed_mcp_servers]
-            mcp_server_configs = {
-                k: v for k, v in mcp_server_configs.items() if k in allowed_mcp_servers
-            }
-
+        self.local_toolset = FunctionToolset[AgentDeps]()
         self.mcp_client = None
-        if mcp_server_configs:
-            self.mcp_client = fastmcp.Client({"mcpServers": mcp_server_configs})
-            mcp_toolset = MCPToolset[AgentDeps](self.mcp_client)
-            toolsets.append(mcp_toolset)
-
-        self.parse_configs()
-
-        from arox.core.plugin import CommandManager, load_plugins
-
-        self.command_manager = CommandManager(self)
-        self.plugins = load_plugins(self)
-        capabilities: list[AbstractCapability[AgentDeps]] = [
-            cap for plugin in self.plugins for cap in plugin.capabilities()
-        ]
-
-        self.pydantic_agent = Agent[AgentDeps, DeferredToolRequests | str](
-            self.model,
-            capabilities=capabilities,
-            toolsets=toolsets,
-            deps_type=AgentDeps,
-            output_type=(DeferredToolRequests, str),
-        )
-
+        self.plugins = []
         self.message_history: list[ModelMessage] = []
+
+        self._restore_agent_session(session)
+
+    @property
+    def name(self) -> str:
+        return self.session.agent_name
+
+    @name.setter
+    def name(self, value: str):
+        self.session.agent_name = value
+
+    @property
+    def workspace(self) -> Path:
+        return Path(self.session.workspace) if self.session.workspace else Path.cwd()
+
+    @workspace.setter
+    def workspace(self, value: Path | str | None):
+        self.session.workspace = str(Path(value).absolute()) if value else None
+
+    @property
+    def llm_context_id(self) -> str:
+        return self.session.llm_context_id or ""
+
+    @llm_context_id.setter
+    def llm_context_id(self, value: str):
+        self.session.llm_context_id = value
+
+    @property
+    def agent_config(self) -> AgentConfig:
+        return self.session.agent_config
+
+    @agent_config.setter
+    def agent_config(self, value: AgentConfig):
+        self.session.agent_config = value
+
+    @property
+    def agent_source(self) -> Literal["static", "dynamic"]:
+        return self.session.agent_source
 
     async def handle_event(
         self, ctx: RunContext["AgentDeps"], events: AsyncIterable[AgentStreamEvent]
@@ -339,18 +339,63 @@ class LLMBaseAgent(IOHost):
                     results.append(result)
                 return results
 
+
+
+    def _restore_agent_session(self, agent_session: AgentSession) -> None:
+        """Apply a loaded session back onto the live agent runtime."""
+        self.message_history = agent_session.rebuild_message_history()
+        restored_id = agent_session.rebuild_llm_context_id()
+        if restored_id:
+            self.llm_context_id = restored_id
+        if self.model_ref:
+            self.set_model(self.model_ref)
+
     async def __aenter__(self):
         await super().__aenter__()
+
+        toolsets: list[AbstractToolset[AgentDeps]] = [self.local_toolset]
+
+        mcp_server_configs = self.parsed_config.mcp_servers
+        allowed_mcp_servers = self.agent_config.mcp_servers
+        if allowed_mcp_servers is not None:
+            if isinstance(allowed_mcp_servers, str):
+                allowed_mcp_servers = [allowed_mcp_servers]
+            mcp_server_configs = {
+                k: v for k, v in mcp_server_configs.items() if k in allowed_mcp_servers
+            }
+
+        if mcp_server_configs:
+            self.mcp_client = fastmcp.Client({"mcpServers": mcp_server_configs})
+            mcp_toolset = MCPToolset[AgentDeps](self.mcp_client)
+            toolsets.append(mcp_toolset)
+
+        self.parse_configs()
+
+        from arox.core.plugin import CommandManager, load_plugins
+
+        self.command_manager = CommandManager(self)
+        self.plugins = load_plugins(self)
+        capabilities: list[AbstractCapability[AgentDeps]] = [
+            cap for plugin in self.plugins for cap in plugin.capabilities()
+        ]
+
+        self.pydantic_agent = Agent[AgentDeps, DeferredToolRequests | str](
+            self.model,
+            capabilities=capabilities,
+            toolsets=toolsets,
+            deps_type=AgentDeps,
+            output_type=(DeferredToolRequests, str),
+        )
+
         if self.mcp_client:
             await self._stack.enter_async_context(self.mcp_client)
+        self._stack.push_async_callback(self.session.save)
         for plugin in self.plugins:
             await plugin.on_start()
             self._stack.push_async_callback(plugin.on_stop)
         return self
 
     def add_local_tool(self, func, **kwargs):
-        if not self.local_toolset:
-            self.local_toolset = FunctionToolset()
         self.local_toolset.add_function(func, **kwargs)
 
     def _resolve_model(self, model_ref: str):
@@ -533,7 +578,7 @@ class LLMBaseAgent(IOHost):
         user_prompt: list[UserContent] | None = None
         if text is not None:
             input_id = str(uuid.uuid4())
-            await self.invoke_slot(USER_INPUT, text, input_id)
+            self.session.record_user_input(text, input_id)
             if client_message_id:
                 await self.agent_io.send(
                     ServerIdMapping(event_id=input_id, client_id=client_message_id)
@@ -544,6 +589,10 @@ class LLMBaseAgent(IOHost):
 
         async def _commit_failure(messages: list[ModelMessage]) -> None:
             await self.invoke_slot(AGENT_STEP_FAILURE, messages)
+            prev_len = len(self.message_history)
+            new_messages = messages[prev_len:]
+            if new_messages:
+                self.session.record_step(new_messages)
 
         result = await self._run_inference(
             user_prompt,
@@ -553,6 +602,12 @@ class LLMBaseAgent(IOHost):
         )
         self.message_history = result.all_messages()
         await self.invoke_slot(AGENT_STEP, result)
+        usage = result.usage
+        self.session.record_step(
+            result.new_messages(),
+            request_tokens=usage.input_tokens if usage else None,
+            response_tokens=usage.output_tokens if usage else None,
+        )
         await self.agent_io.send(AgentRunResultEvent(result))
         return result
 
@@ -560,6 +615,7 @@ class LLMBaseAgent(IOHost):
         self.message_history = []
         self.llm_context_id = str(uuid.uuid4())
         await self.invoke_slot(AGENT_RESET)
+        self.session.record_reset(self.llm_context_id)
 
 
 class MainAgent(LLMBaseAgent, ABC):

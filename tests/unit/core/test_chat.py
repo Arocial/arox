@@ -1,11 +1,12 @@
 import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
-from pydantic_ai import FunctionToolset, ToolCallPart
+from pydantic_ai import ToolCallPart
 from pydantic_ai.models.test import TestModel
 
 from arox.core.app import app_setup
 from arox.core.chat import ChatAgent
+from arox.core.session import AgentSession
 from arox.ui.text_io import TextIOAdapter, UserInputGenerator
 
 
@@ -33,29 +34,24 @@ system_prompt = "Hi there."
         "Calculate 1488*2083.\n",
         "\x04",
     ]
-    from arox.core.llm_base import AgentDeps
-
-    local_toolset = FunctionToolset[AgentDeps]()
-    local_toolset.add_function(multiply)
-
     with create_pipe_input() as pipe_input:
         user_input = UserInputGenerator(input=pipe_input, output=DummyOutput())
 
         io_adapter = TextIOAdapter()
         agent = ChatAgent(
-            "dummy_chat",
             parsed_config,
             io_adapter=io_adapter,
-            local_toolset=local_toolset,
+            session=AgentSession(id="dummy", agent_name="dummy_chat"),
         )
+        agent.add_local_tool(multiply)
         io_adapter.user_input = user_input
 
         for msg in test_user_msg:
             pipe_input.send_text(msg)
 
         test_model = TestModel(call_tools=["multiply"])
-        with agent.pydantic_agent.override(model=test_model):
-            async with io_adapter, agent:
+        async with io_adapter, agent:
+            with agent.pydantic_agent.override(model=test_model):
                 await agent.run()
 
         # Verify that the tool was called

@@ -13,6 +13,7 @@ from pydantic_ai.messages import (
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter, RequestEvent
 from arox.core.llm_base import LLMBaseAgent, _complete_pending_tool_calls
+from arox.core.session import AgentSession
 from arox.plugins.core import SetModelEvent
 
 
@@ -99,9 +100,18 @@ skills = ["skill1"]
     # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
-    agent = LLMBaseAgent("test_agent", parsed_config, io_adapter=io_adapter)
+    agent = LLMBaseAgent(
+        parsed_config,
+        io_adapter=io_adapter,
+        session=AgentSession(
+            id="dummy",
+            agent_name="test_agent",
+            agent_config=parsed_config.agent["test_agent"],
+        ),
+    )
 
-    assert "skill1" in agent.system_prompt
+    async with agent:
+        assert "skill1" in agent.system_prompt
     assert "skill2" not in agent.system_prompt
 
 
@@ -146,9 +156,18 @@ skills = "skill2"
     # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
-    agent = LLMBaseAgent("test_agent", parsed_config, io_adapter=io_adapter)
+    agent = LLMBaseAgent(
+        parsed_config,
+        io_adapter=io_adapter,
+        session=AgentSession(
+            id="dummy",
+            agent_name="test_agent",
+            agent_config=parsed_config.agent["test_agent"],
+        ),
+    )
 
-    assert "skill1" not in agent.system_prompt
+    async with agent:
+        assert "skill1" not in agent.system_prompt
     assert "skill2" in agent.system_prompt
 
 
@@ -192,9 +211,18 @@ system_prompt = "Hi there."
     # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
-    agent = LLMBaseAgent("test_agent", parsed_config, io_adapter=io_adapter)
+    agent = LLMBaseAgent(
+        parsed_config,
+        io_adapter=io_adapter,
+        session=AgentSession(
+            id="dummy",
+            agent_name="test_agent",
+            agent_config=parsed_config.agent["test_agent"],
+        ),
+    )
 
-    assert "skill1" in agent.system_prompt
+    async with agent:
+        assert "skill1" in agent.system_prompt
     assert "skill2" in agent.system_prompt
 
 
@@ -216,7 +244,11 @@ system_prompt = "Hi."
 
     received: list[RequestEvent] = []
 
-    agent = LLMBaseAgent("test_agent", parsed_config, io_adapter=_StubIOAdapter())
+    agent = LLMBaseAgent(
+        parsed_config,
+        io_adapter=_StubIOAdapter(),
+        session=AgentSession(id="dummy", agent_name="test_agent"),
+    )
 
     async def handler(event):
         received.append(event)
@@ -243,7 +275,11 @@ system_prompt = "Hi."
         cli_args={"workspace": str(tmp_path)},
     )
 
-    agent = LLMBaseAgent("test_agent", parsed_config, io_adapter=_StubIOAdapter())
+    agent = LLMBaseAgent(
+        parsed_config,
+        io_adapter=_StubIOAdapter(),
+        session=AgentSession(id="dummy", agent_name="test_agent"),
+    )
 
     calls: list[str] = []
     original_set_model = agent.set_model
@@ -255,6 +291,7 @@ system_prompt = "Hi."
     agent.set_model = spy  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
     async with agent:
+        calls.clear()
         agent.register_request_handler(
             SetModelEvent, lambda e: agent.set_model(e.model_ref)
         )

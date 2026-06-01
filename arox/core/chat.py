@@ -9,6 +9,7 @@ from pydantic_ai.tools import DeferredToolRequests
 
 from arox.core.io import ReplyEvent, RequestEvent
 from arox.core.llm_base import DelegatableAgent, MainAgent, UserInput
+from arox.core.session import AgentSession
 from arox.plugins.slots import AGENT_ERROR
 
 logger = logging.getLogger(__name__)
@@ -81,18 +82,16 @@ class ChatInputReply(UserInput, ReplyEvent):
 class ChatAgent(MainAgent, DelegatableAgent):
     def __init__(
         self,
-        name,
         parsed_config,
         io_adapter,
-        local_toolset=None,
+        session: AgentSession,
         workspace: Path | str | None = None,
     ):
         self.foreground_task: asyncio.Task | None = None
         super().__init__(
-            name,
             parsed_config,
             io_adapter,
-            local_toolset,
+            session,
             workspace,
         )
 
@@ -157,6 +156,7 @@ class ChatAgent(MainAgent, DelegatableAgent):
             except Exception as e:
                 logger.exception("An error occurred.")
                 await self.invoke_slot(AGENT_ERROR, e)
+                self.session.record_error(e)
                 pending_exception = e
 
             # 6. Send StepDoneEvent to indicate the step is finished

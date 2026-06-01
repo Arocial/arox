@@ -112,13 +112,15 @@ def main(profile: str | None = None):
             raise ValueError(f"Unknown UI: {args.ui}")
 
         async def run_all():
-            from arox.core.session import FileSessionStore
-            from arox.plugins.session import AgentSession
-            from arox.plugins.slots import SET_SESSION
+            from arox.core.session import AgentSession, FileSessionStore, SessionManager
 
             session_store = FileSessionStore(
                 max_age_days=parsed_config.app.session_max_age_days
             )
+            session_manager = SessionManager(session_store)
+            session_manager.register_session_type(AgentSession)
+
+            await session_store.cleanup()
             if args.session:
                 session = await session_store.load_session(args.session)
                 if not session or not isinstance(session, AgentSession):
@@ -126,11 +128,17 @@ def main(profile: str | None = None):
                         f"Session {args.session} not found or invalid.", file=sys.stderr
                     )
                     sys.exit(1)
+                parsed_config.app.main_agent = session.agent_name
+                parsed_config.agent[session.agent_name] = session.agent_config
+            else:
+                session = AgentSession.create_initial(parsed_config)
 
-            main_agent = create_main_agent(parsed_config, io_adapter=io_adapter)
-            # The main agent owns the root session (empty owner path); hand it
-            # the id to resume and the shared store before it starts.
-            await main_agent.invoke_slot(SET_SESSION, args.session, [], session_store)
+            main_agent = create_main_agent(
+                parsed_config,
+                io_adapter=io_adapter,
+                session=session,
+            )
+            main_agent.session.manager = session_manager
 
             async with io_adapter:
                 await io_adapter.register_host(main_agent)

@@ -10,8 +10,6 @@ from pydantic_ai.messages import (
 
 from arox.core.session import (
     FileSessionStore,
-    _deserialize_messages,
-    _serialize_messages,
 )
 from arox.plugins.session import AgentSession
 
@@ -40,11 +38,11 @@ class TestAgentSession:
         ]
         agent_session.add_event(
             "agent_step",
-            {"new_messages": _serialize_messages(messages_step1)},
+            {"new_messages": messages_step1},
         )
         agent_session.add_event(
             "agent_step",
-            {"new_messages": _serialize_messages(messages_step2)},
+            {"new_messages": messages_step2},
         )
 
         history = agent_session.rebuild_message_history()
@@ -60,24 +58,20 @@ class TestAgentSession:
         agent_session.add_event(
             "agent_step",
             {
-                "new_messages": _serialize_messages(
-                    [
-                        ModelRequest(parts=[UserPromptPart(content="old msg 1")]),
-                        ModelResponse(parts=[TextPart(content="old reply 1")]),
-                    ]
-                ),
+                "new_messages": [
+                    ModelRequest(parts=[UserPromptPart(content="old msg 1")]),
+                    ModelResponse(parts=[TextPart(content="old reply 1")]),
+                ],
             },
         )
         # Step 2
         agent_session.add_event(
             "agent_step",
             {
-                "new_messages": _serialize_messages(
-                    [
-                        ModelRequest(parts=[UserPromptPart(content="old msg 2")]),
-                        ModelResponse(parts=[TextPart(content="old reply 2")]),
-                    ]
-                ),
+                "new_messages": [
+                    ModelRequest(parts=[UserPromptPart(content="old msg 2")]),
+                    ModelResponse(parts=[TextPart(content="old reply 2")]),
+                ],
             },
         )
         # Compaction replaces all history
@@ -88,19 +82,17 @@ class TestAgentSession:
             "compaction",
             {
                 "step_boundary": True,
-                "compacted_messages": _serialize_messages(compacted),
+                "compacted_messages": compacted,
             },
         )
         # Step 3 after compaction
         agent_session.add_event(
             "agent_step",
             {
-                "new_messages": _serialize_messages(
-                    [
-                        ModelRequest(parts=[UserPromptPart(content="new msg")]),
-                        ModelResponse(parts=[TextPart(content="new reply")]),
-                    ]
-                ),
+                "new_messages": [
+                    ModelRequest(parts=[UserPromptPart(content="new msg")]),
+                    ModelResponse(parts=[TextPart(content="new reply")]),
+                ],
             },
         )
 
@@ -139,30 +131,28 @@ class TestAgentSession:
         assert agent_session.rebuild_llm_context_id() == "ctx_second"
 
     def test_fork_at_event(self):
-        agent_session = AgentSession(agent_name="main", owner_id="parent")
+        agent_session = AgentSession(agent_name="main", owner_path=["parent"])
         agent_session.add_event("user_input", {"text": "first"})
         agent_session.add_event(
             "agent_step",
             {
-                "new_messages": _serialize_messages(
-                    [
-                        ModelRequest(parts=[UserPromptPart(content="first")]),
-                        ModelResponse(parts=[TextPart(content="r1")]),
-                    ]
-                ),
+                "new_messages": [
+                    ModelRequest(parts=[UserPromptPart(content="first")]),
+                    ModelResponse(parts=[TextPart(content="r1")]),
+                ],
             },
         )
         anchor = agent_session.add_event("user_input", {"text": "second"})
 
-        forked = agent_session.fork_at(anchor.id, [])
+        owner = AgentSession(agent_name="parent")
+        forked = agent_session.fork_at(anchor.id, owner)
         # Independent object truncated just before the anchor event
         assert forked is not agent_session
         assert forked.id != agent_session.id
         assert len(forked.events) == 2
         assert forked.forked_from == {"main": 2}
-        # owner info is corrected to the (empty) owner path, not inherited
-        assert forked.owner_id is None
-        assert forked.owner_path == []
+        # owner info is correctly inherited
+        assert forked.owner_path == [owner.id]
         # Original is untouched
         assert len(agent_session.events) == 3
 
@@ -173,22 +163,23 @@ class TestAgentSession:
         assert part.content == "first"
 
     def test_fork_at_none_creates_empty(self):
-        agent_session = AgentSession(agent_name="main", owner_id="parent")
+        agent_session = AgentSession(agent_name="main", owner_path=["parent"])
         agent_session.add_event("user_input", {"text": "first"})
 
-        forked = agent_session.fork_at(None, ["newowner"])
+        owner = AgentSession(agent_name="newowner")
+        forked = agent_session.fork_at(None, owner)
         assert forked.events == []
         assert forked.forked_from is None
         # owner taken from the path; a fresh id is minted (located by nesting)
-        assert forked.owner_id == "newowner"
-        assert forked.owner_path == ["newowner"]
+        assert forked.owner_path == [owner.id]
         assert forked.id != agent_session.id
 
     def test_fork_at_missing_event_raises(self):
         agent_session = AgentSession(agent_name="main")
         agent_session.add_event("user_input", {"text": "first"})
         with pytest.raises(ValueError):
-            agent_session.fork_at("does-not-exist", [])
+            owner = AgentSession(agent_name="owner")
+            agent_session.fork_at("does-not-exist", owner)
 
     def test_non_step_events_ignored_in_rebuild(self):
         agent_session = AgentSession(agent_name="main")
@@ -198,55 +189,46 @@ class TestAgentSession:
         history = agent_session.rebuild_message_history()
         assert len(history) == 0
 
+    def test_last_user_messages_update(self):
+        agent_session = AgentSession(agent_name="main")
+        agent_session.record_user_input("hello", "id1")
+        assert agent_session.metadata["last_user_messages"] == ["hello"]
 
-class TestMessageSerialization:
-    def test_round_trip(self):
-        messages = [
-            ModelRequest(parts=[UserPromptPart(content="hello")]),
-            ModelResponse(parts=[TextPart(content="world")]),
-        ]
-        serialized = _serialize_messages(messages)
-        assert isinstance(serialized, list)
-        assert len(serialized) == 2
+        agent_session.record_user_input("world", "id2")
+        assert agent_session.metadata["last_user_messages"] == ["hello", "world"]
 
-        deserialized = _deserialize_messages(serialized)
-        assert len(deserialized) == 2
-        assert isinstance(deserialized[0], ModelRequest)
-        assert isinstance(deserialized[1], ModelResponse)
-        part0 = deserialized[0].parts[0]
-        assert isinstance(part0, UserPromptPart)
-        assert part0.content == "hello"
-        part1 = deserialized[1].parts[0]
-        assert isinstance(part1, TextPart)
-        assert part1.content == "world"
+        agent_session.record_user_input("third", "id3")
+        assert agent_session.metadata["last_user_messages"] == ["world", "third"]
 
-    def test_empty(self):
-        assert _serialize_messages([]) == []
-        assert _deserialize_messages([]) == []
+        agent_session.record_reset("ctx1")
+        assert "last_user_messages" not in agent_session.metadata
 
 
 class TestFileSessionStore:
     @pytest.fixture
     def store(self, tmp_path):
-        return FileSessionStore(base_dir=tmp_path / "sessions")
+        from arox.core.session import AgentSession, SessionManager
+
+        s = FileSessionStore(base_dir=tmp_path / "sessions")
+        sm = SessionManager(s)
+        sm.register_session_type(AgentSession)
+        return s
 
     @pytest.mark.asyncio
     async def test_save_and_load(self, store):
         # A top-level main-agent session with a subagent session nested under it.
         session = AgentSession(agent_name="coder")
         agent_session = AgentSession(
-            agent_name="sub", owner_id=session.id, owner_path=[session.id]
+            agent_name="sub", owner_path=[session.id]
         )
         agent_session.add_event("user_input", {"text": "hello"})
         agent_session.add_event(
             "agent_step",
             {
-                "new_messages": _serialize_messages(
-                    [
-                        ModelRequest(parts=[UserPromptPart(content="hello")]),
-                        ModelResponse(parts=[TextPart(content="hi there")]),
-                    ]
-                ),
+                "new_messages": [
+                    ModelRequest(parts=[UserPromptPart(content="hello")]),
+                    ModelResponse(parts=[TextPart(content="hi there")]),
+                ],
             },
         )
 
@@ -270,35 +252,41 @@ class TestFileSessionStore:
         assert loaded_agent.events[1].event_type == "agent_step"
 
     @pytest.mark.asyncio
-    async def test_load_rebuilds_children_recursively(self, store):
+    async def test_load_keeps_children_as_ids(self, store):
         # main -> sub -> grandchild nesting, each persisted under its owner.
         main = AgentSession(agent_name="main")
-        sub = AgentSession(agent_name="sub", owner_id=main.id, owner_path=[main.id])
+        sub = AgentSession(agent_name="sub", owner_path=[main.id])
         grand = AgentSession(
-            agent_name="grand", owner_id=sub.id, owner_path=[main.id, sub.id]
+            agent_name="grand", owner_path=[main.id, sub.id]
         )
+        main.children.append(sub.id)
+        sub.children.append(grand.id)
+
         await store.save_session(main)
         await store.save_session(sub)
         await store.save_session(grand)
 
         loaded = await store.load_session(main.id)
         assert loaded is not None
-        # Subsessions are built dynamically on load from the on-disk nesting.
-        assert [c.id for c in loaded.children] == [sub.id]
-        loaded_sub = loaded.children[0]
-        assert [c.id for c in loaded_sub.children] == [grand.id]
+        # Subsessions are referenced by id and loaded explicitly by callers.
+        assert loaded.children == [sub.id]
+        loaded_sub = await store.load_session(sub.id, owner_path=[main.id])
+        assert isinstance(loaded_sub, AgentSession)
+        assert loaded_sub.children == [grand.id]
 
     @pytest.mark.asyncio
-    async def test_children_excluded_from_serialization(self, store):
+    async def test_children_persisted_as_ids(self, store):
         main = AgentSession(agent_name="main")
-        sub = AgentSession(agent_name="sub", owner_id=main.id, owner_path=[main.id])
+        sub = AgentSession(agent_name="sub", owner_path=[main.id])
+        main.children.append(sub.id)
         await store.save_session(main)
         await store.save_session(sub)
 
         import json
 
         raw = json.loads(store._session_meta_path(main.id).read_text())
-        assert "children" not in raw
+        assert "children" in raw
+        assert raw["children"] == [sub.id]
 
     @pytest.mark.asyncio
     async def test_load_nonexistent(self, store):
@@ -361,7 +349,7 @@ class TestFileSessionStore:
     async def test_save_overwrites(self, store):
         session = AgentSession(agent_name="coder")
         agent_s = AgentSession(
-            agent_name="main", owner_id=session.id, owner_path=[session.id]
+            agent_name="main", owner_path=[session.id]
         )
         agent_s.add_event("user_input", {"text": "first"})
         await store.save_session(agent_s)

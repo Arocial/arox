@@ -524,28 +524,33 @@ class VercelStreamServer:
             config_files=self.config_files, cli_args=self.cli_args
         )
 
-        from arox.core.session import FileSessionStore
-        from arox.plugins.session import AgentSession
-        from arox.plugins.slots import SET_SESSION
+        from arox.core.session import AgentSession, FileSessionStore, SessionManager
 
         session_store = FileSessionStore(
             max_age_days=parsed_config.app.session_max_age_days
         )
+        session_manager = SessionManager(session_store)
+        session_manager.register_session_type(AgentSession)
         if request.session_id:
             session = await session_store.load_session(request.session_id)
             if not session or not isinstance(session, AgentSession):
                 raise HTTPException(
                     status_code=404, detail="Session not found or invalid"
                 )
+            parsed_config.app.main_agent = session.agent_name
+            parsed_config.agent[session.agent_name] = session.agent_config
+        else:
+            session = AgentSession.create_initial(
+                parsed_config, workspace=request.workspace
+            )
 
         main_agent = create_main_agent(
             parsed_config,
             io_adapter=self.io_adapter,
+            session=session,
             workspace=request.workspace,
         )
-        # The main agent owns the root session (empty owner path); hand it the
-        # id to resume and the shared store before it starts.
-        await main_agent.invoke_slot(SET_SESSION, request.session_id, [], session_store)
+        main_agent.session.manager = session_manager
 
         run_instance = AgentRun(main_agent=main_agent)
         self.io_adapter.run_instances[main_agent.uuid] = run_instance
@@ -707,8 +712,7 @@ class VercelStreamServer:
 
     async def list_sessions(self):
         from arox.core.config import load_config
-        from arox.core.session import FileSessionStore
-        from arox.plugins.session import AgentSession
+        from arox.core.session import AgentSession, FileSessionStore, SessionManager
 
         # The top-level session is the main agent's own AgentSession; filter to
         # the configured main agent so subagent sessions don't leak in.
@@ -716,6 +720,8 @@ class VercelStreamServer:
         main_agent = parsed_config.app.main_agent
 
         store = FileSessionStore()
+        session_manager = SessionManager(store)
+        session_manager.register_session_type(AgentSession)
         sessions = await store.list_sessions()
         return [
             SessionInfo(

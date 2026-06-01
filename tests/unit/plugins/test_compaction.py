@@ -12,16 +12,16 @@ from pydantic_ai.messages import (
 )
 
 from arox.core.llm_base import LLMBaseAgent
+from arox.core.session import AgentSession, CompactionEvent
 from arox.plugins.compaction import CompactionAgent, CompactionPlugin
-from arox.plugins.session import AgentSession
-from arox.plugins.slots import PERSISTENT_CONTEXT, RECORD_EVENT, SUBAGENTS
+from arox.plugins.slots import PERSISTENT_CONTEXT, SUBAGENTS
 
 
 class _FakeCompactionAgent(CompactionAgent):
     """Passes the ``isinstance(sub, CompactionAgent)`` check without a full init."""
 
     def __init__(self, summary: str = "SUMMARY"):
-        self.name = "compaction"
+        self.session = type("DummySession", (), {"agent_name": "compaction"})()
         self._summary = summary
 
     async def summarize(self, messages, extra_instructions: str = "") -> str:
@@ -46,10 +46,6 @@ class _MockAgent:
         return None
 
     async def invoke_slot(self, slot, *args, **kwargs):
-        if slot is RECORD_EVENT:
-            event_type, data = args
-            self.session.add_event(event_type, data)
-            return []
         if slot is SUBAGENTS:
             return [self._compaction_agent]
         if slot is PERSISTENT_CONTEXT:
@@ -165,20 +161,19 @@ async def test_auto_compaction_records_event_and_stays_consistent():
     # agent_step instead).
     events = agent.session.events
     assert [e.event_type for e in events] == ["compaction"]
-    compaction = events[0]
+    compaction = cast(CompactionEvent, events[0])
     assert agent.llm_context_id != "ctx-original"
-    assert compaction.data["llm_context_id"] == agent.llm_context_id
+    assert compaction.llm_context_id == agent.llm_context_id
 
-    from arox.core.session import _deserialize_messages, _serialize_messages
-
-    assert _deserialize_messages(compaction.data["compacted_messages"]) == out
+    assert compaction.compacted_messages == out
 
     # Since step_boundary=False clears the base history during rebuild, the
     # subsequent agent_step provides the full post-compaction history.
     response = _reply("answer")
+
     agent.session.add_event(
         "agent_step",
-        {"new_messages": _serialize_messages([*out, response])},
+        {"new_messages": [*out, response]},
     )
     rebuilt = agent.session.rebuild_message_history()
     assert rebuilt == [*out, response]
