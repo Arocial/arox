@@ -189,7 +189,6 @@ class SessionPlugin(Plugin):
         self.agent_session = None
         self.session_store: SessionStore | None = None
 
-    @property
     def _store(self) -> SessionStore:
         assert self.session_store is not None
         return self.session_store
@@ -253,9 +252,9 @@ class SessionPlugin(Plugin):
         # Only the root prunes expired sessions; nested subagents share the same
         # store and would just re-scan the same top-level dirs redundantly.
         if not owner_path:
-            await self._store.cleanup()
+            await self._store().cleanup()
         if session_id:
-            loaded = await self._store.load_session(session_id, owner_path)
+            loaded = await self._store().load_session(session_id, owner_path)
             if loaded and isinstance(loaded, AgentSession):
                 self.restore_agent_session(loaded)
                 return
@@ -378,7 +377,7 @@ class SessionPlugin(Plugin):
             last_user_messages = self._last_user_messages()
             if last_user_messages:
                 self.agent_session.metadata["last_user_messages"] = last_user_messages
-            await self._store.save_session(self.agent_session)
+            await self._store().save_session(self.agent_session)
 
     async def handle_fork(self, event: ForkEvent) -> str:
         agent_session = self.agent_session
@@ -397,7 +396,7 @@ class SessionPlugin(Plugin):
         # Branch the session itself: a truncated copy is the new top-level
         # session, rooted (no owner) regardless of where the original sat.
         new_agent_session = agent_session.fork_at(event.event_id, [])
-        await self._store.save_session(new_agent_session)
+        await self._store().save_session(new_agent_session)
 
         # Re-root each subagent (and its nested subagents) under the new branch.
         await self._fork_children(agent_session, [new_agent_session.id])
@@ -413,5 +412,5 @@ class SessionPlugin(Plugin):
         """Persist an empty fork of each subsession beneath ``owner_path``."""
         for sub_session in agent_session.children:
             forked = sub_session.fork_at(None, owner_path)
-            await self._store.save_session(forked)
+            await self._store().save_session(forked)
             await self._fork_children(sub_session, owner_path + [forked.id])
