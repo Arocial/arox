@@ -76,14 +76,15 @@ class FilePlugin(Plugin):
         self.session_files = []
         self.persistent_files = {}
 
-        # Auto read agents.md or agent.md if present (case-insensitive)
-        for item in self.workspace.iterdir():
-            if item.is_file() and item.name.lower() in ("agents.md", "agent.md"):
+        # Auto read AGENTS.override.md or AGENTS.md if present
+        for name in ("AGENTS.override.md", "AGENTS.md"):
+            item = self.workspace / name
+            if item.is_file():
                 try:
-                    content = "".join(self._read_text(item.name))
-                    self._pending_text_files[item.name] = content
-                    self.persistent_files[item.name] = content
-                    self._add_to_session(item.name)
+                    content = "".join(self._read_text(name))
+                    self._pending_text_files[name] = content
+                    self.persistent_files[name] = content
+                    self._add_to_session(name)
                     break
                 except Exception:
                     pass
