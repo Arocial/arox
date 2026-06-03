@@ -92,9 +92,6 @@ async def test_foreground_returns_output_and_streams(plugin):
     )
     assert "hello" in result
     assert "world" in result
-    streamed = "\n".join(plugin.agent.agent_io.messages)
-    assert "Print greeting" in streamed
-    assert "hello" in streamed and "world" in streamed
     # Registry should be cleaned up for normal foreground completion.
     assert plugin._background == {}
 
@@ -182,8 +179,7 @@ async def test_foreground_timeout_promotes_to_background(plugin):
     bg = plugin._background[task_id]
     # Process should still be alive (not killed).
     assert bg.process.returncode is None
-    # Streaming writer cleared; finish notification flag flipped on.
-    assert bg.stream_writer is None
+    # Finish notification flag flipped on.
     assert bg.notify_on_finish is True
 
 

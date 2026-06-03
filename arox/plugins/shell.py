@@ -6,7 +6,7 @@ import sys
 import time
 import uuid
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from itertools import chain
 
@@ -65,8 +65,6 @@ class BackgroundShell:
     finished_at: float | None = None
     drain_task: asyncio.Task | None = None
     poll_count: int = 0
-    stream_writer: Callable[[str], Awaitable[None]] | None = None
-    stream_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     notify_on_finish: bool = False
 
     def elapsed(self) -> float:
@@ -208,13 +206,7 @@ class ShellPlugin(Plugin):
                 text = line.decode(errors="replace").rstrip("\r\n")
                 display = f"[stderr] {text}" if is_err else text
                 bg.append_line(display)
-                async with bg.stream_lock:
-                    writer = bg.stream_writer
-                    if writer is not None:
-                        try:
-                            await writer(f"{display}\n")
-                        except Exception:
-                            pass
+                logger.info("[%s] %s", bg.task_id, display)
 
         try:
             await asyncio.gather(
@@ -343,8 +335,7 @@ class ShellPlugin(Plugin):
                 f'- Terminate:   kill_shell(task_id="{bg.task_id}")'
             )
 
-        # Foreground: stream output live as a single TextPart (header + each
-        # line as a delta), promote to background on timeout.
+        # Foreground: wait for completion or promote to background on timeout.
         bg = self._allocate_bg(
             process,
             command,
@@ -354,16 +345,10 @@ class ShellPlugin(Plugin):
         drain = bg.drain_task
         assert drain is not None
         timed_out = False
-        async with self.agent.agent_io.text_stream() as write:
-            async with bg.stream_lock:
-                bg.stream_writer = write
-            await write(f"{description}\n")
-            try:
-                await asyncio.wait_for(asyncio.shield(drain), timeout=timeout)
-            except TimeoutError:
-                timed_out = True
-            async with bg.stream_lock:
-                bg.stream_writer = None
+        try:
+            await asyncio.wait_for(asyncio.shield(drain), timeout=timeout)
+        except TimeoutError:
+            timed_out = True
 
         if timed_out:
             bg.notify_on_finish = True

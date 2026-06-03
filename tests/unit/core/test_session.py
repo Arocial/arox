@@ -218,9 +218,7 @@ class TestFileSessionStore:
     async def test_save_and_load(self, store):
         # A top-level main-agent session with a subagent session nested under it.
         session = AgentSession(agent_name="coder")
-        agent_session = AgentSession(
-            agent_name="sub", owner_path=[session.id]
-        )
+        agent_session = AgentSession(agent_name="sub", owner_path=[session.id])
         agent_session.add_event("user_input", {"text": "hello"})
         agent_session.add_event(
             "agent_step",
@@ -256,9 +254,7 @@ class TestFileSessionStore:
         # main -> sub -> grandchild nesting, each persisted under its owner.
         main = AgentSession(agent_name="main")
         sub = AgentSession(agent_name="sub", owner_path=[main.id])
-        grand = AgentSession(
-            agent_name="grand", owner_path=[main.id, sub.id]
-        )
+        grand = AgentSession(agent_name="grand", owner_path=[main.id, sub.id])
         main.children.append(sub.id)
         sub.children.append(grand.id)
 
@@ -348,9 +344,7 @@ class TestFileSessionStore:
     @pytest.mark.asyncio
     async def test_save_overwrites(self, store):
         session = AgentSession(agent_name="coder")
-        agent_s = AgentSession(
-            agent_name="main", owner_path=[session.id]
-        )
+        agent_s = AgentSession(agent_name="main", owner_path=[session.id])
         agent_s.add_event("user_input", {"text": "first"})
         await store.save_session(agent_s)
 

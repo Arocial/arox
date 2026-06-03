@@ -339,8 +339,6 @@ class LLMBaseAgent(IOHost):
                     results.append(result)
                 return results
 
-
-
     def _restore_agent_session(self, agent_session: AgentSession) -> None:
         """Apply a loaded session back onto the live agent runtime."""
         self.message_history = agent_session.rebuild_message_history()
