@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 HEAD_BUFFER_LINES = 1000
 TAIL_BUFFER_LINES = 4000
 KILL_GRACE_SECONDS = 5
-POLL_BASE_DELAY = 20
+POLL_BASE_DELAY = 5
 POLL_MAX_DELAY = 300
 MAX_TIMEOUT_SECONDS = 600
 MAX_RENDER_BYTES = 100 * 1024
@@ -127,7 +127,7 @@ class ShellPlugin(Plugin):
         return await asyncio.create_subprocess_exec(
             *cmd_args,
             cwd=str(self.workspace),
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
@@ -462,6 +462,33 @@ class ShellPlugin(Plugin):
                 f"{tail_text}"
             )
         return f"{header}\n{body}"
+
+    @tool()
+    async def shell_input(self, task_id: str, text: str, description: str) -> str:
+        """Send text to the stdin of a running background task.
+
+        Args:
+            task_id: The id of the running task.
+            text: The text to send (e.g., "y\\n").
+            description: Why you are sending this input.
+        """
+        logger.info("Sending input to task %s (%s): %r", task_id, description, text)
+        bg = self._background.get(task_id)
+        if bg is None:
+            return f"Unknown task_id: {task_id}"
+        if bg.exit_code is not None:
+            return f"Task {task_id} has already exited with code {bg.exit_code}."
+
+        if bg.process.stdin is None:
+            return f"Task {task_id} does not support stdin."
+
+        try:
+            bg.process.stdin.write(text.encode())
+            await bg.process.stdin.drain()
+            return f"Sent input to task {task_id}."
+        except Exception as e:
+            logger.exception("Failed to send input to task %s", task_id)
+            return f"Failed to send input: {e!s}"
 
     @tool()
     async def kill_shell(self, task_id: str, description: str) -> str:
