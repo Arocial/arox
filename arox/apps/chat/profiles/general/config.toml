@@ -23,7 +23,6 @@ plugins = [
     "shell",
     "file",
     "compaction",
-    "session",
     "subagent",
 ]
 

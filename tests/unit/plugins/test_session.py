@@ -4,7 +4,8 @@ import pytest
 
 from arox.core.completion import CompletionRequest
 from arox.core.config import AgentConfig
-from arox.plugins.session import AgentSession, ForkEvent, SessionPlugin
+from arox.core.session import AgentSession
+from arox.plugins.core import CorePlugin, ForkEvent
 
 
 def _make_plugin(main_agent_session: AgentSession):
@@ -25,7 +26,7 @@ def _make_plugin(main_agent_session: AgentSession):
             return []
 
     agent = MockAgent()
-    plugin = SessionPlugin(agent)
+    plugin = CorePlugin(agent)
     agent.session = main_agent_session
     agent.owner = AgentSession(agent_name="parent")
     agent.plugins.append(plugin)

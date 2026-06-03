@@ -7,8 +7,8 @@ import pytest
 import arox.plugins.subagent as subagent_module
 from arox.core.config import AgentConfig, Config
 from arox.core.llm_base import DelegatableAgent
-from arox.core.session import FileSessionStore
-from arox.plugins.session import AgentSession, SessionPlugin
+from arox.core.session import AgentSession, FileSessionStore
+from arox.plugins.core import CorePlugin
 from arox.plugins.subagent import (
     SubagentEvent,
     SubagentPlugin,
@@ -29,7 +29,7 @@ class _FakeDynamicAgent(DelegatableAgent):
             session,
             workspace,
         )
-        self.plugins = [SessionPlugin(self)]
+        self.plugins = [CorePlugin(self)]
 
     async def __aenter__(self):
         # Minimal setup for testing subagent lifecycle

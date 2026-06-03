@@ -348,7 +348,9 @@ class AgentSession(Session):
             )
         )
 
-    def fork_at(self, event_id: str | None, owner: AgentSession | None) -> AgentSession:
+    async def fork_at(
+        self, event_id: str | None, owner: "AgentSession | None"
+    ) -> "AgentSession":
         """Branch a new session off this one
 
         With ``event_id`` the new session is a truncated copy holding the events
@@ -383,6 +385,26 @@ class AgentSession(Session):
         new_session.owner = owner
         if owner:
             owner.children.append(new_session.id)
+
+        for child_id in self.children:
+            try:
+                if self.manager:
+                    sub_session = await self.manager.load_session(child_id, self)
+                else:
+                    logger.warning(
+                        f"No session manager to load child session {child_id}"
+                    )
+                    continue
+            except Exception:
+                logger.warning(
+                    f"Failed to load child session {child_id}", exc_info=True
+                )
+                continue
+
+            if sub_session:
+                forked_child = await sub_session.fork_at(None, new_session)
+                await forked_child.save()
+
         return new_session
 
 

@@ -288,7 +288,7 @@ async def test_kill_shell_terminates_running_background(plugin):
 async def test_shell_input(plugin):
     # Use a command that reads from stdin
     py = sys.executable
-    cmd = f'{py} -c "import sys; line = sys.stdin.readline(); print(f\'GOT:{{line.strip()}}\', flush=True)"'
+    cmd = f"{py} -c \"import sys; line = sys.stdin.readline(); print(f'GOT:{{line.strip()}}', flush=True)\""
     start = await plugin.shell(
         command=cmd,
         description="Read from stdin",
@@ -298,12 +298,14 @@ async def test_shell_input(plugin):
     bg = plugin._background[task_id]
 
     # Send input
-    res = await plugin.shell_input(task_id=task_id, text="hello\n", description="say hello")
+    res = await plugin.shell_input(
+        task_id=task_id, text="hello\n", description="say hello"
+    )
     assert "Sent input" in res
 
     # Wait for completion
     await asyncio.wait_for(bg.drain_task, timeout=5)
-    
+
     # Check output
     out = await plugin.shell_state(task_id=task_id, description="check output")
     assert "GOT:hello" in out

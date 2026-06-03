@@ -9,9 +9,9 @@ from pydantic_ai.messages import (
 )
 
 from arox.core.session import (
+    AgentSession,
     FileSessionStore,
 )
-from arox.plugins.session import AgentSession
 
 
 class TestAgentSession:
@@ -130,7 +130,8 @@ class TestAgentSession:
         )
         assert agent_session.rebuild_llm_context_id() == "ctx_second"
 
-    def test_fork_at_event(self):
+    @pytest.mark.asyncio
+    async def test_fork_at_event(self):
         agent_session = AgentSession(agent_name="main", owner_path=["parent"])
         agent_session.add_event("user_input", {"text": "first"})
         agent_session.add_event(
@@ -145,7 +146,7 @@ class TestAgentSession:
         anchor = agent_session.add_event("user_input", {"text": "second"})
 
         owner = AgentSession(agent_name="parent")
-        forked = agent_session.fork_at(anchor.id, owner)
+        forked = await agent_session.fork_at(anchor.id, owner)
         # Independent object truncated just before the anchor event
         assert forked is not agent_session
         assert forked.id != agent_session.id
@@ -162,24 +163,26 @@ class TestAgentSession:
         assert isinstance(part, UserPromptPart)
         assert part.content == "first"
 
-    def test_fork_at_none_creates_empty(self):
+    @pytest.mark.asyncio
+    async def test_fork_at_none_creates_empty(self):
         agent_session = AgentSession(agent_name="main", owner_path=["parent"])
         agent_session.add_event("user_input", {"text": "first"})
 
         owner = AgentSession(agent_name="newowner")
-        forked = agent_session.fork_at(None, owner)
+        forked = await agent_session.fork_at(None, owner)
         assert forked.events == []
         assert forked.forked_from is None
         # owner taken from the path; a fresh id is minted (located by nesting)
         assert forked.owner_path == [owner.id]
         assert forked.id != agent_session.id
 
-    def test_fork_at_missing_event_raises(self):
+    @pytest.mark.asyncio
+    async def test_fork_at_missing_event_raises(self):
         agent_session = AgentSession(agent_name="main")
         agent_session.add_event("user_input", {"text": "first"})
         with pytest.raises(ValueError):
             owner = AgentSession(agent_name="owner")
-            agent_session.fork_at("does-not-exist", owner)
+            await agent_session.fork_at("does-not-exist", owner)
 
     def test_non_step_events_ignored_in_rebuild(self):
         agent_session = AgentSession(agent_name="main")

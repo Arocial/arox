@@ -20,7 +20,7 @@ Session handling is a core capability provided by `arox/core/session.py`:
 
 - **`AgentSession`** is event-sourced: instead of storing a static message list, it stores a sequence of `SessionEvent`s (`agent_step`, `compaction`, `reset`, …) and rebuilds `message_history` by replay. The main agent's `AgentSession` is the top-level session for a run (the one addressed by `session_id`); subagents keep their own `AgentSession`s nested beneath it. Every `LLMBaseAgent` is constructed with an `AgentSession`.
 - **`llm_context_id`** is a UUID tracking the current LLM context window, passed to providers (e.g. via headers) to leverage server-side caching. A `reset` or `compaction` event rolls it forward, signaling a new context.
-- **`SessionManager`** and **`SessionStore`** (default `FileSessionStore`) persist sessions as JSON with age-based cleanup. Sessions are loaded and provided to agents upon initialization, and saved on exit; resume by passing `session_id` to the App. The `SessionPlugin` now focuses on user commands like `/fork`.
+- **`SessionManager`** and **`SessionStore`** (default `FileSessionStore`) persist sessions as JSON with age-based cleanup. Sessions are loaded and provided to agents upon initialization, and saved on exit; resume by passing `session_id` to the App. The `CorePlugin` now focuses on user commands like `/fork`.
 
 ## IO system
 

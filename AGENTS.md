@@ -25,7 +25,7 @@ Agent types and which agent to instantiate come from config (`arox/core/config.p
 **Session management** is integrated directly into `LLMBaseAgent` via `arox/core/session.py`:
 - Every agent is instantiated with an `AgentSession` (tracking message history and metadata). The main agent's `AgentSession` is the top-level session for a run; subagents keep their own `AgentSession`s nested beneath it.
 - `SessionManager` coordinates with `SessionStore` (default `FileSessionStore`) to persist sessions to disk with an age-based cleanup.
-- Sessions are explicitly passed as constructor dependencies. Resuming is done via the `session_id` passed to the App. The `SessionPlugin` now primarily provides the `/fork` command.
+- Sessions are explicitly passed as constructor dependencies. Resuming is done via the `session_id` passed to the App. The `CorePlugin` now primarily provides the `/fork` command.
 
 ### IO system
 
