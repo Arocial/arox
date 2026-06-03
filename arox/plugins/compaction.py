@@ -59,6 +59,8 @@ class CompactionPlugin(Plugin):
     def __init__(self, agent: LLMBaseAgent):
         super().__init__(agent)
         self._last_total_tokens = 0
+        self._cached_threshold_resolved = False
+        self._cached_threshold_value = None
 
     def _resolve_token_threshold(self) -> int | None:
         """Resolve effective token threshold for the agent's current model.
@@ -67,6 +69,9 @@ class CompactionPlugin(Plugin):
         `compaction_threshold`. Float values in (0, 1] are treated as a ratio
         of `ModelSettings.max_tokens`; otherwise the value is absolute.
         """
+        if self._cached_threshold_resolved:
+            return self._cached_threshold_value
+
         agent = self.agent
         model_cfg = getattr(agent, "model_config", None)
         threshold: int | float | None = None
@@ -74,19 +79,21 @@ class CompactionPlugin(Plugin):
             threshold = model_cfg.compaction_threshold
         else:
             threshold = getattr(agent.parsed_config, "compaction_threshold", None)
-        if threshold is None:
-            return None
-        if isinstance(threshold, float) and 0 < threshold <= 1:
-            max_tokens = (agent.model_params or {}).get("max_tokens")
-            if not max_tokens:
-                logger.debug(
-                    "Compaction threshold %s is a ratio but model has no "
-                    "max_tokens configured; skipping auto-compaction.",
-                    threshold,
-                )
-                return None
-            return int(threshold * max_tokens)
-        return int(threshold)
+
+        resolved_val = None
+        if threshold is not None:
+            if isinstance(threshold, float) and 0 < threshold <= 1:
+                max_tokens = (agent.model_params or {}).get("max_tokens")
+                if max_tokens:
+                    resolved_val = int(threshold * max_tokens)
+            else:
+                resolved_val = int(threshold)
+
+        logger.info("Resolved compaction token threshold: %s", resolved_val)
+
+        self._cached_threshold_value = resolved_val
+        self._cached_threshold_resolved = True
+        return resolved_val
 
     def commands(self):
         return [CommandSpec(CompactEvent, self.handle_compact)]
