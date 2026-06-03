@@ -12,4 +12,5 @@ def mock_home_env(monkeypatch, tmp_path):
 
     monkeypatch.setenv("HOME", str(mock_home))
     monkeypatch.setenv("USERPROFILE", str(mock_home))
+    monkeypatch.setenv("AROX_REPLACE_DEBUG_DIR", "")
     monkeypatch.chdir(mock_home)
