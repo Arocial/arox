@@ -348,15 +348,15 @@ class AgentSession(Session):
             )
         )
 
-    async def fork_at(
-        self, event_id: str | None, owner: "AgentSession | None"
-    ) -> "AgentSession":
+    async def fork_at(self, event_id: str | None) -> "AgentSession":
         """Branch a new session off this one
 
         With ``event_id`` the new session is a truncated copy holding the events
         up to (but excluding) that anchor, tagged via ``forked_from``. With
         ``event_id`` set to ``None`` it starts empty and unforked.
         """
+        owner = self.owner
+
         forked_from: dict[str, int] | None
         if event_id is None:
             events = []

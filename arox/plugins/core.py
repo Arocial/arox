@@ -130,9 +130,7 @@ class CorePlugin(Plugin):
             return "Cannot fork: specify a user turn."
 
         try:
-            new_agent_session = await agent_session.fork_at(
-                event.event_id, agent_session.owner
-            )
+            new_agent_session = await agent_session.fork_at(event.event_id)
         except ValueError as e:
             return str(e)
 

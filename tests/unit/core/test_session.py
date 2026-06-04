@@ -145,15 +145,15 @@ class TestAgentSession:
         )
         anchor = agent_session.add_event("user_input", {"text": "second"})
 
-        owner = AgentSession(agent_name="parent")
-        forked = await agent_session.fork_at(anchor.id, owner)
+        agent_session.owner = AgentSession(agent_name="parent")
+        forked = await agent_session.fork_at(anchor.id)
         # Independent object truncated just before the anchor event
         assert forked is not agent_session
         assert forked.id != agent_session.id
         assert len(forked.events) == 2
         assert forked.forked_from == {"main": 2}
         # owner info is correctly inherited
-        assert forked.owner_path == [owner.id]
+        assert forked.owner_path == [agent_session.owner.id]
         # Original is untouched
         assert len(agent_session.events) == 3
 
@@ -166,14 +166,14 @@ class TestAgentSession:
     @pytest.mark.asyncio
     async def test_fork_at_none_creates_empty(self):
         agent_session = AgentSession(agent_name="main", owner_path=["parent"])
+        agent_session.owner = AgentSession(agent_name="newowner")
         agent_session.add_event("user_input", {"text": "first"})
 
-        owner = AgentSession(agent_name="newowner")
-        forked = await agent_session.fork_at(None, owner)
+        forked = await agent_session.fork_at(None)
         assert forked.events == []
         assert forked.forked_from is None
         # owner taken from the path; a fresh id is minted (located by nesting)
-        assert forked.owner_path == [owner.id]
+        assert forked.owner_path == [agent_session.owner.id]
         assert forked.id != agent_session.id
 
     @pytest.mark.asyncio
@@ -181,8 +181,21 @@ class TestAgentSession:
         agent_session = AgentSession(agent_name="main")
         agent_session.add_event("user_input", {"text": "first"})
         with pytest.raises(ValueError):
-            owner = AgentSession(agent_name="owner")
-            await agent_session.fork_at("does-not-exist", owner)
+            agent_session.owner = AgentSession(agent_name="owner")
+            await agent_session.fork_at("does-not-exist")
+
+    @pytest.mark.asyncio
+    async def test_fork_at_inherits_owner(self):
+        owner = AgentSession(agent_name="parent")
+        agent_session = AgentSession(agent_name="main")
+        agent_session.owner = owner
+        agent_session.add_event("user_input", {"text": "first"})
+        anchor = agent_session.add_event("user_input", {"text": "second"})
+
+        forked = await agent_session.fork_at(anchor.id)
+        assert forked.owner is owner
+        assert forked.owner_path == [owner.id]
+        assert forked.id in owner.children
 
     def test_non_step_events_ignored_in_rebuild(self):
         agent_session = AgentSession(agent_name="main")
