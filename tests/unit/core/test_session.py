@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic_ai.messages import (
+    ModelMessage,
     ModelRequest,
     ModelResponse,
     TextPart,
@@ -10,14 +11,20 @@ from pydantic_ai.messages import (
 
 from arox.core.session import (
     AgentSession,
+    CommandEvent,
+    CompactionEvent,
+    ErrorEvent,
     FileSessionStore,
+    ResetEvent,
+    StepEvent,
+    UserInputEvent,
 )
 
 
 class TestAgentSession:
     def test_add_event(self):
         agent_session = AgentSession(agent_name="main")
-        event = agent_session.add_event("user_input", {"text": "hello"})
+        event = agent_session.add_event(UserInputEvent(text="hello"))
         assert event.event_type == "user_input"
         assert len(agent_session.events) == 1
 
@@ -36,14 +43,8 @@ class TestAgentSession:
             ModelRequest(parts=[UserPromptPart(content="bye")]),
             ModelResponse(parts=[TextPart(content="goodbye")]),
         ]
-        agent_session.add_event(
-            "agent_step",
-            {"new_messages": messages_step1},
-        )
-        agent_session.add_event(
-            "agent_step",
-            {"new_messages": messages_step2},
-        )
+        agent_session.add_event(StepEvent(new_messages=messages_step1))
+        agent_session.add_event(StepEvent(new_messages=messages_step2))
 
         history = agent_session.rebuild_message_history()
         assert len(history) == 4
@@ -56,44 +57,40 @@ class TestAgentSession:
         agent_session = AgentSession(agent_name="main")
         # Step 1
         agent_session.add_event(
-            "agent_step",
-            {
-                "new_messages": [
+            StepEvent(
+                new_messages=[
                     ModelRequest(parts=[UserPromptPart(content="old msg 1")]),
                     ModelResponse(parts=[TextPart(content="old reply 1")]),
-                ],
-            },
+                ]
+            )
         )
         # Step 2
         agent_session.add_event(
-            "agent_step",
-            {
-                "new_messages": [
+            StepEvent(
+                new_messages=[
                     ModelRequest(parts=[UserPromptPart(content="old msg 2")]),
                     ModelResponse(parts=[TextPart(content="old reply 2")]),
-                ],
-            },
+                ]
+            )
         )
         # Compaction replaces all history
-        compacted = [
+        compacted: list[ModelMessage] = [
             ModelRequest(parts=[UserPromptPart(content="summary of conversation")])
         ]
         agent_session.add_event(
-            "compaction",
-            {
-                "step_boundary": True,
-                "compacted_messages": compacted,
-            },
+            CompactionEvent(
+                step_boundary=True,
+                compacted_messages=compacted,
+            )
         )
         # Step 3 after compaction
         agent_session.add_event(
-            "agent_step",
-            {
-                "new_messages": [
+            StepEvent(
+                new_messages=[
                     ModelRequest(parts=[UserPromptPart(content="new msg")]),
                     ModelResponse(parts=[TextPart(content="new reply")]),
-                ],
-            },
+                ]
+            )
         )
 
         history = agent_session.rebuild_message_history()
@@ -113,37 +110,31 @@ class TestAgentSession:
     def test_rebuild_llm_context_id_from_compaction(self):
         agent_session = AgentSession(agent_name="main")
         agent_session.add_event(
-            "compaction",
-            {"compacted_messages": [], "llm_context_id": "ctx_abc123"},
+            CompactionEvent(compacted_messages=[], llm_context_id="ctx_abc123")
         )
         assert agent_session.rebuild_llm_context_id() == "ctx_abc123"
 
     def test_rebuild_llm_context_id_from_reset(self):
         agent_session = AgentSession(agent_name="main")
         agent_session.add_event(
-            "compaction",
-            {"compacted_messages": [], "llm_context_id": "ctx_first"},
+            CompactionEvent(compacted_messages=[], llm_context_id="ctx_first")
         )
-        agent_session.add_event(
-            "reset",
-            {"llm_context_id": "ctx_second"},
-        )
+        agent_session.add_event(ResetEvent(llm_context_id="ctx_second"))
         assert agent_session.rebuild_llm_context_id() == "ctx_second"
 
     @pytest.mark.asyncio
     async def test_fork_at_event(self):
         agent_session = AgentSession(agent_name="main", owner_path=["parent"])
-        agent_session.add_event("user_input", {"text": "first"})
+        agent_session.add_event(UserInputEvent(text="first"))
         agent_session.add_event(
-            "agent_step",
-            {
-                "new_messages": [
+            StepEvent(
+                new_messages=[
                     ModelRequest(parts=[UserPromptPart(content="first")]),
                     ModelResponse(parts=[TextPart(content="r1")]),
-                ],
-            },
+                ]
+            )
         )
-        anchor = agent_session.add_event("user_input", {"text": "second"})
+        anchor = agent_session.add_event(UserInputEvent(text="second"))
 
         agent_session.owner = AgentSession(agent_name="parent")
         forked = await agent_session.fork_at(anchor.id)
@@ -167,7 +158,7 @@ class TestAgentSession:
     async def test_fork_at_none_creates_empty(self):
         agent_session = AgentSession(agent_name="main", owner_path=["parent"])
         agent_session.owner = AgentSession(agent_name="newowner")
-        agent_session.add_event("user_input", {"text": "first"})
+        agent_session.add_event(UserInputEvent(text="first"))
 
         forked = await agent_session.fork_at(None)
         assert forked.events == []
@@ -179,7 +170,7 @@ class TestAgentSession:
     @pytest.mark.asyncio
     async def test_fork_at_missing_event_raises(self):
         agent_session = AgentSession(agent_name="main")
-        agent_session.add_event("user_input", {"text": "first"})
+        agent_session.add_event(UserInputEvent(text="first"))
         with pytest.raises(ValueError):
             agent_session.owner = AgentSession(agent_name="owner")
             await agent_session.fork_at("does-not-exist")
@@ -189,8 +180,8 @@ class TestAgentSession:
         owner = AgentSession(agent_name="parent")
         agent_session = AgentSession(agent_name="main")
         agent_session.owner = owner
-        agent_session.add_event("user_input", {"text": "first"})
-        anchor = agent_session.add_event("user_input", {"text": "second"})
+        agent_session.add_event(UserInputEvent(text="first"))
+        anchor = agent_session.add_event(UserInputEvent(text="second"))
 
         forked = await agent_session.fork_at(anchor.id)
         assert forked.owner is owner
@@ -199,9 +190,9 @@ class TestAgentSession:
 
     def test_non_step_events_ignored_in_rebuild(self):
         agent_session = AgentSession(agent_name="main")
-        agent_session.add_event("user_input", {"text": "hello"})
-        agent_session.add_event("command", {"command": "/reset"})
-        agent_session.add_event("error", {"error": "something"})
+        agent_session.add_event(UserInputEvent(text="hello"))
+        agent_session.add_event(CommandEvent(command="/reset"))
+        agent_session.add_event(ErrorEvent(error="something"))
         history = agent_session.rebuild_message_history()
         assert len(history) == 0
 
@@ -235,15 +226,14 @@ class TestFileSessionStore:
         # A top-level main-agent session with a subagent session nested under it.
         session = AgentSession(agent_name="coder")
         agent_session = AgentSession(agent_name="sub", owner_path=[session.id])
-        agent_session.add_event("user_input", {"text": "hello"})
+        agent_session.add_event(UserInputEvent(text="hello"))
         agent_session.add_event(
-            "agent_step",
-            {
-                "new_messages": [
+            StepEvent(
+                new_messages=[
                     ModelRequest(parts=[UserPromptPart(content="hello")]),
                     ModelResponse(parts=[TextPart(content="hi there")]),
-                ],
-            },
+                ]
+            )
         )
 
         await store.save_session(session)
@@ -361,10 +351,10 @@ class TestFileSessionStore:
     async def test_save_overwrites(self, store):
         session = AgentSession(agent_name="coder")
         agent_s = AgentSession(agent_name="main", owner_path=[session.id])
-        agent_s.add_event("user_input", {"text": "first"})
+        agent_s.add_event(UserInputEvent(text="first"))
         await store.save_session(agent_s)
 
-        agent_s.add_event("user_input", {"text": "second"})
+        agent_s.add_event(UserInputEvent(text="second"))
         await store.save_session(agent_s)
 
         loaded = await store.load_session(agent_s.id, owner_path=[session.id])

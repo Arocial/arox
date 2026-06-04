@@ -12,7 +12,7 @@ from pydantic_ai.messages import (
 )
 
 from arox.core.llm_base import LLMBaseAgent
-from arox.core.session import AgentSession, CompactionEvent
+from arox.core.session import AgentSession, CompactionEvent, StepEvent
 from arox.plugins.compaction import CompactionAgent, CompactionPlugin
 from arox.plugins.slots import PERSISTENT_CONTEXT, SUBAGENTS
 
@@ -171,10 +171,7 @@ async def test_auto_compaction_records_event_and_stays_consistent():
     # subsequent agent_step provides the full post-compaction history.
     response = _reply("answer")
 
-    agent.session.add_event(
-        "agent_step",
-        {"new_messages": [*out, response]},
-    )
+    agent.session.add_event(StepEvent(new_messages=[*out, response]))
     rebuilt = agent.session.rebuild_message_history()
     assert rebuilt == [*out, response]
 

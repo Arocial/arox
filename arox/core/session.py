@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, Literal, Protocol, Union, cast
+from typing import Annotated, Any, Literal, Protocol, Union
 
 from pydantic import BaseModel, Field, PrivateAttr, model_validator
 from pydantic_ai.messages import (
@@ -153,47 +153,11 @@ class Session(BaseModel):
 
     def add_event(
         self,
-        event_or_type: AnySessionEvent | str,
-        data: dict[str, Any] | None = None,
-        *,
-        id: str | None = None,
+        event: AnySessionEvent,
     ) -> AnySessionEvent:
-        if isinstance(event_or_type, str):
-            # Backward compatibility
-            event_type = event_or_type
-            kwargs = {
-                "event_type": event_type,
-                "agent_name": getattr(self, "agent_name", ""),
-            }
-            if id:
-                kwargs["id"] = id
-            if data:
-                kwargs.update(data)
-
-            # Map to specific class if possible
-            event_classes = {
-                "reset": ResetEvent,
-                "agent_step": StepEvent,
-                "command": CommandEvent,
-                "user_input": UserInputEvent,
-                "error": ErrorEvent,
-                "subagent_call": SubagentCallEvent,
-                "subagent_created": SubagentCreatedEvent,
-                "subagent_deleted": SubagentDeletedEvent,
-                "compaction": CompactionEvent,
-            }
-            cls = event_classes.get(event_type, SessionEvent)
-            # If it's SessionEvent, we need to handle it specially since it's not in AnySessionEvent union
-            # but for the sake of this method returning AnySessionEvent, we'll just validate it.
-            # Pydantic might complain if we return SessionEvent where AnySessionEvent is expected
-            # but at runtime it should be fine for the list.
-            event = cls.model_validate(kwargs)
-        else:
-            event = event_or_type
-
-        self.events.append(cast(AnySessionEvent, event))
+        self.events.append(event)
         self._schedule_save()
-        return cast(AnySessionEvent, event)
+        return event
 
     async def build_instance(self, session_manager: SessionManager, **kwargs) -> Any:
         raise NotImplementedError

@@ -4,7 +4,7 @@ import pytest
 
 from arox.core.completion import CompletionRequest
 from arox.core.config import AgentConfig
-from arox.core.session import AgentSession
+from arox.core.session import AgentSession, StepEvent, UserInputEvent
 from arox.plugins.core import CorePlugin, ForkEvent
 
 
@@ -52,9 +52,9 @@ def test_fork_event_parsing():
 @pytest.mark.asyncio
 async def test_handle_fork_success():
     ag = AgentSession(agent_name="main")
-    e0 = ag.add_event("user_input", {"text": "hi"})
-    ag.add_event("agent_step", {})
-    e2 = ag.add_event("user_input", {"text": "again"})
+    e0 = ag.add_event(UserInputEvent(text="hi"))
+    ag.add_event(StepEvent())
+    e2 = ag.add_event(UserInputEvent(text="again"))
     plugin = _make_plugin(ag)
 
     msg = await plugin.handle_fork(ForkEvent(event_id=e2.id))
@@ -67,8 +67,8 @@ async def test_handle_fork_success():
 @pytest.mark.asyncio
 async def test_handle_fork_anchor_check():
     ag = AgentSession(agent_name="main")
-    e0 = ag.add_event("user_input", {"text": "hi"})
-    e1 = ag.add_event("agent_step", {})
+    e0 = ag.add_event(UserInputEvent(text="hi"))
+    e1 = ag.add_event(StepEvent())
     plugin = _make_plugin(ag)
 
     # A user_input event is a valid anchor → succeeds.
@@ -83,7 +83,7 @@ async def test_handle_fork_anchor_check():
 @pytest.mark.asyncio
 async def test_handle_fork_missing_or_unknown():
     ag = AgentSession(agent_name="main")
-    ag.add_event("user_input", {"text": "hi"})
+    ag.add_event(UserInputEvent(text="hi"))
     plugin = _make_plugin(ag)
 
     # No event id supplied.
@@ -98,9 +98,9 @@ async def test_handle_fork_missing_or_unknown():
 @pytest.mark.asyncio
 async def test_complete_fork_lists_user_turns_newest_first():
     ag = AgentSession(agent_name="main")
-    e0 = ag.add_event("user_input", {"text": "first"})
-    ag.add_event("agent_step", {})
-    e2 = ag.add_event("user_input", {"text": "second"})
+    e0 = ag.add_event(UserInputEvent(text="first"))
+    ag.add_event(StepEvent())
+    e2 = ag.add_event(UserInputEvent(text="second"))
     plugin = _make_plugin(ag)
     # Candidates are now derived from the session's user_input events directly.
 
