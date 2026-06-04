@@ -65,8 +65,6 @@ from arox.core.skills import build_skill_catalog, discover_skills
 from arox.core.slot import ResultAggregator, Slot
 from arox.plugins.slots import (
     AGENT_RESET,
-    AGENT_STEP,
-    AGENT_STEP_FAILURE,
 )
 
 logger = logging.getLogger(__name__)
@@ -592,7 +590,7 @@ class LLMBaseAgent(IOHost):
             ]
 
         async def _commit_failure(messages: list[ModelMessage]) -> None:
-            await self.invoke_slot(AGENT_STEP_FAILURE, messages)
+
             prev_len = len(self.message_history)
             new_messages = messages[prev_len:]
             if new_messages:
@@ -605,7 +603,7 @@ class LLMBaseAgent(IOHost):
             on_failure=_commit_failure,
         )
         self.message_history = result.all_messages()
-        await self.invoke_slot(AGENT_STEP, result)
+
         usage = result.usage
         self.session.record_step(
             result.new_messages(),

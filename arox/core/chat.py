@@ -10,7 +10,6 @@ from pydantic_ai.tools import DeferredToolRequests
 from arox.core.io import ReplyEvent, RequestEvent
 from arox.core.llm_base import DelegatableAgent, MainAgent, UserInput
 from arox.core.session import AgentSession
-from arox.plugins.slots import AGENT_ERROR
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +154,7 @@ class ChatAgent(MainAgent, DelegatableAgent):
 
             except Exception as e:
                 logger.exception("An error occurred.")
-                await self.invoke_slot(AGENT_ERROR, e)
+
                 self.session.record_error(e)
                 pending_exception = e
 

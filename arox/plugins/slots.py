@@ -26,10 +26,6 @@ PERSISTENT_CONTEXT = Slot[Callable[[], list[ModelMessage]]](
     "persistent_context", "Provides messages that should persist across compaction"
 )
 
-# Slot for getting the current LLM context ID
-LLM_CONTEXT_ID = Slot[Callable[[], str]](
-    "llm_context_id", "Provides the current LLM context ID"
-)
 
 # --- Push slots (handlers invoked by agent.notify) ---
 
@@ -38,27 +34,4 @@ AGENT_RESET = Slot[Callable[[], Any]](
     "agent_reset",
     "The agent's conversational state was reset",
     aggregator=ResultAggregator.DISCARD,
-)
-
-# Emitted after a successful inference step. Payload: (result,).
-AGENT_STEP = Slot[Callable[..., Any]](
-    "agent_step",
-    "An agent step completed successfully",
-    aggregator=ResultAggregator.DISCARD,
-)
-
-# Emitted when an inference step fails. Payload: (messages,).
-AGENT_STEP_FAILURE = Slot[Callable[..., Any]](
-    "agent_step_failure", "An agent step failed", aggregator=ResultAggregator.DISCARD
-)
-
-# Emitted when a slash command is parsed. Payload: (command, arg).
-AGENT_COMMAND = Slot[Callable[..., Any]](
-    "agent_command", "A slash command was parsed", aggregator=ResultAggregator.DISCARD
-)
-
-
-# Emitted when the run loop catches an error. Payload: (error,).
-AGENT_ERROR = Slot[Callable[..., Any]](
-    "agent_error", "An error occurred during a run", aggregator=ResultAggregator.DISCARD
 )
