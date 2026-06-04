@@ -469,15 +469,26 @@ class VercelStreamServer:
     ):
         from contextlib import asynccontextmanager
 
+        from arox.core.session import AgentSession, FileSessionStore, SessionManager
+
         self.config_files = config_files or []
         self.cli_args = cli_args or []
         self.host = host
         self.port = port
+        self.parsed_config = app_setup(
+            config_files=self.config_files, cli_args=self.cli_args
+        )
         self.io_adapter = VercelStreamIOAdapter()
+        self.session_store = FileSessionStore(
+            max_age_days=self.parsed_config.app.session_max_age_days
+        )
+        self.session_manager = SessionManager(self.session_store)
+        self.session_manager.register_session_type(AgentSession)
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
-            yield
+            async with self.session_manager:
+                yield
             # Cancel all running app tasks on shutdown
             tasks = [
                 r.task
@@ -521,19 +532,12 @@ class VercelStreamServer:
         return {a.name: a for a in agents}
 
     async def create_agent(self, request: CreateAgentRequest):
-        parsed_config = app_setup(
-            config_files=self.config_files, cli_args=self.cli_args
-        )
+        from arox.core.session import AgentSession
 
-        from arox.core.session import AgentSession, FileSessionStore, SessionManager
+        parsed_config = self.parsed_config.model_copy(deep=True)
 
-        session_store = FileSessionStore(
-            max_age_days=parsed_config.app.session_max_age_days
-        )
-        session_manager = SessionManager(session_store)
-        session_manager.register_session_type(AgentSession)
         if request.session_id:
-            session = await session_store.load_session(request.session_id)
+            session = await self.session_store.load_session(request.session_id)
             if not session or not isinstance(session, AgentSession):
                 raise HTTPException(
                     status_code=404, detail="Session not found or invalid"
@@ -551,7 +555,7 @@ class VercelStreamServer:
             session=session,
             workspace=request.workspace,
         )
-        main_agent.session.manager = session_manager
+        main_agent.session.manager = self.session_manager
 
         run_instance = AgentRun(main_agent=main_agent)
         self.io_adapter.run_instances[main_agent.uuid] = run_instance
@@ -712,18 +716,13 @@ class VercelStreamServer:
         }
 
     async def list_sessions(self):
-        from arox.core.config import load_config
-        from arox.core.session import AgentSession, FileSessionStore, SessionManager
+        from arox.core.session import AgentSession
 
         # The top-level session is the main agent's own AgentSession; filter to
         # the configured main agent so subagent sessions don't leak in.
-        parsed_config = load_config(self.config_files, self.cli_args)
-        main_agent = parsed_config.app.main_agent
+        main_agent = self.parsed_config.app.main_agent
 
-        store = FileSessionStore()
-        session_manager = SessionManager(store)
-        session_manager.register_session_type(AgentSession)
-        sessions = await store.list_sessions()
+        sessions = await self.session_store.list_sessions()
         return [
             SessionInfo(
                 id=s.id,
@@ -738,10 +737,7 @@ class VercelStreamServer:
         ]
 
     async def delete_session(self, session_id: str):
-        from arox.core.session import FileSessionStore
-
-        store = FileSessionStore()
-        await store.delete_session(session_id)
+        await self.session_store.delete_session(session_id)
         return {"status": "deleted"}
 
     async def run(self):

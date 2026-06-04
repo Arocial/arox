@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal, Protocol, Union
 
-from pydantic import BaseModel, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, Field, model_validator
 from pydantic_ai.messages import (
     ModelMessage,
 )
@@ -124,39 +124,20 @@ class Session(BaseModel):
 
     manager: Any = Field(default=None, exclude=True, repr=False)
     owner: Any = Field(default=None, exclude=True, repr=False)
-    _save_task: Any = PrivateAttr(default=None)
 
     async def save(self) -> None:
-        if self._save_task is not None and not self._save_task.done():
-            self._save_task.cancel()
         if self.manager:
+            # Explicit save bypasses debounce; remove from dirty set to avoid redundant writes.
+            self.manager._dirty_sessions.pop(self.id, None)
             await self.manager.save_session(self)
-
-    def _schedule_save(self) -> None:
-        if not self.manager:
-            return
-        if self._save_task is not None and not self._save_task.done():
-            self._save_task.cancel()
-
-        async def _debounced_save():
-            try:
-                await asyncio.sleep(0.1)
-                await self.save()
-            except asyncio.CancelledError:
-                pass
-
-        try:
-            loop = asyncio.get_running_loop()
-            self._save_task = loop.create_task(_debounced_save())
-        except RuntimeError:
-            pass
 
     def add_event(
         self,
         event: AnySessionEvent,
     ) -> AnySessionEvent:
         self.events.append(event)
-        self._schedule_save()
+        if self.manager:
+            self.manager.notify_dirty(self)
         return event
 
     async def build_instance(self, session_manager: SessionManager, **kwargs) -> Any:
@@ -377,6 +358,55 @@ class SessionManager:
         self.session_store = session_store
         self._session_types: dict[str, type[Session]] = {}
         self.session_store.set_session_types(self._session_types)
+
+        self._dirty_sessions: dict[str, Session] = {}
+        self._save_event: asyncio.Event = asyncio.Event()
+        self._save_task: asyncio.Task | None = None
+
+    async def __aenter__(self):
+        self._save_task = asyncio.get_running_loop().create_task(self._save_loop())
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._save_task is not None:
+            self._save_task.cancel()
+            try:
+                await self._save_task
+            except asyncio.CancelledError:
+                pass
+            self._save_task = None
+        # Final flush for anything queued after the last loop iteration.
+        await self._flush_dirty_sessions()
+
+    def notify_dirty(self, session: Session) -> None:
+        self._dirty_sessions[session.id] = session
+        self._save_event.set()
+
+    async def _save_loop(self) -> None:
+        try:
+            while True:
+                await self._save_event.wait()
+                self._save_event.clear()
+
+                # Debounce: let rapid-fire events coalesce.
+                await asyncio.sleep(0.1)
+                await self._flush_dirty_sessions()
+        except asyncio.CancelledError:
+            await asyncio.shield(self._flush_dirty_sessions())
+            raise
+
+    async def _flush_dirty_sessions(self) -> None:
+        if not self._dirty_sessions:
+            return
+        to_save = list(self._dirty_sessions.values())
+        self._dirty_sessions.clear()
+        for session in to_save:
+            try:
+                await self.save_session(session)
+            except Exception as e:
+                logger.error(f"Failed to save session {session.id}: {e}", exc_info=True)
+                # Re-queue for retry on the next cycle.
+                self._dirty_sessions.setdefault(session.id, session)
 
     def register_session_type(self, cls: type[Session]) -> None:
         """Register a Session subclass so the store can deserialize it by session_type."""
