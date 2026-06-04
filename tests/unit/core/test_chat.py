@@ -56,10 +56,12 @@ system_prompt = "Hi there."
 
         # Verify that the tool was called
         messages = agent.message_history
+        from pydantic_ai.messages import ModelRequest, ModelResponse
+
         tool_calls = [
             part.tool_name
             for msg in messages
-            if hasattr(msg, "parts")
+            if isinstance(msg, (ModelRequest, ModelResponse))
             for part in msg.parts
             if isinstance(part, ToolCallPart)
         ]

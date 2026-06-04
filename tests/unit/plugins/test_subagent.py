@@ -90,7 +90,9 @@ class _MainAgent:
             if not providers:
                 return None
             result = providers[0](*args, **kwargs)
-            return await result if hasattr(result, "__await__") else result
+            import asyncio
+
+            return await result if asyncio.iscoroutine(result) else result
         return []
 
     async def save_session(self):

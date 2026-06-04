@@ -337,9 +337,10 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
     async def _apply_input(self, target, payload: dict) -> dict:
         if payload.get("cancel"):
-            cancel = getattr(target, "cancel_foreground_task", None)
-            if callable(cancel):
-                cancel()
+            from arox.core.llm_base import LLMBaseAgent
+
+            if isinstance(target, LLMBaseAgent):
+                target.cancel_foreground_task()
             return {"status": "cancelled"}
 
         cmd = payload.get("command")
@@ -707,7 +708,7 @@ class VercelStreamServer:
 
         return {
             "history": history,
-            "model": getattr(agent, "provider_model", None),
+            "model": agent.provider_model,
         }
 
     async def list_sessions(self):

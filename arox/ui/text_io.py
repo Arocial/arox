@@ -32,6 +32,7 @@ from arox.core.completion import CompletionRouter, parse_request
 from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
+    IOHost,
 )
 from arox.core.llm_base import ServerIdMapping
 
@@ -112,11 +113,13 @@ class TextIOAdapter(AbstractIOAdapter):
         super().__init__()
         self.user_input: UserInputGenerator = UserInputGenerator()
 
-    async def register_host(self, host: Any):
+    async def register_host(self, host: "IOHost"):
         await super().register_host(host)
 
         merged_router = CompletionRouter()
-        merged_router.merge(host.command_manager.completion_router)
+        cmd_mgr = getattr(host, "command_manager", None)
+        if cmd_mgr is not None:
+            merged_router.merge(cmd_mgr.completion_router)
         completer = CommandCompleter(merged_router, agent=host)
         self.user_input = UserInputGenerator(completer=completer)
 
@@ -126,7 +129,12 @@ class TextIOAdapter(AbstractIOAdapter):
             for host in self.hosts.values():
                 if isinstance(host, ChatAgent):
                     host.cancel_foreground_task()
-                if hasattr(host, "_slots"):
+                # MainAgent has _slots dictionary, IOHost base doesn't, but we only register MainAgents.
+                # However, for safety in duck typing, we can keep hasattr, but user wants direct access.
+                # Let's change it to check if it's an LLMBaseAgent since that's what has _slots.
+                from arox.core.llm_base import LLMBaseAgent
+
+                if isinstance(host, LLMBaseAgent):
                     from arox.plugins.slots import SUBAGENTS
 
                     for get_agents in host._slots.get(SUBAGENTS, []):
@@ -160,7 +168,7 @@ class TextIOAdapter(AbstractIOAdapter):
 
     def _is_shell_io(self, adapter_io: IOEndpoint) -> bool:
         for host in self.hosts.values():
-            if getattr(host, "adapter_io", None) is adapter_io:
+            if host.adapter_io is adapter_io:
                 return True
         return False
 

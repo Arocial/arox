@@ -73,12 +73,12 @@ class CompactionPlugin(Plugin):
             return self._cached_threshold_value
 
         agent = self.agent
-        model_cfg = getattr(agent, "model_config", None)
+        model_cfg = agent.model_config
         threshold: int | float | None = None
         if model_cfg is not None and model_cfg.compaction_threshold is not None:
             threshold = model_cfg.compaction_threshold
         else:
-            threshold = getattr(agent.parsed_config, "compaction_threshold", None)
+            threshold = agent.parsed_config.compaction_threshold
 
         resolved_val = None
         if threshold is not None:

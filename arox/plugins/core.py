@@ -89,7 +89,7 @@ class CorePlugin(Plugin):
             )
 
     async def handle_info(self, event: InfoEvent) -> str:
-        lines = [f"Current model: {getattr(self.agent, 'provider_model', 'Unknown')}"]
+        lines = [f"Current model: {self.agent.provider_model or 'Unknown'}"]
         for info in await self.agent.invoke_slot(AGENT_INFO) or []:
             if info:
                 lines.append(info)
@@ -100,7 +100,7 @@ class CorePlugin(Plugin):
         return "Reset complete."
 
     async def complete_fork(self, req: CompletionRequest):
-        session = getattr(self.agent, "session", None)
+        session = self.agent.session
         if not session:
             return
         turns = user_turns_from_session(session)

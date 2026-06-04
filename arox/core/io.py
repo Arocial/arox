@@ -157,19 +157,19 @@ class AbstractIOAdapter(ABC):
         self.hosts: dict[str, Any] = {}
         self._tg: asyncio.TaskGroup = asyncio.TaskGroup()
 
-    async def register_host(self, host: Any):
+    async def register_host(self, host: "IOHost"):
         self.hosts[host.uuid] = host
 
     async def _find_agent(self, adapter_io: IOEndpoint):
         """Locate the agent that owns ``adapter_io`` across registered hosts."""
         for host in self.hosts.values():
-            if getattr(host, "adapter_io", None) is adapter_io:
+            if host.adapter_io is adapter_io:
                 return host
             if hasattr(host, "invoke_slot"):
                 from arox.plugins.slots import SUBAGENTS
 
                 for agent in await host.invoke_slot(SUBAGENTS) or []:
-                    if getattr(agent, "adapter_io", None) is adapter_io:
+                    if agent.adapter_io is adapter_io:
                         return agent
         return None
 
@@ -203,6 +203,7 @@ class IOHost:
     """
 
     def __init__(self, io_adapter: "AbstractIOAdapter"):
+        self.uuid: str = str(uuid.uuid4())
         self.agent_io, self.adapter_io = create_io_channel()
         self.io_adapter = io_adapter
         self._stack = contextlib.AsyncExitStack()

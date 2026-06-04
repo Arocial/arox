@@ -270,7 +270,7 @@ class SubagentPlugin(Plugin):
         lines = []
         for agent in sorted(agents, key=lambda a: a.name):
             source = agent.agent_source
-            desc = getattr(agent.agent_config, "description", "") or "No description"
+            desc = agent.agent_config.description or "No description"
             lines.append(f"- {agent.name} ({source}): {desc}")
         return "\n".join(lines)
 

@@ -244,6 +244,8 @@ class LLMBaseAgent(IOHost):
         self.session = session
 
         self.model_ref = None
+        self.model_config = None
+        self.provider_model = None
         self.additional_prompt = ""
 
         self.local_toolset = FunctionToolset[AgentDeps]()
@@ -252,6 +254,10 @@ class LLMBaseAgent(IOHost):
         self.message_history: list[ModelMessage] = []
 
         self._restore_agent_session(session)
+
+    def cancel_foreground_task(self) -> None:
+        """Cancel any long-running foreground task. Subclasses can override this."""
+        pass
 
     @property
     def name(self) -> str:
