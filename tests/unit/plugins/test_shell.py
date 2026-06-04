@@ -248,7 +248,7 @@ async def test_shell_state_returns_early_when_process_exits(plugin, monkeypatch)
     monkeypatch.setattr("arox.plugins.shell.POLL_BASE_DELAY", 10.0)
 
     start = await plugin.shell(
-        command="sleep 0.2; echo done",
+        command="sleep 0.2",
         description="Quick task",
         run_in_background=True,
     )
@@ -262,7 +262,6 @@ async def test_shell_state_returns_early_when_process_exits(plugin, monkeypatch)
     waited = loop.time() - t0
     assert waited < 2.0  # returned far earlier than 10s base delay
     assert "exit 0" in out
-    assert "done" in out
     assert bg.poll_count == 0  # reset on completion
 
 

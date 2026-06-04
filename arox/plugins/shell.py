@@ -66,6 +66,7 @@ class BackgroundShell:
     drain_task: asyncio.Task | None = None
     poll_count: int = 0
     notify_on_finish: bool = False
+    new_output_event: asyncio.Event = field(default_factory=asyncio.Event)
 
     def elapsed(self) -> float:
         end = self.finished_at if self.finished_at is not None else time.monotonic()
@@ -76,6 +77,7 @@ class BackgroundShell:
             self.head_lines.append(line)
         self.tail_lines.append(line)
         self.total_lines += 1
+        self.new_output_event.set()
 
     def captured_lines(self) -> Iterable[str]:
         """Iterable view of retained lines (head + tail, may overlap)."""
@@ -253,7 +255,7 @@ class ShellPlugin(Plugin):
 
         Rules
             1. For searching code, use `rg` or `ast-grep`.
-            2. Interactive commands that need stdin will fail (stdin is /dev/null).
+            2. Interactive commands that need stdin will block waiting for input. Use `shell_state` to see the prompt and `shell_input` to provide the required input.
             3. The command runs via `{{ shell_type }} -c`, so quoting matters:
                - Wrap literal text in single quotes to disable $ expansion:
                      echo 'literal $HOME and `cmd`'
@@ -282,9 +284,6 @@ class ShellPlugin(Plugin):
         Examples
             command: "ls -la | rg staff"
             description: "List files matching 'staff'"
-
-            command: "uv run pytest tests/unit -x"
-            description: "Run unit tests, stop on first failure"
 
         Args:
             command: The shell command to execute.
@@ -418,15 +417,34 @@ class ShellPlugin(Plugin):
             return f"Unknown task_id: {task_id}"
 
         drain = bg.drain_task
-        if bg.exit_code is None and drain is not None:
+        new_count = bg.total_lines - bg.read_total
+
+        # Block only if there are no new lines and the process is still running.
+        if new_count == 0 and bg.exit_code is None and drain is not None:
             delay = min(POLL_BASE_DELAY * (2**bg.poll_count), POLL_MAX_DELAY)
             bg.poll_count += 1
+            bg.new_output_event.clear()
             try:
-                await asyncio.wait_for(asyncio.shield(drain), timeout=delay)
-            except TimeoutError:
+                wait_event = asyncio.create_task(bg.new_output_event.wait())
+                done, pending = await asyncio.wait(
+                    [asyncio.shield(drain), wait_event],
+                    timeout=delay,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if wait_event in pending:
+                    wait_event.cancel()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
                 pass
 
-        new_count = bg.total_lines - bg.read_total
+            # Recalculate after the potential wait
+            new_count = bg.total_lines - bg.read_total
+
+        # Reset backoff if we actually received output
+        if new_count > 0:
+            bg.poll_count = 0
+
         if new_count <= 0:
             new_lines: list[str] = []
         elif new_count <= len(bg.tail_lines):
@@ -483,6 +501,11 @@ class ShellPlugin(Plugin):
             return f"Task {task_id} does not support stdin."
 
         try:
+            if not text.endswith("\n"):
+                logger.warning(
+                    "shell_input received text without newline, appending \\n automatically."
+                )
+                text += "\n"
             bg.process.stdin.write(text.encode())
             await bg.process.stdin.drain()
             return f"Sent input to task {task_id}."
