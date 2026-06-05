@@ -9,7 +9,6 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding.key_bindings import KeyBindings
 from pydantic_ai import (
-    FinalResultEvent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartDeltaEvent,
@@ -26,7 +25,6 @@ from arox.core.chat import (
     ChatAgent,
     ChatInputEvent,
     ChatInputReply,
-    StepDoneEvent,
 )
 from arox.core.completion import CompletionRouter, parse_request
 from arox.core.io import (
@@ -34,7 +32,6 @@ from arox.core.io import (
     IOEndpoint,
     IOHost,
 )
-from arox.core.llm_base import ServerIdMapping
 
 logger = logging.getLogger(__name__)
 
@@ -197,8 +194,6 @@ class TextIOAdapter(AbstractIOAdapter):
             print(
                 f"tool call: {part.tool_call_id}: {part.tool_name} args: {str(part.args)[:100]}"
             )
-        elif isinstance(event, (FinalResultEvent, StepDoneEvent, ServerIdMapping)):
-            pass
         elif isinstance(event, ChatInputEvent):
             deferred_answers: dict[str, str | None] = {}
             user_input: str | None = None
@@ -254,7 +249,7 @@ class TextIOAdapter(AbstractIOAdapter):
                 )
             )
         else:
-            print(f"\nUnexpected event type: {event.__class__.__name__}\n")
+            logger.debug(f"\nUnknown event type: {event.__class__.__name__}\n")
 
     @override
     async def handle_event(self, adapter_io: IOEndpoint, event):
