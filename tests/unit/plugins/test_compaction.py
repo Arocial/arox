@@ -41,6 +41,7 @@ class _MockAgent:
         self.session = AgentSession(agent_name="main")
         self._compaction_agent = _FakeCompactionAgent()
         self._persistent = persistent or []
+        self.run_info = SimpleNamespace(context_tokens=0, total_tokens=0)
 
     async def _send(self, _msg):
         return None
@@ -58,7 +59,9 @@ def _plugin(agent: _MockAgent) -> CompactionPlugin:
 
 
 def _ctx(total_tokens: int):
-    return SimpleNamespace(usage=SimpleNamespace(total_tokens=total_tokens))
+    return SimpleNamespace(
+        usage=SimpleNamespace(total_tokens=total_tokens), run_id=None
+    )
 
 
 def _user(text: str) -> ModelRequest:
@@ -77,6 +80,7 @@ def _first_text(message: ModelRequest) -> str:
 @pytest.mark.asyncio
 async def test_auto_compaction_below_threshold_is_noop():
     agent = _MockAgent(threshold=100)
+    agent.run_info.context_tokens = 50
     plugin = _plugin(agent)
     messages = [_user("a"), _reply("b"), _user("c")]
 
@@ -90,6 +94,7 @@ async def test_auto_compaction_below_threshold_is_noop():
 @pytest.mark.asyncio
 async def test_auto_compaction_disabled_without_threshold():
     agent = _MockAgent(threshold=None)
+    agent.run_info.context_tokens = 10_000
     plugin = _plugin(agent)
     messages = [_user("a"), _reply("b"), _user("c")]
 
@@ -107,6 +112,7 @@ async def test_auto_compaction_compacts_mid_tool_loop():
     together, so no dangling tool_result is left behind.
     """
     agent = _MockAgent(threshold=100)
+    agent.run_info.context_tokens = 500
     plugin = _plugin(agent)
     messages = [
         _user("question"),
@@ -146,6 +152,7 @@ async def test_auto_compaction_records_event_and_stays_consistent():
         ),
     ]
     agent = _MockAgent(threshold=100, persistent=persistent)
+    agent.run_info.context_tokens = 500
     plugin = _plugin(agent)
     messages = [_user("old 1"), _reply("old reply 1"), _user("current question")]
 

@@ -17,11 +17,16 @@ from pydantic_ai import (
     AgentRunResultEvent,
     AgentStreamEvent,
     FunctionToolset,
+    ModelRequestContext,
     ModelSettings,
     RunContext,
-    capture_run_messages,
 )
-from pydantic_ai.capabilities import AbstractCapability
+from pydantic_ai.capabilities import (
+    AbstractCapability,
+    Hooks,
+    WrapModelRequestHandler,
+    WrapRunHandler,
+)
 from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import (
@@ -57,6 +62,7 @@ from arox.core.io import (
     IOEndpoint,
     IOHost,
 )
+from arox.core.plugin import CommandManager, load_plugins
 from arox.core.session import (
     USER_INPUT_ID_KEY,
     AgentSession,
@@ -227,6 +233,13 @@ class AgentDeps:
     agent_io: IOEndpoint
 
 
+@dataclass
+class AgentRunInfo:
+    context_tokens: int = 0
+    total_tokens: int = 0
+    new_message_index: int = 0
+
+
 class LLMBaseAgent(IOHost):
     def __init__(
         self,
@@ -241,17 +254,35 @@ class LLMBaseAgent(IOHost):
         self.parsed_config = parsed_config
         self.session = session
 
-        self.model_ref = None
-        self.model_config = None
-        self.provider_model = None
-        self.additional_prompt = ""
-
         self.local_toolset = FunctionToolset[AgentDeps]()
         self.mcp_client = None
         self.plugins = []
         self.message_history: list[ModelMessage] = []
 
+        self.parse_configs()
         self._restore_agent_session(session)
+
+        self.command_manager = CommandManager(self)
+
+        self.run_info = AgentRunInfo()
+        self.result = None
+        self.builtin_hooks = Hooks[AgentDeps]()
+        self.builtin_hooks.on.run(self._wrap_run)
+        self.builtin_hooks.on.model_request(self._wrap_model_request)
+        capabilities: list[AbstractCapability[AgentDeps]] = []
+        self.plugins = load_plugins(self)
+        capabilities.extend(
+            [cap for plugin in self.plugins for cap in plugin.capabilities()]
+        )
+        capabilities.append(self.builtin_hooks)
+
+        self.pydantic_agent = Agent[AgentDeps, DeferredToolRequests | str](
+            self.model,
+            capabilities=capabilities,
+            toolsets=self.toolsets,
+            deps_type=AgentDeps,
+            output_type=(DeferredToolRequests, str),
+        )
 
     def cancel_foreground_task(self) -> None:
         """Cancel any long-running foreground task. Subclasses can override this."""
@@ -355,40 +386,6 @@ class LLMBaseAgent(IOHost):
     async def __aenter__(self):
         await super().__aenter__()
 
-        toolsets: list[AbstractToolset[AgentDeps]] = [self.local_toolset]
-
-        mcp_server_configs = self.parsed_config.mcp_servers
-        allowed_mcp_servers = self.agent_config.mcp_servers
-        if allowed_mcp_servers is not None:
-            if isinstance(allowed_mcp_servers, str):
-                allowed_mcp_servers = [allowed_mcp_servers]
-            mcp_server_configs = {
-                k: v for k, v in mcp_server_configs.items() if k in allowed_mcp_servers
-            }
-
-        if mcp_server_configs:
-            self.mcp_client = fastmcp.Client({"mcpServers": mcp_server_configs})
-            mcp_toolset = MCPToolset[AgentDeps](self.mcp_client)
-            toolsets.append(mcp_toolset)
-
-        self.parse_configs()
-
-        from arox.core.plugin import CommandManager, load_plugins
-
-        self.command_manager = CommandManager(self)
-        self.plugins = load_plugins(self)
-        capabilities: list[AbstractCapability[AgentDeps]] = [
-            cap for plugin in self.plugins for cap in plugin.capabilities()
-        ]
-
-        self.pydantic_agent = Agent[AgentDeps, DeferredToolRequests | str](
-            self.model,
-            capabilities=capabilities,
-            toolsets=toolsets,
-            deps_type=AgentDeps,
-            output_type=(DeferredToolRequests, str),
-        )
-
         if self.mcp_client:
             await self._stack.enter_async_context(self.mcp_client)
         self._stack.push_async_callback(self.session.save)
@@ -444,20 +441,7 @@ class LLMBaseAgent(IOHost):
         self.model = model
 
     def parse_configs(self):
-        # Load default metadata using configargparse
-        self.raw_system_prompt = self.agent_config.system_prompt
-
-        skills = discover_skills(self.workspace)
-        allowed_skills = self.agent_config.skills
-        if allowed_skills is not None:
-            if isinstance(allowed_skills, str):
-                allowed_skills = [allowed_skills]
-            skills = {k: v for k, v in skills.items() if k in allowed_skills}
-
-        self.skill_catalog = ""
-        if skills:
-            self.skill_catalog = build_skill_catalog(skills)
-
+        # model configs
         self.model_ref = self.agent_config.model_ref or self.parsed_config.model_ref
         fallback = (
             self.agent_config.fallback_model_ref
@@ -480,6 +464,36 @@ class LLMBaseAgent(IOHost):
                 )
 
         self.set_model(self.model_ref)
+        # Load default metadata using configargparse
+        self.raw_system_prompt = self.agent_config.system_prompt
+
+        # skills
+        skills = discover_skills(self.workspace)
+        allowed_skills = self.agent_config.skills
+        if allowed_skills is not None:
+            if isinstance(allowed_skills, str):
+                allowed_skills = [allowed_skills]
+            skills = {k: v for k, v in skills.items() if k in allowed_skills}
+
+        self.skill_catalog = ""
+        if skills:
+            self.skill_catalog = build_skill_catalog(skills)
+
+        # Tools and mcp servers
+        self.toolsets: list[AbstractToolset[AgentDeps]] = [self.local_toolset]
+        mcp_server_configs = self.parsed_config.mcp_servers
+        allowed_mcp_servers = self.agent_config.mcp_servers
+        if allowed_mcp_servers is not None:
+            if isinstance(allowed_mcp_servers, str):
+                allowed_mcp_servers = [allowed_mcp_servers]
+            mcp_server_configs = {
+                k: v for k, v in mcp_server_configs.items() if k in allowed_mcp_servers
+            }
+
+        if mcp_server_configs:
+            self.mcp_client = fastmcp.Client({"mcpServers": mcp_server_configs})
+            mcp_toolset = MCPToolset[AgentDeps](self.mcp_client)
+            self.toolsets.append(mcp_toolset)
 
     @property
     def system_prompt(self) -> str:
@@ -490,80 +504,94 @@ class LLMBaseAgent(IOHost):
             prompt += f"\n\n{self.skill_catalog}"
         return prompt
 
+    async def _wrap_model_request(
+        self,
+        ctx: RunContext[AgentDeps],
+        *,
+        request_context: ModelRequestContext,
+        handler: WrapModelRequestHandler,
+    ) -> ModelResponse:
+        response = await handler(request_context)
+        self.run_info.context_tokens = response.usage.total_tokens
+        self.run_info.total_tokens += response.usage.total_tokens
+        return response
+
+    async def _wrap_run(
+        self,
+        ctx: RunContext[AgentDeps],
+        *,
+        handler: WrapRunHandler,
+    ) -> AgentRunResult[Any]:
+        from pydantic_ai._agent_graph import GraphAgentState
+
+        self.run_info.new_message_index = len(ctx.messages)
+        try:
+            result = await handler()
+        except Exception as error:
+            messages = list(ctx.messages)
+            _complete_pending_tool_calls(messages)
+
+            state = GraphAgentState(
+                message_history=messages,
+                usage=ctx.usage,
+                run_id=ctx.run_id or "",
+                conversation_id=ctx.conversation_id or "",
+                metadata=ctx.metadata,
+            )
+            result = AgentRunResult(
+                output=error,
+                _state=state,
+                _new_message_index=self.run_info.new_message_index,
+            )
+        return result
+
     async def _run_inference(
         self,
         user_prompt: str | list[UserContent] | None,
         *,
         message_history: list[ModelMessage],
         deferred_tool_results: DeferredToolResults | None = None,
-        on_failure: Callable[[list[ModelMessage]], Any] | None = None,
-    ) -> AgentRunResult[DeferredToolRequests | str]:  # ty: ignore[invalid-return-type]
+    ) -> AgentRunResult[DeferredToolRequests | str]:
         """Run a single LLM inference with fallback model handling.
 
         Stateless w.r.t. the agent's own message_history / agent_session: the
         caller passes the already-composed ``user_prompt`` and message_history
-        in and decides what to do with the result. ``on_failure`` is invoked
-        with the captured (and patched) message list right before the final
-        exception is re-raised, so callers that *do* want to commit partial
-        state can opt in.
+        in and decides what to do with the result. If an exception occurs, it is
+        captured in the returned AgentRunResult's metadata under the "exception" key.
         """
-        primary_ref: str = self.model_ref or ""
-        refs_to_try: list[str] = [primary_ref] + list(self.fallback_model_refs)
+        primary_ref = self.model_ref
         try:
-            for idx, ref in enumerate(refs_to_try):
-                if ref != self.model_ref:
-                    self.set_model(ref)
+            for model_ref in [primary_ref, *self.fallback_model_refs]:
+                if model_ref != self.model_ref:
+                    self.set_model(model_ref)
                     await self.agent_io.send(
                         f"Primary model failed, falling back to {self.provider_model}"
                     )
-                is_last = idx == len(refs_to_try) - 1
-                with capture_run_messages() as messages:
-                    try:
-                        return await self.pydantic_agent.run(
-                            user_prompt,
-                            model=self.model,
-                            event_stream_handler=self.handle_event,
-                            model_settings=ModelSettings(**self.model_params),
-                            instructions=f"{self.system_prompt}\n{self.additional_prompt}",
-                            message_history=message_history,
-                            deps=AgentDeps(agent_io=self.agent_io),
-                            deferred_tool_results=deferred_tool_results,
-                        )
-                    except asyncio.CancelledError:
-                        if on_failure:
-                            _complete_pending_tool_calls(messages)
-                            result = on_failure(messages)
-                            if asyncio.iscoroutine(result):
-                                await result
-                        raise
-                    except (
-                        ModelAPIError,
-                        HTTPStatusError,
-                        TransportError,
-                        ConnectionError,
-                    ) as exc:
-                        if is_last:
-                            if on_failure:
-                                _complete_pending_tool_calls(messages)
-                                result = on_failure(messages)
-                                if asyncio.iscoroutine(result):
-                                    await result
-                            raise
-                        logger.warning(
-                            "Model %s failed (%s), trying next fallback",
-                            self.provider_model,
-                            exc,
-                        )
-                    except Exception:
-                        if on_failure:
-                            _complete_pending_tool_calls(messages)
-                            result = on_failure(messages)
-                            if asyncio.iscoroutine(result):
-                                await result
-                        raise
+
+                result = await self.pydantic_agent.run(
+                    user_prompt,
+                    model=self.model,
+                    event_stream_handler=self.handle_event,
+                    model_settings=ModelSettings(**self.model_params),
+                    instructions=f"{self.system_prompt}\n{self.additional_prompt}",
+                    message_history=message_history,
+                    deps=AgentDeps(agent_io=self.agent_io),
+                    deferred_tool_results=deferred_tool_results,
+                )
+
+                if isinstance(result.output, ModelAPIError):
+                    logger.warning(
+                        "Model %s failed (%s), trying next fallback",
+                        self.provider_model,
+                        result.output,
+                    )
+                else:
+                    break
         finally:
             if self.model_ref != primary_ref:
                 self.set_model(primary_ref)
+
+        return result
 
     async def step(
         self,
@@ -589,19 +617,12 @@ class LLMBaseAgent(IOHost):
                 TextContent(content=text + "\n", metadata={USER_INPUT_ID_KEY: input_id})
             ]
 
-        async def _commit_failure(messages: list[ModelMessage]) -> None:
-
-            prev_len = len(self.message_history)
-            new_messages = messages[prev_len:]
-            if new_messages:
-                self.session.record_step(new_messages)
-
         result = await self._run_inference(
             user_prompt,
             message_history=self.message_history,
             deferred_tool_results=deferred_tool_results,
-            on_failure=_commit_failure,
         )
+        self.result = result
         self.message_history = result.all_messages()
 
         usage = result.usage
@@ -616,6 +637,7 @@ class LLMBaseAgent(IOHost):
     async def reset(self):
         self.message_history = []
         self.llm_context_id = str(uuid.uuid4())
+        self.run_info = AgentRunInfo()
         await self.invoke_slot(AGENT_RESET)
         self.session.record_reset(self.llm_context_id)
 

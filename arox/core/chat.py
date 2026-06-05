@@ -141,6 +141,10 @@ class ChatAgent(MainAgent, DelegatableAgent):
                 self.foreground_task = step_task
                 try:
                     result = await step_task
+
+                    if result and isinstance(result.output, BaseException):
+                        raise result.output
+
                     if result and isinstance(result.output, DeferredToolRequests):
                         deferred_requests = result.output
                     else:

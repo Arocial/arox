@@ -89,7 +89,10 @@ class CorePlugin(Plugin):
             )
 
     async def handle_info(self, event: InfoEvent) -> str:
-        lines = [f"Current model: {self.agent.provider_model or 'Unknown'}"]
+        lines = [
+            f"Current model: {self.agent.provider_model or 'Unknown'}",
+            f"Usage: total: {self.agent.run_info.total_tokens}, context: {self.agent.run_info.context_tokens}",
+        ]
         for info in await self.agent.invoke_slot(AGENT_INFO) or []:
             if info:
                 lines.append(info)

@@ -15,6 +15,11 @@ from arox.plugins.subagent import (
 )
 
 
+@pytest.fixture(autouse=True)
+def mock_env(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fake")
+
+
 class _FakeDynamicAgent(DelegatableAgent):
     def __init__(
         self,

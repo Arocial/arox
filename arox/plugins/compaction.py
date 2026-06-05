@@ -140,15 +140,13 @@ class CompactionPlugin(Plugin):
         if threshold is None:
             return messages
 
-        current_total = ctx.usage.total_tokens
-        tokens = current_total - self._last_total_tokens
-        self._last_total_tokens = current_total
+        context_tokens = self.agent.run_info.context_tokens
 
-        if tokens <= threshold or not messages:
+        if context_tokens <= threshold:
             return messages
 
         logger.info(
-            f"Last request size ({tokens} tokens) exceeds threshold ({threshold}). "
+            f"Last request size ({context_tokens} tokens) exceeds threshold ({threshold}). "
             "Triggering automatic compaction."
         )
         compacted = await self._compact(messages)
@@ -156,6 +154,12 @@ class CompactionPlugin(Plugin):
             return messages
 
         await self._record_compaction(compacted, False)
+        from pydantic_ai._agent_graph import _first_new_message_index
+
+        if ctx.run_id:
+            self.agent.run_info.new_message_index = _first_new_message_index(
+                messages, ctx.run_id, resumed_request=None
+            )
         return compacted
 
     async def _find_compaction_agent(self) -> CompactionAgent | None:
