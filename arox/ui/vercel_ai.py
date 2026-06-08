@@ -503,7 +503,7 @@ class VercelStreamServer:
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
-            async with self.session_manager:
+            async with self.session_manager, self.io_adapter:
                 yield
             # Cancel all running app tasks on shutdown
             tasks = [
@@ -592,13 +592,12 @@ class VercelStreamServer:
         self.io_adapter.run_instances[main_agent.uuid] = run_instance
 
         async def run_agent():
-            async with self.io_adapter:
-                async with main_agent:
-                    if request.session_id:
-                        await main_agent.agent_io.send(
-                            f"Session restored: {request.session_id}"
-                        )
-                    await main_agent.run()
+            async with main_agent:
+                if request.session_id:
+                    await main_agent.agent_io.send(
+                        f"Session restored: {request.session_id}"
+                    )
+                await main_agent.run()
 
         task = asyncio.create_task(run_agent())
         run_instance.task = task
