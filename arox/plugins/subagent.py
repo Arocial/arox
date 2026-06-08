@@ -152,6 +152,7 @@ class SubagentPlugin(Plugin):
 
         for subagent in self.subagents.values():
             await self.agent._stack.enter_async_context(subagent)
+        await self._broadcast_agent_info()
 
     async def create_subagent(
         self,
@@ -188,7 +189,19 @@ class SubagentPlugin(Plugin):
             await self.agent.session.manager.session_store.save_session(
                 subagent.session
             )
+        await self._broadcast_agent_info()
         return f"Created subagent '{name}'."
+
+    async def _broadcast_agent_info(self):
+        from arox.core.llm_base import BroadcastAgentInfo
+
+        info = BroadcastAgentInfo(
+            main_agent_id=self.agent.uuid,
+            workspace=str(self.agent.workspace),
+            main_agent_name=self.agent.name,
+            subagents=[a.name for a in self.subagents.values()],
+        )
+        await self.agent.agent_io.send(info)
 
     async def delete_subagent(self, name: str) -> str:
         """Delete a dynamic subagent from the current session."""
@@ -210,6 +223,7 @@ class SubagentPlugin(Plugin):
             await self.agent.session.manager.session_store.delete_session(
                 sub_session.id, sub_session.owner_path
             )
+        await self._broadcast_agent_info()
         return f"Deleted subagent '{name}'."
 
     def commands(self):

@@ -27,21 +27,6 @@ Create a new agent instance.
 }
 ```
 
-#### `GET /api/agents`
-List all running agent instances.
-
-**Response:**
-```json
-[
-  {
-    "id": "agent-uuid",
-    "workspace": "/path/to/workspace",
-    "main_agent": "main",
-    "subagents": ["coder", "planner"]
-  }
-]
-```
-
 #### `DELETE /api/agents/{agent_id}`
 Stop and delete an agent instance.
 
@@ -62,6 +47,7 @@ Arox adds a few non-standard frames on the same channel:
 |---|---|---|
 | `cmd-input-request` | `payload` | agent is waiting for user input; `payload` carries `req_id`, `deferred_tools`, `normal_input`, `exception_input` |
 | `cmd-user-turn` | `payload` | a user-turn anchor was just recorded in the agent session. `payload` carries `eventId` and `messageId` |
+| `cmd-agent-info` | `payload` | broadcasts the current list of subagents for the session. `payload` contains `id`, `workspace`, `main_agent`, and `subagents` |
 | `step-done` | — | current step fully drained; next step may follow on the same connection |
 | `stream-close` | — | explicit signal to close the current UI message stream |
 | `ack` | `status` | acknowledgment of a client-sent message (see below) |
@@ -69,20 +55,20 @@ Arox adds a few non-standard frames on the same channel:
 **Client → Server messages** (JSON)
 
 ```json
-// submit a reply to a pending data-input-request
-{ "reply": { "req_id": "<uuid from data-input-request>", "normal_input": { "user_input": "hello" } } }
+// submit a reply to a pending cmd-input-request
+{ "reply": { "req_id": "<uuid from cmd-input-request>", "normal_input": { "user_input": "hello" } } }
 
 // invoke a slash / control command without going through the LLM
 { "command": { "type": "SetModelEvent", "model_ref": "claude-opus-4-7" } }
 
-// resume after reconnecting: re-send the currently pending data-input-request, if any
+// resume after reconnecting: re-send the currently pending cmd-input-request, if any
 { "resume": true }
 
 // cancel the agent's currently running foreground step
 { "cancel": true }
 ```
 
-The `reply` object's `req_id` MUST match the `req_id` carried in the `data-input-request` it answers; remaining fields (`deferred_tools`, `normal_input`, `exception_input`) mirror the matching fields of the request. An optional `client_message_id` may be included to identify the UI message that produced this reply — when set, the server stores it on the resulting `user_input` session event and echoes it in the subsequent `data-user-turn` frame as `messageId`, so the client can map UI messages back to absolute event indices without relying on ordering.
+The `reply` object's `req_id` MUST match the `req_id` carried in the `cmd-input-request` it answers; remaining fields (`deferred_tools`, `normal_input`, `exception_input`) mirror the matching fields of the request. An optional `client_message_id` may be included to identify the UI message that produced this reply — when set, the server stores it on the resulting `user_input` session event and echoes it in the subsequent `cmd-user-turn` frame as `messageId`, so the client can map UI messages back to absolute event indices without relying on ordering.
 
 The `command` payload is a structured `CommandEvent`: `type` is the event class name (e.g. `SetModelEvent`, `InfoEvent`, `ResetEvent`, `SubagentEvent`, `FileAddEvent`, `CompactEvent`, `AddFileListEvent`), and the remaining fields populate that event's dataclass. The server runs the command locally and streams any reply text back as ordinary text frames; the ack carries `{"status": "ok" | "unknown_command", "output": "..."}`.
 
@@ -112,9 +98,9 @@ Get the current state for a specific agent: message history plus any pending inp
 
 `model` is the current `provider_model` on the agent (the same value `/info` reports), or `null` if unset.
 
-`user_turn_anchors` is a map from UI `message_id` to the absolute event index of its `user_input` session event. Pass a value as `ForkEvent.event_index` to fork at that turn. The server populates the map from `client_message_id` stored on each `user_input` event; for legacy events that predate the field, entries fall back to the corresponding user message's id by chronological order. New entries arrive live as `data-user-turn` frames on the agent WebSocket — each frame carries both `eventIndex` and (when the client supplied it) `messageId`.
+`user_turn_anchors` is a map from UI `message_id` to the absolute event index of its `user_input` session event. Pass a value as `ForkEvent.event_index` to fork at that turn. The server populates the map from `client_message_id` stored on each `user_input` event; for legacy events that predate the field, entries fall back to the corresponding user message's id by chronological order. New entries arrive live as `cmd-user-turn` frames on the agent WebSocket — each frame carries both `eventId` and (when the client supplied it) `messageId`.
 
-To recover any pending input prompt after reconnecting, send `{"resume": true}` over the WebSocket — the server will re-emit the currently pending `data-input-request`, if any.
+To recover any pending input prompt after reconnecting, send `{"resume": true}` over the WebSocket — the server will re-emit the currently pending `cmd-input-request`, if any.
 
 ### Sessions
 

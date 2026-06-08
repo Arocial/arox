@@ -328,9 +328,22 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 "payload": {
                     "eventId": event.event_id,
                     "messageId": event.client_id,
-                }
+                },
             }
             messages.append(frame)
+
+        else:
+            from arox.core.llm_base import BroadcastAgentInfo
+            if isinstance(event, BroadcastAgentInfo):
+                messages.append({
+                    "type": "cmd-agent-info",
+                    "payload": {
+                        "id": event.main_agent_id,
+                        "workspace": event.workspace,
+                        "main_agent": event.main_agent_name,
+                        "subagents": event.subagents
+                    }
+                })
 
         return messages
 
@@ -531,7 +544,6 @@ class VercelStreamServer:
         )
 
         self.app.post("/api/agents", response_model=AgentInfo)(self.create_agent)
-        self.app.get("/api/agents", response_model=list[AgentInfo])(self.list_agents)
         self.app.delete("/api/agents/{agent_id}")(self.delete_agent)
         self.app.websocket("/api/agents/{agent_id}/{agent_name}/ws")(self.ws)
         self.app.get(
@@ -624,11 +636,7 @@ class VercelStreamServer:
 
         return await self._get_agent_info(run_instance)
 
-    async def list_agents(self):
-        return [
-            await self._get_agent_info(r)
-            for r in self.io_adapter.run_instances.values()
-        ]
+
 
     async def delete_agent(self, agent_id: str):
         run_instance = self.io_adapter.run_instances.pop(agent_id, None)
