@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import override
+from typing import cast, override
 
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,7 +37,7 @@ from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
 )
-from arox.core.llm_base import MainAgent, ServerIdMapping
+from arox.core.llm_base import LLMBaseAgent, MainAgent, ServerIdMapping
 from arox.plugins.slots import SUBAGENTS
 
 logger = logging.getLogger(__name__)
@@ -147,6 +147,28 @@ class AgentRun:
     task: asyncio.Task | None = None
     status: AgentTaskStatus = AgentTaskStatus.RUNNING
     error: Exception | None = None
+
+    async def get_agent(self, name: str) -> LLMBaseAgent | None:
+        if self.main_agent.name == name:
+            return self.main_agent
+        # invoke_slot(SUBAGENTS) returns list[MainAgent] via ResultAggregator.FIRST
+        subagents = cast(
+            list[LLMBaseAgent] | None, await self.main_agent.invoke_slot(SUBAGENTS)
+        )
+        if subagents:
+            for sa in subagents:
+                if sa.name == name:
+                    return sa
+        return None
+
+    async def get_subagent_names(self) -> list[str]:
+        # invoke_slot(SUBAGENTS) returns list[MainAgent] via ResultAggregator.FIRST
+        subagents = cast(
+            list[LLMBaseAgent] | None, await self.main_agent.invoke_slot(SUBAGENTS)
+        )
+        if subagents:
+            return [sa.name for sa in subagents]
+        return []
 
 
 class VercelStreamIOAdapter(AbstractIOAdapter):
@@ -527,9 +549,24 @@ class VercelStreamServer:
     async def health(self):
         return {"status": "ok"}
 
-    async def _get_all_agents(self, main_agent):
-        agents = [main_agent, *(await main_agent.invoke_slot(SUBAGENTS) or [])]
-        return {a.name: a for a in agents}
+    async def _get_agent(self, agent_id: str, agent_name: str):
+        run_instance = self.io_adapter.run_instances.get(agent_id)
+        if not run_instance:
+            raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found.")
+        agent = await run_instance.get_agent(agent_name)
+        if not agent:
+            raise HTTPException(
+                status_code=404, detail=f"Agent {agent_name} not found."
+            )
+        return agent
+
+    async def _get_agent_info(self, run_instance: AgentRun) -> AgentInfo:
+        return AgentInfo(
+            id=run_instance.main_agent.uuid,
+            workspace=str(run_instance.main_agent.workspace),
+            main_agent=run_instance.main_agent.name,
+            subagents=await run_instance.get_subagent_names(),
+        )
 
     async def create_agent(self, request: CreateAgentRequest):
         from arox.core.session import AgentSession
@@ -588,30 +625,13 @@ class VercelStreamServer:
 
         task.add_done_callback(on_task_done)
 
-        all_agents = await self._get_all_agents(main_agent)
-        subagents = [name for name in all_agents if name != main_agent.name]
-
-        return AgentInfo(
-            id=main_agent.uuid,
-            workspace=str(main_agent.workspace),
-            main_agent=main_agent.name,
-            subagents=subagents,
-        )
+        return await self._get_agent_info(run_instance)
 
     async def list_agents(self):
-        res = []
-        for cid, r in self.io_adapter.run_instances.items():
-            all_agents = await self._get_all_agents(r.main_agent)
-            subagents = [name for name in all_agents if name != r.main_agent.name]
-            res.append(
-                AgentInfo(
-                    id=cid,
-                    workspace=str(r.main_agent.workspace),
-                    main_agent=r.main_agent.name,
-                    subagents=subagents,
-                )
-            )
-        return res
+        return [
+            await self._get_agent_info(r)
+            for r in self.io_adapter.run_instances.values()
+        ]
 
     async def delete_agent(self, agent_id: str):
         run_instance = self.io_adapter.run_instances.pop(agent_id, None)
@@ -621,29 +641,12 @@ class VercelStreamServer:
             run_instance.task.cancel()
         return {"status": "deleted"}
 
-    def _resolve_main_agent(self, agent_id: str):
-        run_instance = self.io_adapter.run_instances.get(agent_id)
-        if not run_instance:
-            raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found.")
-        return run_instance.main_agent
-
-    async def _resolve_agent(self, agent_id: str, agent_name: str):
-        main_agent = self._resolve_main_agent(agent_id)
-        all_agents = await self._get_all_agents(main_agent)
-        agent = all_agents.get(agent_name)
-        if not agent:
-            raise HTTPException(
-                status_code=404, detail=f"Agent {agent_name} not found."
-            )
-        return agent
-
     async def ws(self, websocket: WebSocket, agent_id: str, agent_name: str):
         run_instance = self.io_adapter.run_instances.get(agent_id)
         if not run_instance:
             await websocket.close(code=4004, reason="agent not found")
             return
-        all_agents = await self._get_all_agents(run_instance.main_agent)
-        agent = all_agents.get(agent_name)
+        agent = await run_instance.get_agent(agent_name)
         if not agent:
             await websocket.close(code=4004, reason="agent not found")
             return
@@ -656,20 +659,11 @@ class VercelStreamServer:
         command: str | None = None,
         q: str | None = None,
     ):
-        return await self.io_adapter.suggestions(
-            await self._resolve_agent(agent_id, agent_name), command, q
-        )
+        agent = await self._get_agent(agent_id, agent_name)
+        return await self.io_adapter.suggestions(agent, command, q)
 
     async def state(self, agent_id: str, agent_name: str):
-        run_instance = self.io_adapter.run_instances.get(agent_id)
-        if not run_instance:
-            raise HTTPException(status_code=404, detail="Agent not found")
-
-        main_agent = run_instance.main_agent
-        all_agents = await self._get_all_agents(main_agent)
-        agent = all_agents.get(agent_name)
-        if not agent:
-            raise HTTPException(status_code=404, detail="Agent not found")
+        agent = await self._get_agent(agent_id, agent_name)
 
         from pydantic_ai.ui.vercel_ai._adapter import VercelAIAdapter
 
