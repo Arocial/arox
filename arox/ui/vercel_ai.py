@@ -313,17 +313,22 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
         elif isinstance(event, ChatInputEvent):
             messages.append(
-                {"type": "data-input-request", "data": event.generate_request()}
+                {"type": "cmd-input-request", "payload": event.generate_request()}
             )
+            # Emit an explicit stream close signal to let the frontend decouple
+            # stream management from business logic.
+            messages.append({"type": "stream-close"})
 
         elif isinstance(event, StepDoneEvent):
             messages.append({"type": "step-done"})
 
         elif isinstance(event, ServerIdMapping):
             frame = {
-                "type": "data-user-turn",
-                "eventId": event.event_id,
-                "messageId": event.client_id,
+                "type": "cmd-user-turn",
+                "payload": {
+                    "eventId": event.event_id,
+                    "messageId": event.client_id,
+                }
             }
             messages.append(frame)
 

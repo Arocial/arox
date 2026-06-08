@@ -60,9 +60,10 @@ Arox adds a few non-standard frames on the same channel:
 
 | type | fields | meaning |
 |---|---|---|
-| `data-input-request` | `data` | agent is waiting for user input; `data` carries `req_id`, `deferred_tools`, `normal_input`, `exception_input` |
-| `data-user-turn` | `eventIndex`, `messageId?` | a user-turn anchor was just recorded in the agent session; `eventIndex` is the absolute event index usable as `ForkEvent.event_index`. `messageId` echoes the `client_message_id` carried on the matching `reply`, when present |
+| `cmd-input-request` | `payload` | agent is waiting for user input; `payload` carries `req_id`, `deferred_tools`, `normal_input`, `exception_input` |
+| `cmd-user-turn` | `payload` | a user-turn anchor was just recorded in the agent session. `payload` carries `eventId` and `messageId` |
 | `step-done` | — | current step fully drained; next step may follow on the same connection |
+| `stream-close` | — | explicit signal to close the current UI message stream |
 | `ack` | `status` | acknowledgment of a client-sent message (see below) |
 
 **Client → Server messages** (JSON)
