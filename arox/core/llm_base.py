@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncIterable, Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, overload
 
 import fastmcp
 from httpx import AsyncClient, HTTPStatusError, Timeout, TransportError
@@ -68,7 +68,16 @@ from arox.core.session import (
     AgentSession,
 )
 from arox.core.skills import build_skill_catalog, discover_skills
-from arox.core.slot import ResultAggregator, Slot
+from arox.core.slot import (
+    BaseSlot,
+    DiscardSlot,
+    FirstSlot,
+    ListSlot,
+    ResultAggregator,
+)
+from arox.core.slot import (
+    Provider as SlotProvider,
+)
 from arox.plugins.slots import (
     AGENT_RESET,
 )
@@ -336,15 +345,35 @@ class LLMBaseAgent(IOHost):
                 return plugin
         return None
 
-    def provide_slot[T](self, slot: Slot[T], provider: T):
+    def provide_slot[P: SlotProvider, R](self, slot: BaseSlot[P, R], provider: P):
         """Register a provider for a specific slot."""
         if slot not in self._slots:
             self._slots[slot] = []
         self._slots[slot].append(provider)
 
-    async def invoke_slot[T](
-        self, slot: Slot[T], *args: Any, **kwargs: Any
-    ) -> T | list[T] | None:
+    @overload
+    async def invoke_slot[P: SlotProvider, R](
+        self, slot: ListSlot[P, R], *args: Any, **kwargs: Any
+    ) -> list[R]: ...
+
+    @overload
+    async def invoke_slot[P: SlotProvider, R](
+        self, slot: FirstSlot[P, R], *args: Any, **kwargs: Any
+    ) -> R | None: ...
+
+    @overload
+    async def invoke_slot[P: SlotProvider](
+        self, slot: DiscardSlot[P], *args: Any, **kwargs: Any
+    ) -> None: ...
+
+    @overload
+    async def invoke_slot[P: SlotProvider, R](
+        self, slot: BaseSlot[P, R], *args: Any, **kwargs: Any
+    ) -> R: ...
+
+    async def invoke_slot(
+        self, slot: BaseSlot[Any, Any], *args: Any, **kwargs: Any
+    ) -> Any:
         """Dispatch to registered providers using the slot's aggregator strategy.
 
         * ``DISCARD`` – invoke every provider in registration order, discard

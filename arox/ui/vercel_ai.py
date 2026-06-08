@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import cast, override
+from typing import override
 
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -151,10 +151,7 @@ class AgentRun:
     async def get_agent(self, name: str) -> LLMBaseAgent | None:
         if self.main_agent.name == name:
             return self.main_agent
-        # invoke_slot(SUBAGENTS) returns list[MainAgent] via ResultAggregator.FIRST
-        subagents = cast(
-            list[LLMBaseAgent] | None, await self.main_agent.invoke_slot(SUBAGENTS)
-        )
+        subagents = await self.main_agent.invoke_slot(SUBAGENTS)
         if subagents:
             for sa in subagents:
                 if sa.name == name:
@@ -162,10 +159,7 @@ class AgentRun:
         return None
 
     async def get_subagent_names(self) -> list[str]:
-        # invoke_slot(SUBAGENTS) returns list[MainAgent] via ResultAggregator.FIRST
-        subagents = cast(
-            list[LLMBaseAgent] | None, await self.main_agent.invoke_slot(SUBAGENTS)
-        )
+        subagents = await self.main_agent.invoke_slot(SUBAGENTS)
         if subagents:
             return [sa.name for sa in subagents]
         return []
