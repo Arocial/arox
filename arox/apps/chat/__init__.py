@@ -141,7 +141,6 @@ def main(profile: str | None = None):
             main_agent.session.manager = session_manager
 
             async with session_manager, io_adapter:
-                await io_adapter.register_host(main_agent)
                 async with main_agent:
                     if args.session:
                         await main_agent.agent_io.send(

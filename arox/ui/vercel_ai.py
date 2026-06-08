@@ -593,7 +593,6 @@ class VercelStreamServer:
 
         async def run_agent():
             async with self.io_adapter:
-                await self.io_adapter.register_host(main_agent)
                 async with main_agent:
                     if request.session_id:
                         await main_agent.agent_io.send(

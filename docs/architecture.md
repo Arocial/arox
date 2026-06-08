@@ -34,7 +34,6 @@ Every agent holds its own **`IOEndpoint`** (`agent.agent_io`), created by `creat
 
 One **`AbstractIOAdapter`** (`arox/ui/`) is instantiated per App. The adapter:
 
-- Registers hosts (agents) via `register_host`.
 - Consumes each agent's matching adapter-side `IOEndpoint`.
 - Renders events to the concrete UI.
 

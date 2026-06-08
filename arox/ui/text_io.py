@@ -38,6 +38,8 @@ logger = logging.getLogger(__name__)
 
 class UserInputGenerator:
     def __init__(self, completer=None, input=None, output=None):
+        self.input = input
+        self.output = output
         self.history = FileHistory(".arox_history")
         self.kb = KeyBindings()
 
@@ -118,7 +120,11 @@ class TextIOAdapter(AbstractIOAdapter):
         if cmd_mgr is not None:
             merged_router.merge(cmd_mgr.completion_router)
         completer = CommandCompleter(merged_router, agent=host)
-        self.user_input = UserInputGenerator(completer=completer)
+        self.user_input = UserInputGenerator(
+            completer=completer,
+            input=self.user_input.input,
+            output=self.user_input.output,
+        )
 
     async def __aenter__(self):
         def sigint_handler(signum, frame):

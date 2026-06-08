@@ -414,6 +414,7 @@ class LLMBaseAgent(IOHost):
 
     async def __aenter__(self):
         await super().__aenter__()
+        await self.io_adapter.register_host(self)
 
         if self.mcp_client:
             await self._stack.enter_async_context(self.mcp_client)
