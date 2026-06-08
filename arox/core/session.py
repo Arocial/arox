@@ -449,7 +449,7 @@ class SessionStore(Protocol):
 class FileSessionStore:
     def __init__(self, base_dir: Path | None = None, max_age_days: int = 30):
         if base_dir is None:
-            base_dir = Path.home() / ".local" / "share" / "arox" / "sessions"
+            base_dir = Path.home() / ".arox" / "sessions"
         self.base_dir = base_dir
         self.max_age_days = max_age_days
         self._session_types: dict[str, type[Session]] = {}
