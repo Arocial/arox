@@ -115,7 +115,9 @@ class ShellPlugin(Plugin):
             return [shell_path, "/c", command]
         return [shell_path, "-c", command]
 
-    async def _spawn(self, command: str) -> asyncio.subprocess.Process:
+    async def _spawn(
+        self, command: str, stdin: int | None = asyncio.subprocess.DEVNULL
+    ) -> asyncio.subprocess.Process:
         cmd_args = self._get_cmd(command)
         kwargs: dict = {}
         if sys.platform != "win32":
@@ -129,7 +131,7 @@ class ShellPlugin(Plugin):
         return await asyncio.create_subprocess_exec(
             *cmd_args,
             cwd=str(self.workspace),
-            stdin=asyncio.subprocess.PIPE,
+            stdin=stdin,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
@@ -255,7 +257,7 @@ class ShellPlugin(Plugin):
 
         Rules
             1. For searching code, use `rg` or `ast-grep`.
-            2. Interactive commands that need stdin will block waiting for input. Use `shell_state` to see the prompt and `shell_input` to provide the required input.
+            2. If a command requires stdin input (interactive commands), you MUST set `run_in_background=True`. Foreground commands have stdin attached to /dev/null and will fail if they try to read input. For background tasks, use `shell_state` to see the prompt and `shell_input` to provide the required input.
             3. The command runs via `{{ shell_type }} -c`, so quoting matters:
                - Wrap literal text in single quotes to disable $ expansion:
                      echo 'literal $HOME and `cmd`'
@@ -313,7 +315,12 @@ class ShellPlugin(Plugin):
 
         logger.info("Executing shell command (%s): %s", description, command)
         try:
-            process = await self._spawn(command)
+            stdin = (
+                asyncio.subprocess.PIPE
+                if run_in_background
+                else asyncio.subprocess.DEVNULL
+            )
+            process = await self._spawn(command, stdin=stdin)
         except Exception as e:
             return f"Error spawning command: {e!s}"
 
