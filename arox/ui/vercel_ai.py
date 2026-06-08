@@ -583,7 +583,7 @@ class VercelStreamServer:
         parsed_config = self.parsed_config.model_copy(deep=True)
 
         if request.session_id:
-            session = await self.session_store.load_session(request.session_id)
+            session = await self.session_store.load_session([request.session_id])
             if not session or not isinstance(session, AgentSession):
                 raise HTTPException(
                     status_code=404, detail="Session not found or invalid"
@@ -732,7 +732,7 @@ class VercelStreamServer:
         ]
 
     async def delete_session(self, session_id: str):
-        await self.session_store.delete_session(session_id)
+        await self.session_store.delete_session([session_id])
         return {"status": "deleted"}
 
     async def run(self):

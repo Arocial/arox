@@ -49,8 +49,6 @@ class ResetEvent(SessionEvent):
 class StepEvent(SessionEvent):
     event_type: Literal["agent_step"] = "agent_step"
     new_messages: list[ModelMessage] = Field(default_factory=list)
-    request_tokens: int | None = None
-    response_tokens: int | None = None
 
 
 class CommandEvent(SessionEvent):
@@ -84,7 +82,7 @@ class SubagentCreatedEvent(SessionEvent):
 class SubagentDeletedEvent(SessionEvent):
     event_type: Literal["subagent_deleted"] = "subagent_deleted"
     subagent: str = ""
-    session_id: str | None = None
+    session_path: list[str] | None = None
 
 
 class CompactionEvent(SessionEvent):
@@ -111,12 +109,11 @@ AnySessionEvent = Annotated[
 
 
 class Session(BaseModel):
-    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    path: list[str] = Field(default_factory=lambda: [str(uuid.uuid4())])
     session_type: str
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    forked_from: dict[str, int] | None = None
-    owner_path: list[str] = Field(default_factory=list)
+    forked_from: tuple[list[str], str] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     events: list[AnySessionEvent] = Field(default_factory=list)
     # Session ids owned by this one (its subsessions).
@@ -124,6 +121,10 @@ class Session(BaseModel):
 
     manager: Any = Field(default=None, exclude=True, repr=False)
     owner: Any = Field(default=None, exclude=True, repr=False)
+
+    @property
+    def id(self) -> str:
+        return self.path[-1]
 
     async def save(self) -> None:
         if self.manager:
@@ -150,13 +151,19 @@ class Session(BaseModel):
         return None
 
 
+class AgentRunInfo(BaseModel):
+    context_tokens: int = 0
+    total_tokens: int = 0
+    llm_context_id: str | None = None
+
+
 class AgentSession(Session):
     session_type: str = "agent"
     agent_name: str
     agent_config: AgentConfig = Field(default_factory=AgentConfig)
     agent_source: Literal["static", "dynamic"] = "dynamic"
     workspace: str | None = None
-    llm_context_id: str | None = None
+    run_info: AgentRunInfo = Field(default_factory=AgentRunInfo)
     extra: dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
@@ -170,12 +177,12 @@ class AgentSession(Session):
         agent_config = parsed_config.agent.get(agent_name) or AgentConfig()
         ws = str(Path(workspace).absolute()) if workspace else str(Path.cwd())
         return cls(
-            id=str(uuid.uuid4()),
+            path=[str(uuid.uuid4())],
             agent_name=agent_name,
             agent_config=agent_config.model_copy(deep=True),
             agent_source="static",
             workspace=ws,
-            llm_context_id=str(uuid.uuid4()),
+            run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
         )
 
     async def build_instance(self, session_manager: SessionManager, **kwargs) -> Any:
@@ -202,14 +209,14 @@ class AgentSession(Session):
         return history
 
     def rebuild_llm_context_id(self) -> str | None:
-        context_id = self.llm_context_id
+        context_id = self.run_info.llm_context_id
         for event in self.events:
             if isinstance(event, (CompactionEvent, ResetEvent)):
                 context_id = event.llm_context_id
         return context_id
 
     def record_reset(self, llm_context_id: str) -> None:
-        self.llm_context_id = llm_context_id
+        self.run_info.llm_context_id = llm_context_id
         self.add_event(
             ResetEvent(llm_context_id=llm_context_id, agent_name=self.agent_name)
         )
@@ -218,14 +225,10 @@ class AgentSession(Session):
     def record_step(
         self,
         new_messages: Sequence[ModelMessage],
-        request_tokens: int | None = None,
-        response_tokens: int | None = None,
     ) -> None:
         self.add_event(
             StepEvent(
                 new_messages=list(new_messages),
-                request_tokens=request_tokens,
-                response_tokens=response_tokens,
                 agent_name=self.agent_name,
             )
         )
@@ -267,12 +270,12 @@ class AgentSession(Session):
         )
 
     def record_subagent_deleted(
-        self, subagent_name: str, session_id: str | None
+        self, subagent_name: str, session_path: list[str] | None
     ) -> None:
         self.add_event(
             SubagentDeletedEvent(
                 subagent=subagent_name,
-                session_id=session_id,
+                session_path=session_path,
                 agent_name=self.agent_name,
             )
         )
@@ -283,7 +286,7 @@ class AgentSession(Session):
         step_boundary: bool,
         llm_context_id: str,
     ) -> None:
-        self.llm_context_id = llm_context_id
+        self.run_info.llm_context_id = llm_context_id
         self.add_event(
             CompactionEvent(
                 step_boundary=step_boundary,
@@ -293,16 +296,18 @@ class AgentSession(Session):
             )
         )
 
-    async def fork_at(self, event_id: str | None) -> "AgentSession":
+    async def fork_at(
+        self, event_id: str | None, new_owner: Session | None = None
+    ) -> "AgentSession":
         """Branch a new session off this one
 
         With ``event_id`` the new session is a truncated copy holding the events
         up to (but excluding) that anchor, tagged via ``forked_from``. With
         ``event_id`` set to ``None`` it starts empty and unforked.
         """
-        owner = self.owner
+        owner = new_owner or self.owner
 
-        forked_from: dict[str, int] | None
+        forked_from: tuple[list[str], str] | None
         if event_id is None:
             events = []
             forked_from = None
@@ -311,21 +316,17 @@ class AgentSession(Session):
             if event_index is None:
                 raise ValueError(f"event {event_id} not found")
             events = [ev.model_copy(deep=True) for ev in self.events[:event_index]]
-            forked_from = {self.agent_name: event_index}
-        new_id = str(uuid.uuid4())
+            forked_from = (self.path, event_id)
 
-        new_session = AgentSession(
-            id=new_id,
-            agent_name=self.agent_name,
-            agent_config=self.agent_config.model_copy(deep=True),
-            agent_source=self.agent_source,
-            workspace=self.workspace,
-            llm_context_id=self.llm_context_id,
-            owner_path=[*owner.owner_path, owner.id] if owner else [],
-            events=events,
-            extra=dict(self.extra),
-            forked_from=forked_from,
+        new_session = self.model_copy(deep=True)
+        new_session.path = (
+            [*owner.path, str(uuid.uuid4())] if owner else [str(uuid.uuid4())]
         )
+        new_session.events = events
+        new_session.forked_from = forked_from
+        new_session.run_info.llm_context_id = str(uuid.uuid4())
+        new_session.children = []
+
         new_session.manager = self.manager
         new_session.owner = owner
         if owner:
@@ -416,9 +417,11 @@ class SessionManager:
     async def save_session(self, session: Session) -> None:
         await self.session_store.save_session(session)
 
-    async def load_session(self, session_id, owner: Session | None) -> Session | None:
-        owner_path = [*owner.owner_path, owner.id] if owner else []
-        session = await self.session_store.load_session(session_id, owner_path)
+    async def load_session(
+        self, session_id: str, owner: Session | None
+    ) -> Session | None:
+        path = [*owner.path, session_id] if owner else [session_id]
+        session = await self.session_store.load_session(path)
         if session:
             session.owner = owner
         return session
@@ -437,13 +440,9 @@ class SessionManager:
 class SessionStore(Protocol):
     def set_session_types(self, session_types: dict[str, type[Session]]) -> None: ...
     async def list_sessions(self, session_type: str = "agent") -> list[Session]: ...
-    async def load_session(
-        self, session_id: str, owner_path: list[str] | None = None
-    ) -> Session | None: ...
+    async def load_session(self, path: list[str]) -> Session | None: ...
     async def save_session(self, session: Session) -> None: ...
-    async def delete_session(
-        self, session_id: str, owner_path: list[str] | None = None
-    ) -> None: ...
+    async def delete_session(self, path: list[str]) -> None: ...
     async def cleanup(self, max_age_days: int | None = None) -> int: ...
 
 
@@ -458,19 +457,11 @@ class FileSessionStore:
     def set_session_types(self, session_types: dict[str, type[Session]]) -> None:
         self._session_types = session_types
 
-    def _session_dir(
-        self, session_id: str, owner_path: list[str] | None = None
-    ) -> Path:
-        path = self.base_dir
-        if owner_path:
-            for owner in owner_path:
-                path = path / owner
-        return path / session_id
+    def _session_dir(self, path: list[str]) -> Path:
+        return self.base_dir.joinpath(*path)
 
-    def _session_meta_path(
-        self, session_id: str, owner_path: list[str] | None = None
-    ) -> Path:
-        return self._session_dir(session_id, owner_path) / "session.json"
+    def _session_meta_path(self, path: list[str]) -> Path:
+        return self._session_dir(path) / "session.json"
 
     async def list_sessions(self, session_type: str = "agent") -> list[Session]:
         if not self.base_dir.exists():
@@ -494,11 +485,8 @@ class FileSessionStore:
         sessions.sort(key=lambda s: s.updated_at, reverse=True)
         return sessions
 
-    async def load_session(
-        self, session_id: str, owner_path: list[str] | None = None
-    ) -> Session | None:
-        owner_path = owner_path or []
-        meta_path = self._session_meta_path(session_id, owner_path)
+    async def load_session(self, path: list[str]) -> Session | None:
+        meta_path = self._session_meta_path(path)
         if not meta_path.exists():
             return None
 
@@ -509,20 +497,18 @@ class FileSessionStore:
 
     async def save_session(self, session: Session) -> None:
         session.updated_at = datetime.now(UTC)
-        session_dir = self._session_dir(session.id, session.owner_path)
+        session_dir = self._session_dir(session.path)
         session_dir.mkdir(parents=True, exist_ok=True)
 
         meta = session.model_dump(mode="json")
-        self._session_meta_path(session.id, session.owner_path).write_text(
+        self._session_meta_path(session.path).write_text(
             json.dumps(meta, indent=2, ensure_ascii=False)
         )
 
-    async def delete_session(
-        self, session_id: str, owner_path: list[str] | None = None
-    ) -> None:
+    async def delete_session(self, path: list[str]) -> None:
         import shutil
 
-        session_dir = self._session_dir(session_id, owner_path)
+        session_dir = self._session_dir(path)
         if session_dir.exists():
             shutil.rmtree(session_dir)
 

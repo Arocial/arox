@@ -124,11 +124,11 @@ class CompactionPlugin(Plugin):
         ``step_boundary`` indicates if the compaction is inside one agent step.
         """
         agent = self.agent
-        agent.llm_context_id = str(uuid.uuid4())
+        agent.run_info.llm_context_id = str(uuid.uuid4())
         agent.session.record_compaction(
             compacted,
             step_boundary,
-            agent.llm_context_id,
+            agent.run_info.llm_context_id,
         )
 
     async def history_processor(
@@ -157,7 +157,7 @@ class CompactionPlugin(Plugin):
         from pydantic_ai._agent_graph import _first_new_message_index
 
         if ctx.run_id:
-            self.agent.run_info.new_message_index = _first_new_message_index(
+            self.agent.new_message_index = _first_new_message_index(
                 messages, ctx.run_id, resumed_request=None
             )
         return compacted

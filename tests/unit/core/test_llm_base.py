@@ -104,7 +104,7 @@ skills = ["skill1"]
         parsed_config,
         io_adapter=io_adapter,
         session=AgentSession(
-            id="dummy",
+            path=["dummy"],
             agent_name="test_agent",
             agent_config=parsed_config.agent["test_agent"],
         ),
@@ -160,7 +160,7 @@ skills = "skill2"
         parsed_config,
         io_adapter=io_adapter,
         session=AgentSession(
-            id="dummy",
+            path=["dummy"],
             agent_name="test_agent",
             agent_config=parsed_config.agent["test_agent"],
         ),
@@ -215,7 +215,7 @@ system_prompt = "Hi there."
         parsed_config,
         io_adapter=io_adapter,
         session=AgentSession(
-            id="dummy",
+            path=["dummy"],
             agent_name="test_agent",
             agent_config=parsed_config.agent["test_agent"],
         ),
@@ -247,7 +247,7 @@ system_prompt = "Hi."
     agent = LLMBaseAgent(
         parsed_config,
         io_adapter=_StubIOAdapter(),
-        session=AgentSession(id="dummy", agent_name="test_agent"),
+        session=AgentSession(path=["dummy"], agent_name="test_agent"),
     )
 
     async def handler(event):
@@ -278,7 +278,7 @@ system_prompt = "Hi."
     agent = LLMBaseAgent(
         parsed_config,
         io_adapter=_StubIOAdapter(),
-        session=AgentSession(id="dummy", agent_name="test_agent"),
+        session=AgentSession(path=["dummy"], agent_name="test_agent"),
     )
 
     calls: list[str] = []

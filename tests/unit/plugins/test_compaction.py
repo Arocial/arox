@@ -33,7 +33,7 @@ class _MockAgent:
 
     def __init__(self, threshold: int | None, persistent=None):
         self.message_history = []
-        self.llm_context_id = "ctx-original"
+        self.run_info = SimpleNamespace(context_tokens=0, llm_context_id="ctx-original")
         self.model_config = None
         self.parsed_config = SimpleNamespace(compaction_threshold=threshold)
         self.model_params = {}
@@ -41,7 +41,6 @@ class _MockAgent:
         self.session = AgentSession(agent_name="main")
         self._compaction_agent = _FakeCompactionAgent()
         self._persistent = persistent or []
-        self.run_info = SimpleNamespace(context_tokens=0, total_tokens=0)
 
     async def _send(self, _msg):
         return None
@@ -88,7 +87,7 @@ async def test_auto_compaction_below_threshold_is_noop():
 
     assert out == messages
     assert [e.event_type for e in agent.session.events] == []
-    assert agent.llm_context_id == "ctx-original"
+    assert agent.run_info.llm_context_id == "ctx-original"
 
 
 @pytest.mark.asyncio
@@ -136,7 +135,7 @@ async def test_auto_compaction_compacts_mid_tool_loop():
         for p in m.parts
     )
     assert [e.event_type for e in agent.session.events] == ["compaction"]
-    assert agent.llm_context_id != "ctx-original"
+    assert agent.run_info.llm_context_id != "ctx-original"
 
 
 @pytest.mark.asyncio
@@ -169,8 +168,8 @@ async def test_auto_compaction_records_event_and_stays_consistent():
     events = agent.session.events
     assert [e.event_type for e in events] == ["compaction"]
     compaction = cast(CompactionEvent, events[0])
-    assert agent.llm_context_id != "ctx-original"
-    assert compaction.llm_context_id == agent.llm_context_id
+    assert agent.run_info.llm_context_id != "ctx-original"
+    assert compaction.llm_context_id == agent.run_info.llm_context_id
 
     assert compaction.compacted_messages == out
 
@@ -194,7 +193,7 @@ async def test_manual_compact_records_event_and_replaces_history():
     await plugin.handle_compact(CompactEvent(extra_instructions=""))
 
     assert [e.event_type for e in agent.session.events] == ["compaction"]
-    assert agent.llm_context_id != "ctx-original"
+    assert agent.run_info.llm_context_id != "ctx-original"
     # Manual compaction replaces the live history with the summary base.
     assert "SUMMARY" in _first_text(agent.message_history[0])
     assert len(agent.message_history) == 1

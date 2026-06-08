@@ -41,7 +41,7 @@ system_prompt = "Hi there."
         agent = ChatAgent(
             parsed_config,
             io_adapter=io_adapter,
-            session=AgentSession(id="dummy", agent_name="dummy_chat"),
+            session=AgentSession(path=["dummy"], agent_name="dummy_chat"),
         )
         agent.add_local_tool(multiply)
         io_adapter.user_input = user_input

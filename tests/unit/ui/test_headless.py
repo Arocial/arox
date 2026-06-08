@@ -25,7 +25,7 @@ system_prompt = "Hi there."
     agent = ChatAgent(
         parsed_config,
         io_adapter=io_adapter,
-        session=AgentSession(id="dummy", agent_name="dummy_chat"),
+        session=AgentSession(path=["dummy"], agent_name="dummy_chat"),
     )
 
     test_model = TestModel(custom_output_text="hello world")
@@ -56,7 +56,7 @@ system_prompt = "Hi there."
     agent = ChatAgent(
         parsed_config,
         io_adapter=io_adapter,
-        session=AgentSession(id="dummy", agent_name="dummy_chat"),
+        session=AgentSession(path=["dummy"], agent_name="dummy_chat"),
     )
 
     async def failing_step(*args, **kwargs):

@@ -65,6 +65,7 @@ from arox.core.io import (
 from arox.core.plugin import CommandManager, load_plugins
 from arox.core.session import (
     USER_INPUT_ID_KEY,
+    AgentRunInfo,
     AgentSession,
 )
 from arox.core.skills import build_skill_catalog, discover_skills
@@ -249,13 +250,6 @@ class AgentDeps:
     agent_io: IOEndpoint
 
 
-@dataclass
-class AgentRunInfo:
-    context_tokens: int = 0
-    total_tokens: int = 0
-    new_message_index: int = 0
-
-
 class LLMBaseAgent(IOHost):
     def __init__(
         self,
@@ -274,13 +268,13 @@ class LLMBaseAgent(IOHost):
         self.mcp_client = None
         self.plugins = []
         self.message_history: list[ModelMessage] = []
+        self.new_message_index = 0
 
         self.parse_configs()
         self._restore_agent_session(session)
 
         self.command_manager = CommandManager(self)
 
-        self.run_info = AgentRunInfo()
         self.result = None
         self.builtin_hooks = Hooks[AgentDeps]()
         self.builtin_hooks.on.run(self._wrap_run)
@@ -321,14 +315,6 @@ class LLMBaseAgent(IOHost):
         self.session.workspace = str(Path(value).absolute()) if value else None
 
     @property
-    def llm_context_id(self) -> str:
-        return self.session.llm_context_id or ""
-
-    @llm_context_id.setter
-    def llm_context_id(self, value: str):
-        self.session.llm_context_id = value
-
-    @property
     def agent_config(self) -> AgentConfig:
         return self.session.agent_config
 
@@ -339,6 +325,14 @@ class LLMBaseAgent(IOHost):
     @property
     def agent_source(self) -> Literal["static", "dynamic"]:
         return self.session.agent_source
+
+    @property
+    def run_info(self) -> AgentRunInfo:
+        return self.session.run_info
+
+    @run_info.setter
+    def run_info(self, value: AgentRunInfo):
+        self.session.run_info = value
 
     async def handle_event(
         self, ctx: RunContext["AgentDeps"], events: AsyncIterable[AgentStreamEvent]
@@ -415,7 +409,7 @@ class LLMBaseAgent(IOHost):
         self.message_history = agent_session.rebuild_message_history()
         restored_id = agent_session.rebuild_llm_context_id()
         if restored_id:
-            self.llm_context_id = restored_id
+            self.run_info.llm_context_id = restored_id
         if self.model_ref:
             self.set_model(self.model_ref)
 
@@ -451,7 +445,7 @@ class LLMBaseAgent(IOHost):
                 base_url=self.parsed_config.provider[p].base_url
                 if p in self.parsed_config.provider
                 else "",
-                session_id_fn=lambda: self.llm_context_id,
+                session_id_fn=lambda: self.run_info.llm_context_id or "",
                 session_header=self.parsed_config.provider[p].session_header
                 if p in self.parsed_config.provider
                 else "",
@@ -561,7 +555,7 @@ class LLMBaseAgent(IOHost):
     ) -> AgentRunResult[Any]:
         from pydantic_ai._agent_graph import GraphAgentState
 
-        self.run_info.new_message_index = len(ctx.messages)
+        self.new_message_index = len(ctx.messages)
         try:
             result = await handler()
         except Exception as error:
@@ -578,7 +572,7 @@ class LLMBaseAgent(IOHost):
             result = AgentRunResult(
                 output=error,
                 _state=state,
-                _new_message_index=self.run_info.new_message_index,
+                _new_message_index=self.new_message_index,
             )
         return result
 
@@ -662,21 +656,18 @@ class LLMBaseAgent(IOHost):
         self.result = result
         self.message_history = result.all_messages()
 
-        usage = result.usage
         self.session.record_step(
             result.new_messages(),
-            request_tokens=usage.input_tokens if usage else None,
-            response_tokens=usage.output_tokens if usage else None,
         )
         await self.agent_io.send(AgentRunResultEvent(result))
         return result
 
     async def reset(self):
         self.message_history = []
-        self.llm_context_id = str(uuid.uuid4())
         self.run_info = AgentRunInfo()
+        self.run_info.llm_context_id = str(uuid.uuid4())
         await self.invoke_slot(AGENT_RESET)
-        self.session.record_reset(self.llm_context_id)
+        self.session.record_reset(self.run_info.llm_context_id)
 
 
 class MainAgent(LLMBaseAgent, ABC):

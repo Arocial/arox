@@ -124,7 +124,7 @@ class TestAgentSession:
 
     @pytest.mark.asyncio
     async def test_fork_at_event(self):
-        agent_session = AgentSession(agent_name="main", owner_path=["parent"])
+        agent_session = AgentSession(agent_name="main", path=["parent", "main"])
         agent_session.add_event(UserInputEvent(text="first"))
         agent_session.add_event(
             StepEvent(
@@ -136,15 +136,15 @@ class TestAgentSession:
         )
         anchor = agent_session.add_event(UserInputEvent(text="second"))
 
-        agent_session.owner = AgentSession(agent_name="parent")
+        agent_session.owner = AgentSession(agent_name="parent", path=["parent"])
         forked = await agent_session.fork_at(anchor.id)
         # Independent object truncated just before the anchor event
         assert forked is not agent_session
         assert forked.id != agent_session.id
         assert len(forked.events) == 2
-        assert forked.forked_from == {"main": 2}
+        assert forked.forked_from == (agent_session.path, anchor.id)
         # owner info is correctly inherited
-        assert forked.owner_path == [agent_session.owner.id]
+        assert forked.path[:-1] == agent_session.owner.path
         # Original is untouched
         assert len(agent_session.events) == 3
 
@@ -156,15 +156,15 @@ class TestAgentSession:
 
     @pytest.mark.asyncio
     async def test_fork_at_none_creates_empty(self):
-        agent_session = AgentSession(agent_name="main", owner_path=["parent"])
-        agent_session.owner = AgentSession(agent_name="newowner")
+        agent_session = AgentSession(agent_name="main", path=["parent", "main"])
+        agent_session.owner = AgentSession(agent_name="newowner", path=["newowner"])
         agent_session.add_event(UserInputEvent(text="first"))
 
         forked = await agent_session.fork_at(None)
         assert forked.events == []
         assert forked.forked_from is None
         # owner taken from the path; a fresh id is minted (located by nesting)
-        assert forked.owner_path == [agent_session.owner.id]
+        assert forked.path[:-1] == agent_session.owner.path
         assert forked.id != agent_session.id
 
     @pytest.mark.asyncio
@@ -172,20 +172,20 @@ class TestAgentSession:
         agent_session = AgentSession(agent_name="main")
         agent_session.add_event(UserInputEvent(text="first"))
         with pytest.raises(ValueError):
-            agent_session.owner = AgentSession(agent_name="owner")
+            agent_session.owner = AgentSession(agent_name="owner", path=["owner"])
             await agent_session.fork_at("does-not-exist")
 
     @pytest.mark.asyncio
     async def test_fork_at_inherits_owner(self):
-        owner = AgentSession(agent_name="parent")
-        agent_session = AgentSession(agent_name="main")
+        owner = AgentSession(agent_name="parent", path=["parent"])
+        agent_session = AgentSession(agent_name="main", path=["parent", "main"])
         agent_session.owner = owner
         agent_session.add_event(UserInputEvent(text="first"))
         anchor = agent_session.add_event(UserInputEvent(text="second"))
 
         forked = await agent_session.fork_at(anchor.id)
         assert forked.owner is owner
-        assert forked.owner_path == [owner.id]
+        assert forked.path[:-1] == owner.path
         assert forked.id in owner.children
 
     def test_non_step_events_ignored_in_rebuild(self):
@@ -224,8 +224,8 @@ class TestFileSessionStore:
     @pytest.mark.asyncio
     async def test_save_and_load(self, store):
         # A top-level main-agent session with a subagent session nested under it.
-        session = AgentSession(agent_name="coder")
-        agent_session = AgentSession(agent_name="sub", owner_path=[session.id])
+        session = AgentSession(agent_name="coder", path=["coder"])
+        agent_session = AgentSession(agent_name="sub", path=["coder", "sub"])
         agent_session.add_event(UserInputEvent(text="hello"))
         agent_session.add_event(
             StepEvent(
@@ -239,15 +239,13 @@ class TestFileSessionStore:
         await store.save_session(session)
         await store.save_session(agent_session)
 
-        loaded = await store.load_session(session.id)
+        loaded = await store.load_session(session.path)
         assert loaded is not None
         assert loaded.id == session.id
         assert isinstance(loaded, AgentSession)
         assert loaded.agent_name == "coder"
 
-        loaded_agent = await store.load_session(
-            agent_session.id, owner_path=[session.id]
-        )
+        loaded_agent = await store.load_session(agent_session.path)
         assert loaded_agent is not None
         assert isinstance(loaded_agent, AgentSession)
         assert loaded_agent.agent_name == "sub"
@@ -258,9 +256,9 @@ class TestFileSessionStore:
     @pytest.mark.asyncio
     async def test_load_keeps_children_as_ids(self, store):
         # main -> sub -> grandchild nesting, each persisted under its owner.
-        main = AgentSession(agent_name="main")
-        sub = AgentSession(agent_name="sub", owner_path=[main.id])
-        grand = AgentSession(agent_name="grand", owner_path=[main.id, sub.id])
+        main = AgentSession(agent_name="main", path=["main"])
+        sub = AgentSession(agent_name="sub", path=["main", "sub"])
+        grand = AgentSession(agent_name="grand", path=["main", "sub", "grand"])
         main.children.append(sub.id)
         sub.children.append(grand.id)
 
@@ -268,31 +266,31 @@ class TestFileSessionStore:
         await store.save_session(sub)
         await store.save_session(grand)
 
-        loaded = await store.load_session(main.id)
+        loaded = await store.load_session(main.path)
         assert loaded is not None
         # Subsessions are referenced by id and loaded explicitly by callers.
         assert loaded.children == [sub.id]
-        loaded_sub = await store.load_session(sub.id, owner_path=[main.id])
+        loaded_sub = await store.load_session(sub.path)
         assert isinstance(loaded_sub, AgentSession)
         assert loaded_sub.children == [grand.id]
 
     @pytest.mark.asyncio
     async def test_children_persisted_as_ids(self, store):
-        main = AgentSession(agent_name="main")
-        sub = AgentSession(agent_name="sub", owner_path=[main.id])
+        main = AgentSession(agent_name="main", path=["main"])
+        sub = AgentSession(agent_name="sub", path=["main", "sub"])
         main.children.append(sub.id)
         await store.save_session(main)
         await store.save_session(sub)
 
         import json
 
-        raw = json.loads(store._session_meta_path(main.id).read_text())
+        raw = json.loads(store._session_meta_path(main.path).read_text())
         assert "children" in raw
         assert raw["children"] == [sub.id]
 
     @pytest.mark.asyncio
     async def test_load_nonexistent(self, store):
-        result = await store.load_session("nonexistent")
+        result = await store.load_session(["nonexistent"])
         assert result is None
 
     @pytest.mark.asyncio
@@ -333,31 +331,30 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_delete_session(self, store):
-        session = AgentSession(agent_name="coder")
+        session = AgentSession(agent_name="coder", path=["coder"])
         await store.save_session(session)
 
-        loaded = await store.load_session(session.id)
+        loaded = await store.load_session(session.path)
         assert loaded is not None
 
-        await store.delete_session(session.id)
-        loaded = await store.load_session(session.id)
+        await store.delete_session(session.path)
+        loaded = await store.load_session(session.path)
         assert loaded is None
 
     @pytest.mark.asyncio
     async def test_delete_nonexistent(self, store):
-        await store.delete_session("nonexistent")
+        await store.delete_session(["nonexistent"])
 
     @pytest.mark.asyncio
     async def test_save_overwrites(self, store):
-        session = AgentSession(agent_name="coder")
-        agent_s = AgentSession(agent_name="main", owner_path=[session.id])
+        agent_s = AgentSession(agent_name="main", path=["coder", "main"])
         agent_s.add_event(UserInputEvent(text="first"))
         await store.save_session(agent_s)
 
         agent_s.add_event(UserInputEvent(text="second"))
         await store.save_session(agent_s)
 
-        loaded = await store.load_session(agent_s.id, owner_path=[session.id])
+        loaded = await store.load_session(agent_s.path)
         assert loaded is not None
         assert len(loaded.events) == 2
 
@@ -365,34 +362,34 @@ class TestFileSessionStore:
         """Save session then overwrite updated_at to simulate an old session."""
         import json
 
-        meta_path = store._session_meta_path(session.id)
+        meta_path = store._session_meta_path(session.path)
         raw = json.loads(meta_path.read_text())
         raw["updated_at"] = (datetime.now(UTC) - timedelta(days=days)).isoformat()
         meta_path.write_text(json.dumps(raw))
 
     @pytest.mark.asyncio
     async def test_cleanup_deletes_expired(self, store):
-        old_session = AgentSession(agent_name="coder")
+        old_session = AgentSession(agent_name="coder", path=["old"])
         await store.save_session(old_session)
         self._backdate_session(store, old_session, days=60)
 
-        new_session = AgentSession(agent_name="coder")
+        new_session = AgentSession(agent_name="coder", path=["new"])
         await store.save_session(new_session)
 
         deleted = await store.cleanup(max_age_days=30)
         assert deleted == 1
 
-        assert await store.load_session(old_session.id) is None
-        assert await store.load_session(new_session.id) is not None
+        assert await store.load_session(old_session.path) is None
+        assert await store.load_session(new_session.path) is not None
 
     @pytest.mark.asyncio
     async def test_cleanup_keeps_recent(self, store):
-        session = AgentSession(agent_name="coder")
+        session = AgentSession(agent_name="coder", path=["recent"])
         await store.save_session(session)
 
         deleted = await store.cleanup(max_age_days=30)
         assert deleted == 0
-        assert await store.load_session(session.id) is not None
+        assert await store.load_session(session.path) is not None
 
     @pytest.mark.asyncio
     async def test_cleanup_empty_store(self, store):

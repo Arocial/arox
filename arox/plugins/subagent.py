@@ -10,7 +10,7 @@ from pydantic_ai.tools import ToolDefinition
 from arox.core.config import AgentConfig
 from arox.core.llm_base import AgentInfoUpdate, DelegatableAgent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, ToolDef
-from arox.core.session import AgentSession
+from arox.core.session import AgentRunInfo, AgentSession
 from arox.plugins.slots import (
     SUBAGENTS,
 )
@@ -92,22 +92,21 @@ class SubagentPlugin(Plugin):
             )
 
         owner_session = self.agent.session
-        owner_path = (
-            [*owner_session.owner_path, owner_session.id] if owner_session else []
-        )
 
         sub_session = AgentSession(
-            id=str(uuid.uuid4()),
+            path=[*owner_session.path, str(uuid.uuid4())]
+            if owner_session
+            else [str(uuid.uuid4())],
             agent_name=name,
             agent_config=agent_config.model_copy(deep=True),
             agent_source=agent_source,
             workspace=str(self.agent.workspace),
-            llm_context_id=str(uuid.uuid4()),
-            owner_path=owner_path,
+            run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
         )
         sub_session.owner = owner_session
         sub_session.manager = owner_session.manager if owner_session else None
-        owner_session.children.append(sub_session.id)
+        if owner_session:
+            owner_session.children.append(sub_session.id)
 
         subagent = agent_cls(
             self.agent.parsed_config,
@@ -210,11 +209,11 @@ class SubagentPlugin(Plugin):
             self.agent.session.children.remove(sub_session.id)
         self.agent.session.record_subagent_deleted(
             name,
-            sub_session.id,
+            sub_session.path,
         )
         if self.agent.session.manager:
             await self.agent.session.manager.session_store.delete_session(
-                sub_session.id, sub_session.owner_path
+                sub_session.path
             )
         await self._broadcast_agent_info()
         return f"Deleted subagent '{name}'."

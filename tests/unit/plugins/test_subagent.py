@@ -112,7 +112,6 @@ class _MainAgent:
         parent = parent_session or self.agent_session
         if not isinstance(parent, AgentSession) or self.session_manager is None:
             return []
-        child_owner_path = [*parent.owner_path, parent.id]
         children: list[AgentSession] = []
         for raw_child_ref in parent.children:
             child_ref: object = raw_child_ref
@@ -120,7 +119,7 @@ class _MainAgent:
                 child_ref.id if isinstance(child_ref, AgentSession) else str(child_ref)
             )
             loaded = await self.session_manager.session_store.load_session(
-                child_id, child_owner_path
+                [*parent.path, child_id]
             )
             if isinstance(loaded, AgentSession):
                 children.append(loaded)
@@ -135,9 +134,7 @@ class _MainAgent:
         if not isinstance(parent, AgentSession) or self.session_manager is None:
             return
         parent.children = [cid for cid in parent.children if cid != child_session.id]
-        await self.session_manager.session_store.delete_session(
-            child_session.id, child_session.owner_path
-        )
+        await self.session_manager.session_store.delete_session(child_session.path)
 
 
 @pytest.mark.asyncio
@@ -153,7 +150,7 @@ async def test_dynamic_subagent_persists_spec_and_restores_on_reload(
         subagent_module, "import_class", lambda *_args, **_kwargs: _FakeDynamicAgent
     )
     store = FileSessionStore(base_dir=tmp_path / "sessions")
-    main_session = AgentSession(id="main-session", agent_name="main")
+    main_session = AgentSession(path=["main-session"], agent_name="main")
     main_agent = _MainAgent(main_session, store)
     plugin = SubagentPlugin(main_agent)
 
@@ -161,13 +158,13 @@ async def test_dynamic_subagent_persists_spec_and_restores_on_reload(
         await plugin.create_subagent("planner", config={"description": "Plans work"})
 
     assert len(main_session.children) == 1
-    child = await store.load_session(main_session.children[0], [main_session.id])
+    child = await store.load_session([main_session.id, main_session.children[0]])
     assert isinstance(child, AgentSession)
     assert child.agent_name == "planner"
     assert child.agent_config.description == "Plans work"
 
     await store.save_session(main_session)
-    loaded = await store.load_session("main-session")
+    loaded = await store.load_session(["main-session"])
     assert isinstance(loaded, AgentSession)
 
     reloaded_agent = _MainAgent(loaded, store)
@@ -193,7 +190,9 @@ async def test_dynamic_subagent_can_reuse_existing_config(tmp_path, monkeypatch)
         subagent_module, "import_class", lambda *_args, **_kwargs: _FakeDynamicAgent
     )
     store = FileSessionStore(base_dir=tmp_path / "sessions")
-    main_agent = _MainAgent(AgentSession(id="main-session", agent_name="main"), store)
+    main_agent = _MainAgent(
+        AgentSession(path=["main-session"], agent_name="main"), store
+    )
     main_agent.parsed_config.agent["reviewer"] = AgentConfig(
         type="chat",
         description="Reviews code",
@@ -206,7 +205,7 @@ async def test_dynamic_subagent_can_reuse_existing_config(tmp_path, monkeypatch)
 
     assert result == "Created subagent 'reviewer'."
     assert main_agent.session is not None
-    child = await store.load_session(main_agent.session.children[0], ["main-session"])
+    child = await store.load_session(["main-session", main_agent.session.children[0]])
     assert isinstance(child, AgentSession)
     assert child.agent_name == "reviewer"
     assert child.agent_config.description == "Reviews code"
@@ -226,23 +225,23 @@ async def test_delete_dynamic_subagent_removes_session_and_does_not_restore(
         subagent_module, "import_class", lambda *_args, **_kwargs: _FakeDynamicAgent
     )
     store = FileSessionStore(base_dir=tmp_path / "sessions")
-    main_session = AgentSession(id="main-session", agent_name="main")
+    main_session = AgentSession(path=["main-session"], agent_name="main")
     main_agent = _MainAgent(main_session, store)
     plugin = SubagentPlugin(main_agent)
 
     async with main_agent._stack:
         await plugin.create_subagent("planner")
         child_id = main_session.children[0]
-        child = await store.load_session(child_id, [main_session.id])
+        child = await store.load_session([main_session.id, child_id])
         assert isinstance(child, AgentSession)
-        assert await store.load_session(child.id, child.owner_path) is not None
+        assert await store.load_session(child.path) is not None
         assert await plugin.delete_subagent("planner") == "Deleted subagent 'planner'."
         assert "planner" not in plugin.subagents
         assert main_session.children == []
-        assert await store.load_session(child.id, child.owner_path) is None
+        assert await store.load_session(child.path) is None
 
     await store.save_session(main_session)
-    loaded = await store.load_session("main-session")
+    loaded = await store.load_session(["main-session"])
     assert isinstance(loaded, AgentSession)
     reloaded_agent = _MainAgent(loaded, store)
     reloaded_plugin = SubagentPlugin(reloaded_agent)
@@ -262,7 +261,9 @@ async def test_subagent_command_list_create_delete(tmp_path, monkeypatch):
         subagent_module, "import_class", lambda *_args, **_kwargs: _FakeDynamicAgent
     )
     store = FileSessionStore(base_dir=tmp_path / "sessions")
-    main_agent = _MainAgent(AgentSession(id="main-session", agent_name="main"), store)
+    main_agent = _MainAgent(
+        AgentSession(path=["main-session"], agent_name="main"), store
+    )
     plugin = SubagentPlugin(main_agent)
 
     event = SubagentEvent.from_slash(
