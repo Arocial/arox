@@ -8,7 +8,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
 from arox.core.config import AgentConfig
-from arox.core.llm_base import DelegatableAgent
+from arox.core.llm_base import AgentInfoUpdate, DelegatableAgent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, ToolDef
 from arox.core.session import AgentSession
 from arox.plugins.slots import (
@@ -193,14 +193,7 @@ class SubagentPlugin(Plugin):
         return f"Created subagent '{name}'."
 
     async def _broadcast_agent_info(self):
-        from arox.core.llm_base import BroadcastAgentInfo
-
-        info = BroadcastAgentInfo(
-            main_agent_id=self.agent.uuid,
-            workspace=str(self.agent.workspace),
-            main_agent_name=self.agent.name,
-            subagents=[a.name for a in self.subagents.values()],
-        )
+        info = AgentInfoUpdate(agent_id=self.agent.uuid)
         await self.agent.agent_io.send(info)
 
     async def delete_subagent(self, name: str) -> str:

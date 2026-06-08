@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from dataclasses import dataclass
 from enum import Enum
@@ -37,7 +36,7 @@ from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
 )
-from arox.core.llm_base import LLMBaseAgent, MainAgent, ServerIdMapping
+from arox.core.llm_base import AgentInfoUpdate, LLMBaseAgent, MainAgent, ServerIdMapping
 from arox.plugins.slots import SUBAGENTS
 
 logger = logging.getLogger(__name__)
@@ -118,13 +117,6 @@ class CreateAgentRequest(BaseModel):
     session_id: str | None = None
 
 
-class AgentInfo(BaseModel):
-    id: str
-    workspace: str
-    main_agent: str
-    subagents: list[str]
-
-
 class SessionInfo(BaseModel):
     id: str
     main_agent: str
@@ -139,6 +131,13 @@ class AgentTaskStatus(str, Enum):
     STOPPED = "stopped"
     CANCELLED = "cancelled"
     ERROR = "error"
+
+
+class AgentInfo(BaseModel):
+    id: str
+    workspace: str
+    main_agent: str
+    subagents: list[str]
 
 
 @dataclass
@@ -158,11 +157,19 @@ class AgentRun:
                     return sa
         return None
 
-    async def get_subagent_names(self) -> list[str]:
+    async def _get_subagent_names(self) -> list[str]:
         subagents = await self.main_agent.invoke_slot(SUBAGENTS)
         if subagents:
             return [sa.name for sa in subagents]
         return []
+
+    async def get_agent_info(self) -> AgentInfo:
+        return AgentInfo(
+            id=self.main_agent.uuid,
+            workspace=str(self.main_agent.workspace),
+            main_agent=self.main_agent.name,
+            subagents=await self._get_subagent_names(),
+        )
 
 
 class VercelStreamIOAdapter(AbstractIOAdapter):
@@ -195,7 +202,9 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         except Exception as e:
             logger.error(f"Error draining events: {e}")
 
-    def _event_messages(self, adapter_io: IOEndpoint, event) -> list[dict]:
+    async def _event_messages(
+        self, adapter_io: IOEndpoint, event, target_run: AgentRun, agent: LLMBaseAgent
+    ) -> list[dict]:
         messages: list[dict] = []
 
         if isinstance(event, PartStartEvent):
@@ -333,25 +342,16 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             messages.append(frame)
 
         else:
-            from arox.core.llm_base import BroadcastAgentInfo
-            if isinstance(event, BroadcastAgentInfo):
-                messages.append({
-                    "type": "cmd-agent-info",
-                    "payload": {
-                        "id": event.main_agent_id,
-                        "workspace": event.workspace,
-                        "main_agent": event.main_agent_name,
-                        "subagents": event.subagents
-                    }
-                })
+            if isinstance(event, AgentInfoUpdate):
+                if event.agent_id == target_run.main_agent.uuid:
+                    messages.append(
+                        {
+                            "type": "cmd-agent-info",
+                            "payload": (await target_run.get_agent_info()).model_dump(),
+                        }
+                    )
 
         return messages
-
-    def _format_event(self, adapter_io: IOEndpoint, event) -> list[str]:
-        return [
-            f"data: {json.dumps(m)}\n\n"
-            for m in self._event_messages(adapter_io, event)
-        ]
 
     async def _render_command_output(self, target, output: str | None) -> None:
         """Stream a command's text output through the normal event pipeline."""
@@ -423,10 +423,12 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
         return {"status": "noop"}
 
-    async def ws_handler(self, websocket: WebSocket, target):
+    async def ws_handler(
+        self, websocket: WebSocket, target_run: AgentRun, agent: LLMBaseAgent
+    ):
         from fastapi import WebSocketDisconnect
 
-        adapter_io = target.adapter_io
+        adapter_io = agent.adapter_io
         queue = self.event_queues.setdefault(adapter_io, asyncio.Queue())
 
         await websocket.accept()
@@ -434,7 +436,9 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         async def pump_out():
             while True:
                 _io, event = await queue.get()
-                for msg in self._event_messages(adapter_io, event):
+                for msg in await self._event_messages(
+                    adapter_io, event, target_run, agent
+                ):
                     logger.info(f"WS OUT: {msg}")
                     await websocket.send_json(msg)
 
@@ -446,11 +450,13 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 if payload.get("resume"):
                     event = self.pending_inputs.get(adapter_io)
                     if event is not None:
-                        for msg in self._event_messages(adapter_io, event):
+                        for msg in await self._event_messages(
+                            adapter_io, event, target_run, agent
+                        ):
                             await websocket.send_json(msg)
                     await websocket.send_json({"type": "ack", "status": "ok"})
                 else:
-                    ack = await self._apply_input(target, payload)
+                    ack = await self._apply_input(agent, payload)
                     await websocket.send_json({"type": "ack", **ack})
 
         out_task = asyncio.create_task(pump_out())
@@ -571,14 +577,6 @@ class VercelStreamServer:
             )
         return agent
 
-    async def _get_agent_info(self, run_instance: AgentRun) -> AgentInfo:
-        return AgentInfo(
-            id=run_instance.main_agent.uuid,
-            workspace=str(run_instance.main_agent.workspace),
-            main_agent=run_instance.main_agent.name,
-            subagents=await run_instance.get_subagent_names(),
-        )
-
     async def create_agent(self, request: CreateAgentRequest):
         from arox.core.session import AgentSession
 
@@ -634,9 +632,7 @@ class VercelStreamServer:
 
         task.add_done_callback(on_task_done)
 
-        return await self._get_agent_info(run_instance)
-
-
+        return await run_instance.get_agent_info()
 
     async def delete_agent(self, agent_id: str):
         run_instance = self.io_adapter.run_instances.pop(agent_id, None)
@@ -655,7 +651,7 @@ class VercelStreamServer:
         if not agent:
             await websocket.close(code=4004, reason="agent not found")
             return
-        return await self.io_adapter.ws_handler(websocket, agent)
+        return await self.io_adapter.ws_handler(websocket, run_instance, agent)
 
     async def suggestions(
         self,

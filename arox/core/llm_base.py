@@ -238,13 +238,10 @@ class ServerIdMapping:
 
 
 @dataclass
-class BroadcastAgentInfo:
+class AgentInfoUpdate:
     """Carries updated agent info to broadcast to clients."""
 
-    main_agent_id: str
-    workspace: str
-    main_agent_name: str
-    subagents: list[str]
+    agent_id: str
 
 
 @dataclass

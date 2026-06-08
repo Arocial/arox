@@ -1,6 +1,7 @@
 import asyncio
 import contextlib
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -57,6 +58,7 @@ class _MainAgent:
     def __init__(self, session: AgentSession, store: FileSessionStore):
         from arox.core.session import SessionManager
 
+        self.uuid = "test-uuid"
         self.name = "main"
         self.agent_session = session
         self.session_manager = SessionManager(store)
@@ -68,6 +70,7 @@ class _MainAgent:
             pass
 
         self.io_adapter = SimpleNamespace(_process_io=_fake_process_io)
+        self.agent_io = SimpleNamespace(send=AsyncMock())
         self.workspace = None
         self._stack = contextlib.AsyncExitStack()
         self._slots = {}
