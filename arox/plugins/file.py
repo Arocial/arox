@@ -11,11 +11,9 @@ from pydantic_ai import (
     BinaryContent,
     ModelMessage,
     ModelRequest,
-    ModelResponse,
     RunContext,
     UserPromptPart,
 )
-from pydantic_ai.messages import ToolCallPart, ToolReturnPart
 from rapidfuzz import fuzz
 
 from arox.core.completion import CompletionItem, CompletionRequest
@@ -90,41 +88,14 @@ class FilePlugin(Plugin):
                     pass
 
     def get_persistent_context(self) -> list[ModelMessage]:
-        return self._create_file_messages(self.persistent_files)
-
-    def _create_file_messages(self, files: dict[str, str]) -> list[ModelMessage]:
-        if not files:
+        if not self.persistent_files:
             return []
 
-        import uuid
+        text = "The following files are provided for reference:\n\n"
+        for path, content in self.persistent_files.items():
+            text += f'<file path="{path}">\n{content}\n</file>\n\n'
 
-        tool_call_parts = []
-        tool_return_parts = []
-
-        for path, content in files.items():
-            tool_call_id = f"call_{uuid.uuid4().hex[:8]}"
-            tool_call_parts.append(
-                ToolCallPart(
-                    tool_name="read",
-                    args={"path": path},
-                    tool_call_id=tool_call_id,
-                )
-            )
-
-            tool_return_parts.append(
-                ToolReturnPart(
-                    tool_name="read",
-                    content=content,
-                    tool_call_id=tool_call_id,
-                )
-            )
-
-        if tool_call_parts and tool_return_parts:
-            return [
-                ModelResponse(parts=tool_call_parts),
-                ModelRequest(parts=tool_return_parts),
-            ]
-        return []
+        return [ModelRequest(parts=[UserPromptPart(content=text.strip())])]
 
     async def candidates(self):
         provided_files = []
@@ -548,7 +519,7 @@ class FilePlugin(Plugin):
         if messages and isinstance(messages[-1], ModelRequest):
             pending_text_files, pending_binary = self.consume_pending()
 
-            extra_content = []
+            extra_content: list[str | BinaryContent] = []
 
             for path, data in pending_binary.items():
                 import mimetypes
@@ -558,13 +529,18 @@ class FilePlugin(Plugin):
                     mime_type = "application/octet-stream"
                 extra_content.append(BinaryContent(data=data, media_type=mime_type))
 
+            if pending_text_files:
+                text_part = "The following files are provided for reference:\n\n"
+                for path, text in pending_text_files.items():
+                    text_part += f'<file path="{path}">\n{text}\n</file>\n\n'
+                extra_content.append(text_part.strip())
+
             if extra_content:
                 new_part = UserPromptPart(content=extra_content)
+
                 last_request = messages[-1]
                 parts = list(last_request.parts)
                 parts.append(new_part)
                 last_request.parts = parts
 
-            if pending_text_files:
-                messages.extend(self._create_file_messages(pending_text_files))
         return messages
