@@ -318,17 +318,29 @@ class AgentSession(Session):
             events = [ev.model_copy(deep=True) for ev in self.events[:event_index]]
             forked_from = (self.path, event_id)
 
-        new_session = self.model_copy(deep=True)
-        new_session.path = (
-            [*owner.path, str(uuid.uuid4())] if owner else [str(uuid.uuid4())]
-        )
-        new_session.events = events
-        new_session.forked_from = forked_from
+        manager_ref = self.manager
+        owner_ref = self.owner
+        self.manager = None
+        self.owner = None
+        try:
+            new_session = self.model_copy(
+                deep=True,
+                update={
+                    "path": [*owner.path, str(uuid.uuid4())]
+                    if owner
+                    else [str(uuid.uuid4())],
+                    "events": events,
+                    "forked_from": forked_from,
+                    "children": [],
+                    "manager": manager_ref,
+                    "owner": owner,
+                },
+            )
+        finally:
+            self.manager = manager_ref
+            self.owner = owner_ref
         new_session.run_info.llm_context_id = str(uuid.uuid4())
-        new_session.children = []
 
-        new_session.manager = self.manager
-        new_session.owner = owner
         if owner:
             owner.children.append(new_session.id)
 
