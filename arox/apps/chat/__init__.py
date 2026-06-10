@@ -122,7 +122,7 @@ def main(profile: str | None = None):
 
             await session_store.cleanup()
             if args.session:
-                session = await session_store.load_session(args.session)
+                session = await session_store.load_session([args.session])
                 if not session or not isinstance(session, AgentSession):
                     print(
                         f"Session {args.session} not found or invalid.", file=sys.stderr
