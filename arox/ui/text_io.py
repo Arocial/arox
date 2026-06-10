@@ -116,10 +116,13 @@ class TextIOAdapter(AbstractIOAdapter):
         await super().register_host(host)
 
         merged_router = CompletionRouter()
-        cmd_mgr = getattr(host, "command_manager", None)
-        if cmd_mgr is not None:
-            merged_router.merge(cmd_mgr.completion_router)
-        completer = CommandCompleter(merged_router, agent=host)
+        for h in self.hosts.values():
+            cmd_mgr = getattr(h, "command_manager", None)
+            if cmd_mgr is not None:
+                merged_router.merge(cmd_mgr.completion_router)
+
+        main_host = list(self.hosts.values())[0] if self.hosts else host
+        completer = CommandCompleter(merged_router, agent=main_host)
         self.user_input = UserInputGenerator(
             completer=completer,
             input=self.user_input.input,
