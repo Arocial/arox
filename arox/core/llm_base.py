@@ -25,7 +25,6 @@ from pydantic_ai.capabilities import (
     AbstractCapability,
     Hooks,
     WrapModelRequestHandler,
-    WrapRunHandler,
 )
 from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.mcp import MCPToolset
@@ -277,7 +276,8 @@ class LLMBaseAgent(IOHost):
 
         self.result = None
         self.builtin_hooks = Hooks[AgentDeps]()
-        self.builtin_hooks.on.run(self._wrap_run)
+        self.builtin_hooks.on.before_run(self._before_run)
+        self.builtin_hooks.on.run_error(self._on_run_error)
         self.builtin_hooks.on.model_request(self._wrap_model_request)
         capabilities: list[AbstractCapability[AgentDeps]] = []
         self.plugins = load_plugins(self)
@@ -547,34 +547,32 @@ class LLMBaseAgent(IOHost):
         self.run_info.total_tokens += response.usage.total_tokens
         return response
 
-    async def _wrap_run(
+    async def _before_run(self, ctx: RunContext[AgentDeps]) -> None:
+        self.new_message_index = len(ctx.messages)
+
+    async def _on_run_error(
         self,
         ctx: RunContext[AgentDeps],
         *,
-        handler: WrapRunHandler,
+        error: BaseException,
     ) -> AgentRunResult[Any]:
         from pydantic_ai._agent_graph import GraphAgentState
 
-        self.new_message_index = len(ctx.messages)
-        try:
-            result = await handler()
-        except BaseException as error:
-            messages = list(ctx.messages)
-            _complete_pending_tool_calls(messages)
+        messages = list(ctx.messages)
+        _complete_pending_tool_calls(messages)
 
-            state = GraphAgentState(
-                message_history=messages,
-                usage=ctx.usage,
-                run_id=ctx.run_id or "",
-                conversation_id=ctx.conversation_id or "",
-                metadata=ctx.metadata,
-            )
-            result = AgentRunResult(
-                output=error,
-                _state=state,
-                _new_message_index=self.new_message_index,
-            )
-        return result
+        state = GraphAgentState(
+            message_history=messages,
+            usage=ctx.usage,
+            run_id=ctx.run_id or "",
+            conversation_id=ctx.conversation_id or "",
+            metadata=ctx.metadata,
+        )
+        return AgentRunResult(
+            output=error,
+            _state=state,
+            _new_message_index=self.new_message_index,
+        )
 
     async def _run_inference(
         self,
