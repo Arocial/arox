@@ -558,7 +558,7 @@ class LLMBaseAgent(IOHost):
         self.new_message_index = len(ctx.messages)
         try:
             result = await handler()
-        except Exception as error:
+        except BaseException as error:
             messages = list(ctx.messages)
             _complete_pending_tool_calls(messages)
 
