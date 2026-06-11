@@ -30,11 +30,8 @@ from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import (
     ModelMessage,
-    ModelRequest,
     ModelResponse,
     TextContent,
-    ToolCallPart,
-    ToolReturnPart,
     UserContent,
 )
 from pydantic_ai.models import infer_model
@@ -174,46 +171,6 @@ def infer_provider(
         return provider_class(**kwargs)
 
 
-def _complete_pending_tool_calls(messages: list[ModelMessage]) -> None:
-    """Append synthetic tool returns for any orphan tool calls.
-
-    When a run is cancelled mid-step, the captured history can end with a
-    ``ModelResponse`` containing ``ToolCallPart``s whose matching
-    ``ToolReturnPart``s were never produced. Feeding such history back to a
-    provider (e.g. Anthropic) fails because every ``tool_use`` must have a
-    matching ``tool_result``. This function mutates ``messages`` in place to
-    append a single ``ModelRequest`` carrying synthetic ``ToolReturnPart``s
-    for every orphan tool call, keeping the history valid for the next run.
-    """
-    returned_ids: set[str] = set()
-    pending: list[tuple[str, str]] = []  # (tool_call_id, tool_name) in order
-    seen_ids: set[str] = set()
-    for msg in messages:
-        if isinstance(msg, ModelResponse):
-            for part in msg.parts:
-                if isinstance(part, ToolCallPart) and part.tool_call_id not in seen_ids:
-                    pending.append((part.tool_call_id, part.tool_name))
-                    seen_ids.add(part.tool_call_id)
-        elif isinstance(msg, ModelRequest):
-            for part in msg.parts:
-                if isinstance(part, ToolReturnPart):
-                    returned_ids.add(part.tool_call_id)
-
-    orphans = [(cid, name) for cid, name in pending if cid not in returned_ids]
-    if not orphans:
-        return
-
-    synthetic_parts = [
-        ToolReturnPart(
-            tool_name=name,
-            content="Tool call cancelled before completion.",
-            tool_call_id=cid,
-        )
-        for cid, name in orphans
-    ]
-    messages.append(ModelRequest(parts=synthetic_parts))
-
-
 @dataclass
 class UserInput:
     """A unit of user input passed to :meth:`LLMBaseAgent.step`.
@@ -267,6 +224,7 @@ class LLMBaseAgent(IOHost):
         self.mcp_client = None
         self.plugins = []
         self.message_history: list[ModelMessage] = []
+        self.message_history_fallback: list[ModelMessage] = []
         self.new_message_index = 0
 
         self.parse_configs()
@@ -542,6 +500,7 @@ class LLMBaseAgent(IOHost):
         request_context: ModelRequestContext,
         handler: WrapModelRequestHandler,
     ) -> ModelResponse:
+        self.message_history_fallback = list(ctx.messages)
         response = await handler(request_context)
         self.run_info.context_tokens = response.usage.total_tokens
         self.run_info.total_tokens += response.usage.total_tokens
@@ -558,11 +517,8 @@ class LLMBaseAgent(IOHost):
     ) -> AgentRunResult[Any]:
         from pydantic_ai._agent_graph import GraphAgentState
 
-        messages = list(ctx.messages)
-        _complete_pending_tool_calls(messages)
-
         state = GraphAgentState(
-            message_history=messages,
+            message_history=self.message_history_fallback,
             usage=ctx.usage,
             run_id=ctx.run_id or "",
             conversation_id=ctx.conversation_id or "",
