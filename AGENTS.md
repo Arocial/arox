@@ -1,4 +1,4 @@
-# This file provides guidance to coding agents(e.g. Claude Code) when working with code in this repository.
+# This file provides guidance to coding agents when working with code in this repository.
 
 ## Development Commands
 
