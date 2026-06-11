@@ -140,7 +140,7 @@ async def test_kill_drains_pending_output(plugin):
     task_id = _task_id_from(start)
     bg = plugin._background[task_id]
     for _ in range(50):
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.01)
         if any("BEFORE_KILL" in line for line in bg.captured_lines()):
             break
     await plugin.kill_shell(task_id=task_id, description="stop")
@@ -171,7 +171,7 @@ async def test_foreground_timeout_promotes_to_background(plugin):
     result = await plugin.shell(
         command="echo early; sleep 30",
         description="Long sleeper",
-        timeout=1,
+        timeout=0.1,
     )
     assert "promoted to background" in result
     assert "early" in result  # partial output included
@@ -186,7 +186,7 @@ async def test_foreground_timeout_promotes_to_background(plugin):
 @pytest.mark.asyncio
 async def test_background_returns_id_and_polls_output(plugin):
     start = await plugin.shell(
-        command="for i in 1 2 3; do echo line$i; sleep 0.05; done",
+        command="for i in 1 2 3; do echo line$i; sleep 0.01; done",
         description="Emit three lines",
         run_in_background=True,
     )
@@ -210,7 +210,7 @@ async def test_background_returns_id_and_polls_output(plugin):
 @pytest.mark.asyncio
 async def test_shell_state_backoff_grows_per_shell(plugin, monkeypatch):
     # Speed up the base delay so test stays sub-second.
-    monkeypatch.setattr("arox.plugins.shell.POLL_BASE_DELAY", 0.05)
+    monkeypatch.setattr("arox.plugins.shell.POLL_BASE_DELAY", 0.01)
     monkeypatch.setattr("arox.plugins.shell.POLL_MAX_DELAY", 1.0)
 
     start = await plugin.shell(
@@ -226,17 +226,17 @@ async def test_shell_state_backoff_grows_per_shell(plugin, monkeypatch):
     t0 = loop.time()
     await plugin.shell_state(task_id=task_id, description="poll 1")
     d1 = loop.time() - t0
-    assert d1 >= 0.04  # ~0.05s
+    assert d1 >= 0.008
 
     t1 = loop.time()
     await plugin.shell_state(task_id=task_id, description="poll 2")
     d2 = loop.time() - t1
-    assert d2 >= 0.09  # ~0.10s
+    assert d2 >= 0.018
 
     t2 = loop.time()
     await plugin.shell_state(task_id=task_id, description="poll 3")
     d3 = loop.time() - t2
-    assert d3 >= 0.19  # ~0.20s
+    assert d3 >= 0.038
 
     assert d2 > d1 and d3 > d2  # strictly growing
     assert bg.poll_count == 3
@@ -248,7 +248,7 @@ async def test_shell_state_returns_early_when_process_exits(plugin, monkeypatch)
     monkeypatch.setattr("arox.plugins.shell.POLL_BASE_DELAY", 10.0)
 
     start = await plugin.shell(
-        command="sleep 0.2",
+        command="sleep 0.05",
         description="Quick task",
         run_in_background=True,
     )
@@ -343,7 +343,7 @@ async def test_kill_escalates_to_sigkill_when_term_ignored(plugin, monkeypatch):
         f"signal.signal(signal.SIGTERM, signal.SIG_IGN); "
         f"print('READY', flush=True); time.sleep(30)\""
     )
-    monkeypatch.setattr("arox.plugins.shell.KILL_GRACE_SECONDS", 0.3)
+    monkeypatch.setattr("arox.plugins.shell.KILL_GRACE_SECONDS", 0.05)
     start = await plugin.shell(
         command=cmd,
         description="Ignore SIGTERM",
@@ -353,7 +353,7 @@ async def test_kill_escalates_to_sigkill_when_term_ignored(plugin, monkeypatch):
     bg = plugin._background[task_id]
 
     for _ in range(50):
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.01)
         if any("READY" in line for line in bg.captured_lines()):
             break
     else:
@@ -367,9 +367,9 @@ async def test_kill_escalates_to_sigkill_when_term_ignored(plugin, monkeypatch):
 async def test_promoted_shell_eventually_finishes(plugin):
     # Promote then poll until completion, verifying the workflow end-to-end.
     result = await plugin.shell(
-        command="echo first; sleep 0.5; echo second",
+        command="echo first; sleep 0.1; echo second",
         description="Mid-length task",
-        timeout=1,
+        timeout=0.05,
     )
     # Either it raced and completed in time, or it was promoted.
     if "promoted to background" not in result:
@@ -404,7 +404,7 @@ async def test_background_kills_child_process_tree(plugin):
 
     # Wait for the child pid to be reported.
     for _ in range(50):
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.01)
         if any("CHILD_PID=" in line for line in bg.captured_lines()):
             break
     else:
@@ -414,9 +414,15 @@ async def test_background_kills_child_process_tree(plugin):
     child_pid = int(pid_line.split("CHILD_PID=", 1)[1].strip())
 
     await plugin.kill_shell(task_id=task_id, description="terminate")
-    await asyncio.sleep(0.2)
-    with pytest.raises(ProcessLookupError):
-        os.kill(child_pid, 0)
+
+    for _ in range(20):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("Child process was not killed")  # ty: ignore[invalid-argument-type]
 
 
 @pytest.mark.asyncio
