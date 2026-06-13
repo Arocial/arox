@@ -118,6 +118,7 @@ class Session(BaseModel):
     events: list[AnySessionEvent] = Field(default_factory=list)
     # Session ids owned by this one (its subsessions).
     children: list[str] = Field(default_factory=list)
+    initialized: bool = False
 
     manager: Any = Field(default=None, exclude=True, repr=False)
     owner: Any = Field(default=None, exclude=True, repr=False)

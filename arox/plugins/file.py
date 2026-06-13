@@ -80,7 +80,8 @@ class FilePlugin(Plugin):
             if item.is_file():
                 try:
                     content = "".join(self._read_text(name))
-                    self._pending_text_files[name] = content
+                    if not self.agent.session.initialized:
+                        self._pending_text_files[name] = content
                     self.persistent_files[name] = content
                     self._add_to_session(name)
                     break

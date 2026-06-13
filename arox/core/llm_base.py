@@ -251,6 +251,7 @@ class LLMBaseAgent(IOHost):
             deps_type=AgentDeps,
             output_type=(DeferredToolRequests, str),
         )
+        self.session.initialized = True
 
     def cancel_foreground_task(self) -> None:
         """Cancel any long-running foreground task. Subclasses can override this."""
@@ -618,10 +619,12 @@ class LLMBaseAgent(IOHost):
 
     async def reset(self):
         self.message_history = []
+        self.session.initialized = False
         self.run_info = AgentRunInfo()
         self.run_info.llm_context_id = str(uuid.uuid4())
         await self.invoke_slot(AGENT_RESET)
         self.session.record_reset(self.run_info.llm_context_id)
+        self.session.initialized = True
 
 
 class MainAgent(LLMBaseAgent, ABC):
