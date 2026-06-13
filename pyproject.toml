@@ -65,8 +65,8 @@ format = "ruff format"
 check = "ruff check --fix"
 typecheck = "ty check"
 test = "pytest"
-lint = ["format", "check", "typecheck"]
-pre-commit = ["lint", "test"]
+lint = ["check", "format"]
+pre-commit = ["typecheck", "test", "lint"]
 
 [tool.ruff.lint]
 extend-select = ["I"]
