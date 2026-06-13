@@ -96,7 +96,12 @@ class FilePlugin(Plugin):
         for path, content in self.persistent_files.items():
             text += f'<file path="{path}">\n{content}\n</file>\n\n'
 
-        return [ModelRequest(parts=[UserPromptPart(content=text.strip())])]
+        return [
+            ModelRequest(
+                parts=[UserPromptPart(content=text.strip())],
+                metadata={"arox_internal": True},
+            )
+        ]
 
     async def candidates(self):
         provided_files = []
@@ -537,11 +542,10 @@ class FilePlugin(Plugin):
                 extra_content.append(text_part.strip())
 
             if extra_content:
-                new_part = UserPromptPart(content=extra_content)
-
-                last_request = messages[-1]
-                parts = list(last_request.parts)
-                parts.append(new_part)
-                last_request.parts = parts
+                new_request = ModelRequest(
+                    parts=[UserPromptPart(content=extra_content)],
+                    metadata={"arox_internal": True},
+                )
+                messages.insert(-1, new_request)
 
         return messages

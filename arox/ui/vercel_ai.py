@@ -666,9 +666,18 @@ class VercelStreamServer:
     async def state(self, agent_id: str, agent_name: str):
         agent = await self._get_agent(agent_id, agent_name)
 
+        from pydantic_ai import ModelRequest
         from pydantic_ai.ui.vercel_ai._adapter import VercelAIAdapter
 
-        messages = agent.message_history
+        messages = [
+            msg
+            for msg in agent.message_history
+            if not (
+                isinstance(msg, ModelRequest)
+                and msg.metadata
+                and msg.metadata.get("arox_internal")
+            )
+        ]
         ui_messages = VercelAIAdapter.dump_messages(messages)
         history = [
             msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages
