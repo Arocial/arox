@@ -25,7 +25,7 @@ class _DeferredToolQuestion:
 
 @dataclass
 class _NormalInputRequest:
-    request: bool = False
+    request: bool = True
 
 
 @dataclass
@@ -69,13 +69,12 @@ class ChatInputReply(UserInput, ReplyEvent):
     retry: bool = False
 
     def is_abort(self, request: ChatInputEvent) -> bool:
+        if self.user_input is not None:
+            return False
         for key, tool in request.deferred_tools.items():
             if tool.question and self.deferred_answers.get(key) is None:
                 return True
         return bool(request.normal_input.request and self.user_input is None)
-
-    def is_skip(self, request: ChatInputEvent) -> bool:
-        return request.exception_input.exception is not None and not self.retry
 
 
 class ChatAgent(MainAgent, DelegatableAgent):
@@ -117,10 +116,6 @@ class ChatAgent(MainAgent, DelegatableAgent):
 
             if reply.is_abort(event):
                 break
-
-            if reply.is_skip(event):
-                await self.agent_io.send(StepDoneEvent())
-                continue
 
             # 5. Execute the step
             try:
