@@ -1,36 +1,57 @@
-import json
+import asyncio
 import logging
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
 from pydantic_ai import RunContext
+from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.tools import ToolDefinition
 
 from arox.core.config import AgentConfig
-from arox.core.llm_base import AgentInfoUpdate, DelegatableAgent
+from arox.core.llm_base import AgentInfoUpdate, create_agent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, ToolDef
-from arox.core.session import AgentRunInfo, AgentSession
 from arox.plugins.slots import (
     SUBAGENTS,
 )
-from arox.utils import import_class
 
 logger = logging.getLogger(__name__)
+
+
+class SubagentInstructionsCapability(AbstractCapability[Any]):
+    def __init__(self, plugin: "SubagentPlugin"):
+        self.plugin = plugin
+
+    def get_instructions(self) -> str | None:
+        subagent_names = self.plugin.agent.agent_config.subagents
+        if not subagent_names:
+            return None
+
+        descriptions = []
+        for name in subagent_names:
+            agent_config = self.plugin.agent.parsed_config.agent.get(name)
+            desc = (
+                agent_config.description
+                if agent_config and agent_config.description
+                else "No description"
+            )
+            descriptions.append(f"- {name}: {desc}")
+
+        return (
+            "## Subagent Collaboration Framework\n"
+            "You act as a Lead Orchestrator. You have access to specialized subagents.\n"
+            "Available subagents:\n" + "\n".join(descriptions)
+        )
 
 
 @dataclass(kw_only=True)
 class SubagentEvent(CommandEvent):
     slashes: ClassVar[tuple[str, ...]] = ("subagent",)
-    description: ClassVar[str] = (
-        "Manage or call subagents - /subagent list|create|delete|call ..."
-    )
+    description: ClassVar[str] = "Manage or call subagents - /subagent list|call ..."
 
     action: str = ""
     name: str = ""
     task: str = ""
-    type: str | None = None
-    config: dict[str, Any] | None = None
 
     @classmethod
     def from_slash(cls, name, arg):
@@ -48,16 +69,9 @@ class SubagentEvent(CommandEvent):
                 task=sub_parts[2] if len(sub_parts) > 2 else "",
             )
 
-        config = None
-        if len(parts) > 3:
-            config = json.loads(parts[3])
-            if not isinstance(config, dict):
-                raise ValueError("json-config must be an object")
         return cls(
             action=action,
             name=name_arg,
-            type=parts[2] if len(parts) > 2 else None,
-            config=config,
         )
 
 
@@ -71,10 +85,12 @@ class SubagentPlugin(Plugin):
 
     def __init__(self, agent):
         super().__init__(agent)
-        self.subagents: dict[str, Any] = {}
+        self.active_subagents: dict[str, Any] = {}
+        self.background_tasks: dict[str, asyncio.Task] = {}
+        self.task_results: dict[str, str] = {}
 
         def get_subagents():
-            return list(self.subagents.values())
+            return list(self.active_subagents.values())
 
         self.agent.provide_slot(SUBAGENTS, get_subagents)
 
@@ -84,37 +100,31 @@ class SubagentPlugin(Plugin):
         agent_config: AgentConfig,
         agent_source: Literal["static", "dynamic"],
     ):
-        try:
-            agent_cls = import_class(agent_config.type, group="arox.agents")
-        except ValueError:
-            raise ValueError(
-                f"Unknown agent type: {agent_config.type} for agent {name}"
-            )
-
-        owner_session = self.agent.session
-
-        sub_session = AgentSession(
-            path=[*owner_session.path, str(uuid.uuid4())]
-            if owner_session
-            else [str(uuid.uuid4())],
-            agent_name=name,
-            agent_config=agent_config.model_copy(deep=True),
-            agent_source=agent_source,
-            workspace=str(self.agent.workspace),
-            run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
-        )
-        sub_session.owner = owner_session
-        sub_session.manager = owner_session.manager if owner_session else None
-        if owner_session:
-            owner_session.children.append(sub_session.id)
-
-        subagent = agent_cls(
-            self.agent.parsed_config,
+        return create_agent(
+            name=name,
+            parsed_config=self.agent.parsed_config,
             io_adapter=self.agent.io_adapter,
+            parent_session=self.agent.session,
+            agent_config=agent_config,
+            agent_source=agent_source,
             workspace=self.agent.workspace,
-            session=sub_session,
         )
-        return subagent
+
+    async def _destroy_subagent(self, subagent: Any):
+        self.active_subagents.pop(subagent.uuid, None)
+        if hasattr(self.agent.io_adapter, "hosts"):
+            self.agent.io_adapter.hosts.pop(subagent.uuid, None)
+
+        sub_session = subagent.session
+        sub_session.status = "closed"
+
+        self.agent.session.record_subagent_deleted(
+            subagent.name,
+            sub_session.path,
+        )
+        if self.agent.session.manager:
+            await self.agent.session.manager.save_session(sub_session)
+        await self._broadcast_agent_info()
 
     async def on_start(self):
         main_session = self.agent.session
@@ -122,101 +132,16 @@ class SubagentPlugin(Plugin):
         if main_session is None or session_manager is None:
             return
 
-        # 1. Reconstruct from child session ids.
-        for child_id in main_session.children:
-            subagent = await session_manager.build_from_session(
-                child_id,
-                main_session,
-                parsed_config=self.agent.parsed_config,
-                io_adapter=self.agent.io_adapter,
-            )
-            if subagent:
-                self.subagents[subagent.name] = subagent
-                self.agent.parsed_config.agent[subagent.name] = subagent.agent_config
-
-        # 2. Add static agents not already in children
-        started_names = set(self.subagents.keys())
-        parsed_config = self.agent.parsed_config
-        for agent_name in self.agent.agent_config.subagents:
-            if agent_name not in started_names:
-                agent_config = parsed_config.agent.get(agent_name)
-                if not agent_config:
-                    raise ValueError(f"Agent config for '{agent_name}' not found")
-                subagent = await self._create_subagent(
-                    name=agent_name,
-                    agent_config=agent_config,
-                    agent_source="static",
-                )
-                self.subagents[subagent.name] = subagent
-
-        for subagent in self.subagents.values():
-            await self.agent._stack.enter_async_context(subagent)
-        await self._broadcast_agent_info()
-
-    async def create_subagent(
-        self,
-        name: str,
-        agent_type: str | None = None,
-        config: dict[str, Any] | None = None,
-    ) -> str:
-        """Create a dynamic subagent that will be restored with the session."""
-        if not name:
-            raise ValueError("subagent name is required")
-        if name in self.subagents:
-            raise ValueError(f"Subagent '{name}' already exists")
-
-        base = self.agent.parsed_config.agent.get(name)
-        base_config = base.model_dump(mode="json") if base else {}
-        merged_config_data = {**base_config, **(config or {})}
-        if agent_type:
-            merged_config_data["type"] = agent_type
-        agent_config = AgentConfig.model_validate(merged_config_data)
-
-        self.agent.parsed_config.agent[name] = agent_config
-
-        subagent = await self._create_subagent(
-            name=name,
-            agent_config=agent_config,
-            agent_source="dynamic",
-        )
-        self.subagents[subagent.name] = subagent
-        await self.agent._stack.enter_async_context(subagent)
-        self.agent.session.record_subagent_created(
-            name, agent_config.model_dump(mode="json")
-        )
-        if self.agent.session.manager:
-            await self.agent.session.manager.session_store.save_session(
-                subagent.session
-            )
-        await self._broadcast_agent_info()
-        return f"Created subagent '{name}'."
+        # Mark any leftover child sessions from previous abrupt terminations as closed
+        for child_id in list(main_session.children):
+            child_session = await session_manager.load_session(child_id, main_session)
+            if child_session and child_session.status != "closed":
+                child_session.status = "closed"
+                await session_manager.save_session(child_session)
 
     async def _broadcast_agent_info(self):
         info = AgentInfoUpdate(agent_id=self.agent.uuid)
         await self.agent.agent_io.send(info)
-
-    async def delete_subagent(self, name: str) -> str:
-        """Delete a dynamic subagent from the current session."""
-        if not name:
-            raise ValueError("subagent name is required")
-
-        subagent = self.subagents.pop(name, None)
-        if subagent is None:
-            raise ValueError(f"Dynamic subagent '{name}' not found")
-
-        sub_session = subagent.session
-        if sub_session.id in self.agent.session.children:
-            self.agent.session.children.remove(sub_session.id)
-        self.agent.session.record_subagent_deleted(
-            name,
-            sub_session.path,
-        )
-        if self.agent.session.manager:
-            await self.agent.session.manager.session_store.delete_session(
-                sub_session.path
-            )
-        await self._broadcast_agent_info()
-        return f"Deleted subagent '{name}'."
 
     def commands(self):
         return [
@@ -229,83 +154,136 @@ class SubagentPlugin(Plugin):
                 func=self.delegate_to_subagent,
                 kwargs={"prepare": self._prepare_delegate},
             ),
-            ToolDef(func=self.create_subagent),
+            ToolDef(
+                func=self.dispatch_background_task,
+                kwargs={"prepare": self._prepare_delegate},
+            ),
+            ToolDef(func=self.check_task_status),
         ]
-
-    async def _delegatable_subagents(self) -> list:
-        return [a for a in self.subagents.values() if isinstance(a, DelegatableAgent)]
 
     async def _prepare_delegate(
         self, ctx: RunContext, tool_def: ToolDefinition
     ) -> ToolDefinition | None:
-        subagents = await self._delegatable_subagents()
-        if not subagents:
+        subagent_names = self.agent.agent_config.subagents
+        if not subagent_names:
             # Hide the tool entirely when there is nothing to delegate to.
             return None
-        descriptions = "\n".join(
-            f"- {agent.name}: {agent.agent_config.description or 'No description'}"
-            for agent in subagents
-        )
-        return replace(
-            tool_def,
-            description=(
-                "Delegate a task to a specific subagent.\n\n"
-                f"Available subagents:\n{descriptions}"
-            ),
-        )
+        return tool_def
+
+    async def check_task_status(self, task_id: str) -> str:
+        """Check the status or get the result of a background subagent task."""
+        if task_id in self.task_results:
+            result = self.task_results.pop(task_id)
+            self.background_tasks.pop(task_id, None)
+            return f"Task Completed. Result:\n{result}"
+
+        if task_id in self.background_tasks:
+            return f"Task {task_id} is still running."
+
+        return f"Error: Unknown task ID '{task_id}'."
+
+    async def dispatch_background_task(self, subagent_name: str, task: str) -> str:
+        """Dispatch a long-running task to a subagent in the background and return a task_id.
+
+        Use this for parallel or time-consuming tasks across different domains, then use `check_task_status` later.
+        ALWAYS provide comprehensive context in your `task` description so the subagent doesn't lack necessary background.
+        """
+        if subagent_name not in self.agent.agent_config.subagents:
+            return f"Error: Subagent '{subagent_name}' not found."
+
+        agent_config = self.agent.parsed_config.agent.get(subagent_name)
+        if not agent_config:
+            return f"Error: Config for '{subagent_name}' not found."
+
+        full_task = task
+        task_id = f"task_{uuid.uuid4().hex[:6]}"
+
+        async def _run_and_store():
+            subagent = await self._create_subagent(
+                name=subagent_name,
+                agent_config=agent_config,
+                agent_source="static",
+            )
+            self.active_subagents[subagent.uuid] = subagent
+            await self._broadcast_agent_info()
+
+            try:
+                async with subagent:
+                    self.agent.session.record_subagent_call(
+                        subagent.name, f"[Background: {task_id}] " + full_task
+                    )
+                    res = await subagent.run_task(full_task)
+                    self.task_results[task_id] = res or "Task completed with no output."
+            except Exception as e:
+                logger.error(f"Background task {task_id} failed", exc_info=True)
+                self.task_results[task_id] = f"Failed with error: {str(e)}"
+            finally:
+                await self._destroy_subagent(subagent)
+
+        coro = _run_and_store()
+        self.background_tasks[task_id] = asyncio.create_task(coro)
+
+        return f"Task dispatched to {subagent_name}. Task ID: {task_id}. Use check_task_status to get results later."
 
     async def delegate_to_subagent(self, subagent_name: str, task: str) -> str:
-        """Delegate a task to a specific subagent."""
-        subagents = {agent.name: agent for agent in await self._delegatable_subagents()}
-        agent = subagents.get(subagent_name)
-        if not agent:
-            return (
-                f"Error: Subagent '{subagent_name}' not found. "
-                f"Available subagents: {', '.join(subagents)}"
-            )
+        """Delegate a task to a specific subagent.
 
-        self.agent.session.record_subagent_call(agent.name, task)
-        result = await agent.run_task(task)
-        return result or "Task completed with no output."
+        Wait for the subagent to complete and return its result.
+        Use this for sequential tasks.
+        ALWAYS provide comprehensive context in your `task` description so the subagent doesn't lack necessary background.
+        """
+        if subagent_name not in self.agent.agent_config.subagents:
+            return f"Error: Subagent '{subagent_name}' not found."
+
+        agent_config = self.agent.parsed_config.agent.get(subagent_name)
+        if not agent_config:
+            return f"Error: Config for '{subagent_name}' not found."
+
+        full_task = task
+
+        subagent = await self._create_subagent(
+            name=subagent_name,
+            agent_config=agent_config,
+            agent_source="static",
+        )
+        self.active_subagents[subagent.uuid] = subagent
+        await self._broadcast_agent_info()
+
+        try:
+            async with subagent:
+                self.agent.session.record_subagent_call(subagent.name, full_task)
+                result = await subagent.run_task(full_task)
+                return result or "Task completed with no output."
+        finally:
+            await self._destroy_subagent(subagent)
 
     async def list_subagents(self) -> str:
         """List currently available subagents."""
-        agents = list(self.subagents.values())
-        if not agents:
+        subagent_names = self.agent.agent_config.subagents
+        if not subagent_names:
             return "No subagents."
         lines = []
-        for agent in sorted(agents, key=lambda a: a.name):
-            source = agent.agent_source
-            desc = agent.agent_config.description or "No description"
-            lines.append(f"- {agent.name} ({source}): {desc}")
+        for name in sorted(subagent_names):
+            agent_config = self.agent.parsed_config.agent.get(name)
+            desc = (
+                agent_config.description
+                if agent_config and agent_config.description
+                else "No description"
+            )
+            lines.append(f"- {name}: {desc}")
         return "\n".join(lines)
+
+    def capabilities(self):
+        caps: list[AbstractCapability] = list(super().capabilities())
+        caps.append(SubagentInstructionsCapability(self))
+        return caps
 
     async def handle_subagent_event(self, event: SubagentEvent) -> str | None:
         if event.action == "list":
             return await self.list_subagents()
-        if event.action == "create" and event.name:
-            return await self.create_subagent(event.name, event.type, event.config)
-        if event.action == "delete" and event.name:
-            return await self.delete_subagent(event.name)
         if event.action == "call":
             if not event.name:
                 return "Usage: /subagent call <name> [task]"
+            return await self.delegate_to_subagent(event.name, event.task)
 
-            subagent = next(
-                (a for a in self.subagents.values() if a.name == event.name),
-                None,
-            )
-
-            if not isinstance(subagent, DelegatableAgent):
-                return f"Subagent '{event.name}' not found."
-
-            self.agent.session.record_subagent_call(subagent.name, event.task)
-            return await subagent.run_task(event.task)
-
-        return (
-            "Usage:\n"
-            "  /subagent list\n"
-            "  /subagent create <name> [type] [json-config]\n"
-            "  /subagent delete <name>\n"
-            "  /subagent call <name> [task]"
-        )
+        return "Usage:\n  /subagent list\n  /subagent call <name> [task]"

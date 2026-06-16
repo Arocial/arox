@@ -5,7 +5,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-import arox.plugins.subagent as subagent_module
 from arox.core.config import AgentConfig, Config
 from arox.core.llm_base import DelegatableAgent
 from arox.core.session import AgentSession, FileSessionStore
@@ -41,7 +40,8 @@ class _FakeDynamicAgent(DelegatableAgent):
         # Minimal setup for testing subagent lifecycle
         self._tg = asyncio.TaskGroup()
         await self._stack.enter_async_context(self._tg)
-        self._tg.create_task(self.io_adapter._process_io(self.adapter_io))
+        if hasattr(self.io_adapter, "_process_io"):
+            self._tg.create_task(self.io_adapter._process_io(self.adapter_io))
         await self._stack.enter_async_context(self.agent_io)
         await self._stack.enter_async_context(self.adapter_io)
 
@@ -50,8 +50,8 @@ class _FakeDynamicAgent(DelegatableAgent):
             self._stack.push_async_callback(plugin.on_stop)
         return self
 
-    async def run_task(self, task: str) -> str | None:
-        return "task done"
+    async def run_task(self, task: str) -> str:
+        return f"task done: {task}"
 
 
 class _MainAgent:
@@ -69,14 +69,18 @@ class _MainAgent:
         async def _fake_process_io(adapter_io):
             pass
 
-        self.io_adapter = SimpleNamespace(_process_io=_fake_process_io)
+        self.io_adapter = SimpleNamespace(_process_io=_fake_process_io, hosts={})
         self.agent_io = SimpleNamespace(send=AsyncMock())
         self.workspace = None
         self._stack = contextlib.AsyncExitStack()
         self._slots = {}
         self.parsed_config = Config(
             agent={
-                "main": AgentConfig(type="chat", plugins=[], subagents=[]),
+                "main": AgentConfig(
+                    type="chat", plugins=[], subagents=["planner", "reviewer"]
+                ),
+                "planner": AgentConfig(type="chat", description="Plans work"),
+                "reviewer": AgentConfig(type="chat", description="Reviews code"),
             }
         )
         self.agent_config = self.parsed_config.agent["main"]
@@ -106,48 +110,13 @@ class _MainAgent:
     async def save_session(self):
         pass
 
-    async def load_child_agent_sessions(
-        self, parent_session: AgentSession | None = None
-    ) -> list[AgentSession]:
-        parent = parent_session or self.agent_session
-        if not isinstance(parent, AgentSession) or self.session_manager is None:
-            return []
-        children: list[AgentSession] = []
-        for raw_child_ref in parent.children:
-            child_ref: object = raw_child_ref
-            child_id = (
-                child_ref.id if isinstance(child_ref, AgentSession) else str(child_ref)
-            )
-            loaded = await self.session_manager.session_store.load_session(
-                [*parent.path, child_id]
-            )
-            if isinstance(loaded, AgentSession):
-                children.append(loaded)
-        return children
-
-    async def unregister_child_session(
-        self,
-        child_session: AgentSession,
-        parent_session: AgentSession | None = None,
-    ) -> None:
-        parent = parent_session or self.agent_session
-        if not isinstance(parent, AgentSession) or self.session_manager is None:
-            return
-        parent.children = [cid for cid in parent.children if cid != child_session.id]
-        await self.session_manager.session_store.delete_session(child_session.path)
-
 
 @pytest.mark.asyncio
-async def test_dynamic_subagent_persists_spec_and_restores_on_reload(
-    tmp_path, monkeypatch
-):
+async def test_delegate_to_subagent_creates_and_destroys(tmp_path, monkeypatch):
     import arox.utils
 
     monkeypatch.setattr(
         arox.utils, "import_class", lambda *_args, **_kwargs: _FakeDynamicAgent
-    )
-    monkeypatch.setattr(
-        subagent_module, "import_class", lambda *_args, **_kwargs: _FakeDynamicAgent
     )
     store = FileSessionStore(base_dir=tmp_path / "sessions")
     main_session = AgentSession(path=["main-session"], agent_name="main")
@@ -155,74 +124,25 @@ async def test_dynamic_subagent_persists_spec_and_restores_on_reload(
     plugin = SubagentPlugin(main_agent)
 
     async with main_agent._stack:
-        await plugin.create_subagent("planner", config={"description": "Plans work"})
+        result = await plugin.delegate_to_subagent("planner", "make a plan")
 
+    assert result == "task done: make a plan"
     assert len(main_session.children) == 1
-    child = await store.load_session([main_session.id, main_session.children[0]])
-    assert isinstance(child, AgentSession)
-    assert child.agent_name == "planner"
-    assert child.agent_config.description == "Plans work"
+    child_session = await store.load_session(
+        [main_session.id, main_session.children[0]]
+    )
+    assert child_session is not None
+    assert child_session.status == "closed"
 
-    await store.save_session(main_session)
-    loaded = await store.load_session(["main-session"])
-    assert isinstance(loaded, AgentSession)
-
-    reloaded_agent = _MainAgent(loaded, store)
-    reloaded_plugin = SubagentPlugin(reloaded_agent)
-    async with reloaded_agent._stack:
-        await reloaded_plugin.on_start()
-        assert list(reloaded_plugin.subagents) == ["planner"]
-        restored = reloaded_plugin.subagents["planner"].session
-
-    assert isinstance(restored, AgentSession)
-    assert restored.id == loaded.children[0]
-    assert reloaded_agent.parsed_config.agent["planner"].description == "Plans work"
+    assert not plugin.active_subagents
 
 
 @pytest.mark.asyncio
-async def test_dynamic_subagent_can_reuse_existing_config(tmp_path, monkeypatch):
+async def test_dispatch_background_task_creates_and_destroys(tmp_path, monkeypatch):
     import arox.utils
 
     monkeypatch.setattr(
         arox.utils, "import_class", lambda *_args, **_kwargs: _FakeDynamicAgent
-    )
-    monkeypatch.setattr(
-        subagent_module, "import_class", lambda *_args, **_kwargs: _FakeDynamicAgent
-    )
-    store = FileSessionStore(base_dir=tmp_path / "sessions")
-    main_agent = _MainAgent(
-        AgentSession(path=["main-session"], agent_name="main"), store
-    )
-    main_agent.parsed_config.agent["reviewer"] = AgentConfig(
-        type="chat",
-        description="Reviews code",
-        model_params={"temperature": 0},
-    )
-    plugin = SubagentPlugin(main_agent)
-
-    async with main_agent._stack:
-        result = await plugin.create_subagent("reviewer")
-
-    assert result == "Created subagent 'reviewer'."
-    assert main_agent.session is not None
-    child = await store.load_session(["main-session", main_agent.session.children[0]])
-    assert isinstance(child, AgentSession)
-    assert child.agent_name == "reviewer"
-    assert child.agent_config.description == "Reviews code"
-    assert child.agent_config.model_params == {"temperature": 0}
-
-
-@pytest.mark.asyncio
-async def test_delete_dynamic_subagent_removes_session_and_does_not_restore(
-    tmp_path, monkeypatch
-):
-    import arox.utils
-
-    monkeypatch.setattr(
-        arox.utils, "import_class", lambda *_args, **_kwargs: _FakeDynamicAgent
-    )
-    monkeypatch.setattr(
-        subagent_module, "import_class", lambda *_args, **_kwargs: _FakeDynamicAgent
     )
     store = FileSessionStore(base_dir=tmp_path / "sessions")
     main_session = AgentSession(path=["main-session"], agent_name="main")
@@ -230,35 +150,40 @@ async def test_delete_dynamic_subagent_removes_session_and_does_not_restore(
     plugin = SubagentPlugin(main_agent)
 
     async with main_agent._stack:
-        await plugin.create_subagent("planner")
-        child_id = main_session.children[0]
-        child = await store.load_session([main_session.id, child_id])
-        assert isinstance(child, AgentSession)
-        assert await store.load_session(child.path) is not None
-        assert await plugin.delete_subagent("planner") == "Deleted subagent 'planner'."
-        assert "planner" not in plugin.subagents
-        assert main_session.children == []
-        assert await store.load_session(child.path) is None
+        res_msg = await plugin.dispatch_background_task("reviewer", "review this")
+        assert "Task dispatched to reviewer" in res_msg
 
-    await store.save_session(main_session)
-    loaded = await store.load_session(["main-session"])
-    assert isinstance(loaded, AgentSession)
-    reloaded_agent = _MainAgent(loaded, store)
-    reloaded_plugin = SubagentPlugin(reloaded_agent)
-    async with reloaded_agent._stack:
-        await reloaded_plugin.on_start()
-        assert reloaded_plugin.subagents == {}
+        # Parse task ID
+        import re
+
+        match = re.search(r"Task ID: (task_[0-9a-f]+)", res_msg)
+        assert match
+        task_id = match.group(1)
+
+        # wait for task to finish
+        task = plugin.background_tasks[task_id]
+        await task
+
+        status = await plugin.check_task_status(task_id)
+        assert "Task Completed. Result:" in status
+        assert "review this" in status
+
+        assert len(main_session.children) == 1
+        child_session = await store.load_session(
+            [main_session.id, main_session.children[0]]
+        )
+        assert child_session is not None
+        assert child_session.status == "closed"
+
+        assert not plugin.active_subagents
 
 
 @pytest.mark.asyncio
-async def test_subagent_command_list_create_delete(tmp_path, monkeypatch):
+async def test_subagent_command_list_call(tmp_path, monkeypatch):
     import arox.utils
 
     monkeypatch.setattr(
         arox.utils, "import_class", lambda *_args, **_kwargs: _FakeDynamicAgent
-    )
-    monkeypatch.setattr(
-        subagent_module, "import_class", lambda *_args, **_kwargs: _FakeDynamicAgent
     )
     store = FileSessionStore(base_dir=tmp_path / "sessions")
     main_agent = _MainAgent(
@@ -266,22 +191,15 @@ async def test_subagent_command_list_create_delete(tmp_path, monkeypatch):
     )
     plugin = SubagentPlugin(main_agent)
 
-    event = SubagentEvent.from_slash(
-        "subagent", 'create planner chat {"description": "Plans work"}'
-    )
-    assert event.name == "planner"
-    assert event.config == {"description": "Plans work"}
+    event_call = SubagentEvent.from_slash("subagent", "call planner make a plan")
+    assert event_call.name == "planner"
+    assert event_call.task == "make a plan"
 
     async with main_agent._stack:
-        assert (
-            await plugin.handle_subagent_event(event) == "Created subagent 'planner'."
-        )
         listing = await plugin.handle_subagent_event(SubagentEvent(action="list"))
         assert listing is not None
-        assert "- planner (dynamic): Plans work" in listing
-        assert (
-            await plugin.handle_subagent_event(
-                SubagentEvent(action="delete", name="planner")
-            )
-            == "Deleted subagent 'planner'."
-        )
+        assert "- planner: Plans work" in listing
+        assert "- reviewer: Reviews code" in listing
+
+        result = await plugin.handle_subagent_event(event_call)
+        assert result == "task done: make a plan"

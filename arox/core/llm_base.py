@@ -490,6 +490,7 @@ class LLMBaseAgent(IOHost):
         prompt = utils.render_template(
             self.raw_system_prompt, config=self.parsed_config, agent=self
         )
+
         if self.skill_catalog:
             prompt += f"\n\n{self.skill_catalog}"
         return prompt
@@ -642,7 +643,7 @@ class DelegatableAgent(LLMBaseAgent, ABC):
     """
 
     async def run_task(self, task: str) -> str | None:
-        """Run a single delegated task and return its textual result."""
+        """Run a delegated task autonomously until completion."""
         result = await self.step(task)
         if result and isinstance(result.output, str):
             return result.output
@@ -652,3 +653,51 @@ class DelegatableAgent(LLMBaseAgent, ABC):
                 "which is not supported in delegation yet."
             )
         return None
+
+
+def create_agent(
+    name: str,
+    parsed_config: Config,
+    io_adapter: Any,
+    session: AgentSession | None = None,
+    parent_session: AgentSession | None = None,
+    agent_config: AgentConfig | None = None,
+    agent_source: Literal["static", "dynamic"] = "static",
+    workspace: Path | str | None = None,
+    agent_cls: type | None = None,
+) -> LLMBaseAgent:
+    if not agent_config:
+        agent_config = parsed_config.agent.get(name)
+        if not agent_config:
+            raise ValueError(f"Agent config for '{name}' not found")
+
+    if not agent_cls:
+        agent_type = agent_config.type
+        try:
+            agent_cls = utils.import_class(agent_type, group="arox.agents")
+        except ValueError:
+            raise ValueError(f"Unknown agent type: {agent_type} for agent {name}")
+
+    if session is None:
+        session = AgentSession(
+            path=[*parent_session.path, str(uuid.uuid4())]
+            if parent_session
+            else [str(uuid.uuid4())],
+            agent_name=name,
+            agent_config=agent_config.model_copy(deep=True),
+            agent_source=agent_source,
+            workspace=str(Path(workspace).absolute()) if workspace else None,
+            run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
+        )
+        if parent_session:
+            session.owner = parent_session
+            session.manager = parent_session.manager
+            parent_session.children.append(session.id)
+
+    agent = agent_cls(
+        parsed_config=parsed_config,
+        io_adapter=io_adapter,
+        workspace=workspace,
+        session=session,
+    )
+    return agent

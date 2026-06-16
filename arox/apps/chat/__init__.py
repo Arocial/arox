@@ -8,7 +8,8 @@ from pathlib import Path
 # Disable fastmcp custom logging
 os.environ["FASTMCP_LOG_ENABLED"] = "false"
 
-from arox.core.app import app_setup, create_main_agent
+from arox.core.app import app_setup
+from arox.core.llm_base import MainAgent, create_agent
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,7 @@ def main(profile: str | None = None):
             session_manager.register_session_type(AgentSession)
 
             await session_store.cleanup()
+            session = None
             if args.session:
                 session = await session_store.load_session([args.session])
                 if not session or not isinstance(session, AgentSession):
@@ -130,14 +132,17 @@ def main(profile: str | None = None):
                     sys.exit(1)
                 parsed_config.app.main_agent = session.agent_name
                 parsed_config.agent[session.agent_name] = session.agent_config
-            else:
-                session = AgentSession.create_initial(parsed_config)
 
-            main_agent = create_main_agent(
-                parsed_config,
+            main_agent = create_agent(
+                name=parsed_config.app.main_agent,
+                parsed_config=parsed_config,
                 io_adapter=io_adapter,
                 session=session,
             )
+            if not isinstance(main_agent, MainAgent):
+                raise TypeError(
+                    f"Main agent '{parsed_config.app.main_agent}' must be a MainAgent"
+                )
             main_agent.session.manager = session_manager
 
             async with session_manager, io_adapter:

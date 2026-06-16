@@ -25,7 +25,7 @@ from pydantic_ai import (
     ToolCallPartDelta,
 )
 
-from arox.core.app import app_setup, create_main_agent
+from arox.core.app import app_setup
 from arox.core.chat import (
     ChatInputEvent,
     ChatInputReply,
@@ -36,7 +36,13 @@ from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
 )
-from arox.core.llm_base import AgentInfoUpdate, LLMBaseAgent, MainAgent, ServerIdMapping
+from arox.core.llm_base import (
+    AgentInfoUpdate,
+    LLMBaseAgent,
+    MainAgent,
+    ServerIdMapping,
+    create_agent,
+)
 from arox.plugins.slots import SUBAGENTS
 
 logger = logging.getLogger(__name__)
@@ -582,6 +588,7 @@ class VercelStreamServer:
 
         parsed_config = self.parsed_config.model_copy(deep=True)
 
+        session = None
         if request.session_id:
             session = await self.session_store.load_session([request.session_id])
             if not session or not isinstance(session, AgentSession):
@@ -590,17 +597,18 @@ class VercelStreamServer:
                 )
             parsed_config.app.main_agent = session.agent_name
             parsed_config.agent[session.agent_name] = session.agent_config
-        else:
-            session = AgentSession.create_initial(
-                parsed_config, workspace=request.workspace
-            )
 
-        main_agent = create_main_agent(
-            parsed_config,
+        main_agent = create_agent(
+            name=parsed_config.app.main_agent,
+            parsed_config=parsed_config,
             io_adapter=self.io_adapter,
             session=session,
             workspace=request.workspace,
         )
+        if not isinstance(main_agent, MainAgent):
+            raise TypeError(
+                f"Main agent '{parsed_config.app.main_agent}' must be a MainAgent"
+            )
         main_agent.session.manager = self.session_manager
 
         run_instance = AgentRun(main_agent=main_agent)

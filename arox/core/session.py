@@ -111,6 +111,7 @@ AnySessionEvent = Annotated[
 class Session(BaseModel):
     path: list[str] = Field(default_factory=lambda: [str(uuid.uuid4())])
     session_type: str
+    status: Literal["active", "closed"] = "active"
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     forked_from: tuple[list[str], str] | None = None
@@ -166,25 +167,6 @@ class AgentSession(Session):
     workspace: str | None = None
     run_info: AgentRunInfo = Field(default_factory=AgentRunInfo)
     extra: dict[str, Any] = Field(default_factory=dict)
-
-    @classmethod
-    def create_initial(
-        cls,
-        parsed_config: Any,
-        workspace: str | Path | None = None,
-    ) -> AgentSession:
-        """Create a fresh session for the main agent from config."""
-        agent_name = parsed_config.app.main_agent
-        agent_config = parsed_config.agent.get(agent_name) or AgentConfig()
-        ws = str(Path(workspace).absolute()) if workspace else str(Path.cwd())
-        return cls(
-            path=[str(uuid.uuid4())],
-            agent_name=agent_name,
-            agent_config=agent_config.model_copy(deep=True),
-            agent_source="static",
-            workspace=ws,
-            run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
-        )
 
     async def build_instance(self, session_manager: SessionManager, **kwargs) -> Any:
         from arox.utils import import_class
@@ -444,7 +426,7 @@ class SessionManager:
     ) -> Any:
 
         session = await self.load_session(session_id, owner)
-        if not session:
+        if not session or session.status == "closed":
             return None
         session.manager = self
         return await session.build_instance(self, **kwargs)

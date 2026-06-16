@@ -1,5 +1,7 @@
+import contextlib
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic_ai.messages import (
@@ -28,17 +30,49 @@ class _FakeCompactionAgent(CompactionAgent):
         return self._summary
 
 
+@pytest.fixture(autouse=True)
+def mock_env(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "fake")
+    monkeypatch.setattr(
+        "arox.plugins.compaction.CompactionAgent.summarize",
+        AsyncMock(return_value="SUMMARY"),
+    )
+    monkeypatch.setattr("arox.core.llm_base.LLMBaseAgent.__aenter__", AsyncMock())
+    monkeypatch.setattr("arox.core.llm_base.LLMBaseAgent.__aexit__", AsyncMock())
+
+
 class _MockAgent:
     """Minimal agent surface the CompactionPlugin touches."""
 
     def __init__(self, threshold: int | None, persistent=None):
+        from arox.core.config import AgentConfig, Config
+
         self.message_history = []
         self.run_info = SimpleNamespace(context_tokens=0, llm_context_id="ctx-original")
         self.model_config = None
-        self.parsed_config = SimpleNamespace(compaction_threshold=threshold)
+
+        self.parsed_config = Config(
+            compaction_threshold=threshold if threshold is not None else 0.7,
+            agent={"compaction": AgentConfig(type="compaction", task_prompt="summary")},
+        )
+        if threshold is None:
+            # Overwrite after instantiation if None is needed
+            self.parsed_config.compaction_threshold = None  # type: ignore
+
         self.model_params = {}
         self.agent_io = SimpleNamespace(send=self._send)
         self.session = AgentSession(agent_name="main")
+        self.workspace = "fake-workspace"
+
+        async def _fake_process_io(adapter_io):
+            pass
+
+        self.io_adapter = SimpleNamespace(
+            register_host=AsyncMock(), _process_io=_fake_process_io
+        )
+
+        self._stack = contextlib.AsyncExitStack()
+
         self._compaction_agent = _FakeCompactionAgent()
         self._persistent = persistent or []
 

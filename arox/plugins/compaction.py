@@ -10,9 +10,9 @@ from pydantic_ai import (
     UserPromptPart,
 )
 
-from arox.core.llm_base import LLMBaseAgent
+from arox.core.llm_base import LLMBaseAgent, create_agent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin
-from arox.plugins.slots import PERSISTENT_CONTEXT, SUBAGENTS
+from arox.plugins.slots import PERSISTENT_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -162,12 +162,6 @@ class CompactionPlugin(Plugin):
             )
         return compacted
 
-    async def _find_compaction_agent(self) -> CompactionAgent | None:
-        for sub in await self.agent.invoke_slot(SUBAGENTS) or []:
-            if sub.name == COMPACTION_AGENT_NAME and isinstance(sub, CompactionAgent):
-                return sub
-        return None
-
     async def _compact(
         self, messages: list[ModelMessage], extra_instructions: str = ""
     ) -> list[ModelMessage]:
@@ -176,24 +170,47 @@ class CompactionPlugin(Plugin):
         if not messages:
             return messages
 
-        compaction_agent = await self._find_compaction_agent()
-        if not compaction_agent:
+        agent_config = agent.parsed_config.agent.get(COMPACTION_AGENT_NAME)
+        if not agent_config:
             await agent.agent_io.send(
                 "Compaction agent not configured; skipping compaction."
             )
             logger.warning(
-                "CompactionPlugin could not find a CompactionAgent subagent named '%s'.",
+                "CompactionPlugin could not find a CompactionAgent config named '%s'.",
                 COMPACTION_AGENT_NAME,
             )
             return messages
+
+        from typing import cast
+
+        # Dynamically create compaction agent session
+        compaction_agent = cast(
+            CompactionAgent,
+            create_agent(
+                name=COMPACTION_AGENT_NAME,
+                parsed_config=agent.parsed_config,
+                io_adapter=agent.io_adapter,
+                parent_session=agent.session,
+                agent_config=agent_config,
+                workspace=agent.workspace,
+                agent_cls=CompactionAgent,
+            ),
+        )
 
         await agent.agent_io.send(
             "Context size is large. Compacting conversation history..."
         )
 
-        summary = await compaction_agent.summarize(
-            messages, extra_instructions=extra_instructions
-        )
+        try:
+            async with compaction_agent:
+                summary = await compaction_agent.summarize(
+                    messages, extra_instructions=extra_instructions
+                )
+        finally:
+            sub_session = compaction_agent.session
+            sub_session.status = "closed"
+            if sub_session.manager:
+                await sub_session.manager.save_session(sub_session)
 
         new_request = ModelRequest(
             parts=[UserPromptPart(content=f"Previous conversation summary:\n{summary}")]

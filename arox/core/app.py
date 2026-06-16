@@ -6,9 +6,6 @@ from typing import Any
 import logfire
 
 from arox.core.config import Config, ObservabilityConfig, load_config
-from arox.core.llm_base import MainAgent
-from arox.core.session import AgentSession
-from arox.utils import import_class
 
 logger = logging.getLogger(__name__)
 
@@ -37,38 +34,6 @@ def app_setup(
     setup_llm_observability(config.app.observability)
 
     return config
-
-
-def create_main_agent(
-    parsed_config: Config,
-    io_adapter: Any,
-    session: AgentSession,
-    workspace: Path | str | None = None,
-) -> MainAgent:
-    main_agent_name = parsed_config.app.main_agent
-    agent_config = parsed_config.agent.get(main_agent_name)
-    if not agent_config:
-        raise ValueError(f"Agent config for '{main_agent_name}' not found")
-
-    main_agent_type = agent_config.type
-    try:
-        main_agent_cls = import_class(main_agent_type, group="arox.agents")
-    except ValueError:
-        raise ValueError(
-            f"Unknown agent type: {main_agent_type} for main agent {main_agent_name}"
-        )
-
-    main_agent = main_agent_cls(
-        parsed_config,
-        io_adapter=io_adapter,
-        session=session,
-        workspace=workspace,
-    )
-
-    if not isinstance(main_agent, MainAgent):
-        raise TypeError(f"Main agent '{main_agent_name}' must be a MainAgent")
-
-    return main_agent
 
 
 # Observability & Logging
