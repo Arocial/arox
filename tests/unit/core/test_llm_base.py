@@ -4,7 +4,7 @@ import pytest
 
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter, RequestEvent
-from arox.core.llm_base import LLMBaseAgent
+from arox.core.llm_base import LLMBaseAgent, build_skill_catalog
 from arox.core.session import AgentSession
 from arox.plugins.core import SetModelEvent
 
@@ -45,15 +45,15 @@ system_prompt = "Hi there."
 skills = ["skill1"]
 """)
 
+    # Monkeypatch Path.cwd to return tmp_path so load_config finds the skills
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+
     parsed_config = app_setup(
         config_files=[config_file],
         cli_args={"workspace": str(tmp_path)},
     )
 
     io_adapter = _StubIOAdapter()
-
-    # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
-    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
     agent = LLMBaseAgent(
         parsed_config,
@@ -101,15 +101,15 @@ system_prompt = "Hi there."
 skills = "skill2"
 """)
 
+    # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+
     parsed_config = app_setup(
         config_files=[config_file],
         cli_args={"workspace": str(tmp_path)},
     )
 
     io_adapter = _StubIOAdapter()
-
-    # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
-    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
     agent = LLMBaseAgent(
         parsed_config,
@@ -156,15 +156,15 @@ model_ref = "test"
 system_prompt = "Hi there."
 """)
 
+    # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+
     parsed_config = app_setup(
         config_files=[config_file],
         cli_args={"workspace": str(tmp_path)},
     )
 
     io_adapter = _StubIOAdapter()
-
-    # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
-    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
     agent = LLMBaseAgent(
         parsed_config,
@@ -254,3 +254,21 @@ system_prompt = "Hi."
 
     assert calls == ["test"]
     assert agent.model_ref == "test"
+
+
+def test_build_skill_catalog():
+    assert build_skill_catalog({}) == ""
+
+    skills = {
+        "test_skill": {
+            "name": "test_skill",
+            "description": "A test skill",
+            "location": "/path/to/SKILL.md",
+        }
+    }
+
+    catalog = build_skill_catalog(skills)
+    assert "<available_skills>" in catalog
+    assert "<name>test_skill</name>" in catalog
+    assert "<description>A test skill</description>" in catalog
+    assert "<location>/path/to/SKILL.md</location>" in catalog

@@ -64,7 +64,6 @@ from arox.core.session import (
     AgentRunInfo,
     AgentSession,
 )
-from arox.core.skills import build_skill_catalog, discover_skills
 from arox.core.slot import (
     BaseSlot,
     DiscardSlot,
@@ -80,6 +79,30 @@ from arox.plugins.slots import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def build_skill_catalog(skills: dict) -> str:
+    """Build the skill catalog XML string."""
+    if not skills:
+        return ""
+
+    catalog = ["<available_skills>"]
+    for skill in skills.values():
+        catalog.append("  <skill>")
+        catalog.append(f"    <name>{skill['name']}</name>")
+        catalog.append(f"    <description>{skill['description']}</description>")
+        catalog.append(f"    <location>{skill['location']}</location>")
+        catalog.append("  </skill>")
+    catalog.append("</available_skills>")
+
+    instructions = """
+The following skills provide specialized instructions for specific tasks.
+When a task matches a skill's description, use your file-read tool to load
+the SKILL.md at the listed location before proceeding.
+When a skill references relative paths, resolve them against the skill's
+directory (the parent of SKILL.md) and use absolute paths in tool calls.
+"""
+    return instructions + "\n" + "\n".join(catalog)
 
 
 def create_retrying_client(extra_request_hooks=None, **client_args):
@@ -458,7 +481,7 @@ class LLMBaseAgent(IOHost):
         self.raw_system_prompt = self.agent_config.system_prompt
 
         # skills
-        skills = discover_skills(self.workspace)
+        skills = self.parsed_config.skills
         allowed_skills = self.agent_config.skills
         if allowed_skills is not None:
             if isinstance(allowed_skills, str):

@@ -116,6 +116,7 @@ class Config(BaseModel):
     app: AppConfig = Field(default_factory=AppConfig)
     mcp_servers: dict[str, Any] = Field(default_factory=dict)
     agent: dict[str, AgentConfig] = Field(default_factory=dict)
+    skills: dict[str, Any] = Field(default_factory=dict)
     model: dict[str, ModelConfig] = Field(default_factory=dict)
     provider: dict[str, ProviderConfig] = Field(default_factory=dict)
 
@@ -216,6 +217,53 @@ def _discover_agents_in_scopes(scopes: list[Path]) -> dict[str, dict[str, Any]]:
     return {"agent": agent_configs} if agent_configs else {}
 
 
+def _discover_skills_in_scopes(scopes: list[Path]) -> dict[str, dict[str, Any]]:
+    """Discover skills from SKILL.md files in given scopes."""
+    skills: dict[str, Any] = {}
+
+    import logging
+
+    from arox.utils.markdown import parse_yaml_frontmatter
+
+    logger = logging.getLogger(__name__)
+
+    for scope in scopes:
+        if not scope.exists() or not scope.is_dir():
+            continue
+
+        for skill_dir in scope.iterdir():
+            if not skill_dir.is_dir():
+                continue
+
+            skill_file = skill_dir / "SKILL.md"
+            if not skill_file.exists() or not skill_file.is_file():
+                continue
+
+            try:
+                content = skill_file.read_text(encoding="utf-8")
+                metadata, _ = parse_yaml_frontmatter(content)
+
+                if (
+                    not isinstance(metadata, dict)
+                    or "name" not in metadata
+                    or "description" not in metadata
+                ):
+                    logger.warning(f"Missing required metadata in {skill_file}")
+                    continue
+
+                name = metadata["name"]
+                if name not in skills:
+                    skills[name] = {
+                        "name": name,
+                        "description": metadata["description"],
+                        "location": str(skill_file.absolute()),
+                    }
+            except Exception as e:
+                logger.warning(f"Error reading skill file {skill_file}: {e}")
+
+    return {"skills": skills} if skills else {}
+
+
 def load_config(
     config_files: list[str | Path] | None = None,
     cli_args: list[str] | dict[str, Any] | None = None,
@@ -236,6 +284,13 @@ def load_config(
     ]
     raw_config = deep_merge(raw_config, _discover_agents_in_scopes(global_agent_scopes))
 
+    global_skill_scopes = [
+        Path.home() / ".arox" / "skills",
+        xdg_config_home / "arox" / "skills",
+        Path.home() / ".agents" / "skills",
+    ]
+    raw_config = deep_merge(raw_config, _discover_skills_in_scopes(global_skill_scopes))
+
     for path in _discover_config_files(xdg_config_home / "arox", "config"):
         if path.exists():
             raw_config = deep_merge(raw_config, _load_config_file(path))
@@ -247,6 +302,14 @@ def load_config(
     ]
     raw_config = deep_merge(
         raw_config, _discover_agents_in_scopes(workspace_agent_scopes)
+    )
+
+    workspace_skill_scopes = [
+        workspace / ".arox" / "skills",
+        workspace / ".agents" / "skills",
+    ]
+    raw_config = deep_merge(
+        raw_config, _discover_skills_in_scopes(workspace_skill_scopes)
     )
 
     for path in _discover_config_files(workspace, ".arox.config"):

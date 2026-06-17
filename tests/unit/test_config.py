@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 
 from arox.core.config import load_config, parse_dot_config
@@ -188,3 +190,87 @@ def test_config_interleaved_scope_precedence(tmp_path, monkeypatch):
     )
     config3 = load_config(workspace=workspace)
     assert config3.agent["myagent"].system_prompt == "workspace-config"
+
+
+def test_discover_skills_empty(tmp_path, monkeypatch):
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home_dir)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home_dir / ".config"))
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    config = load_config(workspace=workspace)
+    assert config.skills == {}
+
+
+def test_discover_skills_valid(tmp_path, monkeypatch):
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home_dir)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home_dir / ".config"))
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    skill_dir = workspace / ".arox" / "skills" / "test_skill"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(
+        "---\nname: test_skill\ndescription: A test skill\n---\nSkill content here",
+        encoding="utf-8",
+    )
+
+    config = load_config(workspace=workspace)
+    assert "test_skill" in config.skills
+    assert config.skills["test_skill"]["name"] == "test_skill"
+    assert config.skills["test_skill"]["description"] == "A test skill"
+    assert config.skills["test_skill"]["location"] == str(skill_file.absolute())
+
+
+def test_discover_skills_malformed_yaml_fixed(tmp_path, monkeypatch):
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home_dir)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home_dir / ".config"))
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    skill_dir = workspace / ".arox" / "skills" / "malformed_skill"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text(
+        "---\n"
+        "name: malformed_skill\n"
+        "description: A skill with a colon: in description\n"
+        "---\n"
+        "Content",
+        encoding="utf-8",
+    )
+
+    config = load_config(workspace=workspace)
+    assert "malformed_skill" in config.skills
+    assert (
+        config.skills["malformed_skill"]["description"]
+        == "A skill with a colon: in description"
+    )
+
+
+def test_discover_skills_missing_metadata(tmp_path, monkeypatch):
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: home_dir)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home_dir / ".config"))
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    skill_dir = workspace / ".arox" / "skills" / "missing_meta"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text("---\nname: missing_meta\n---\nContent", encoding="utf-8")
+
+    config = load_config(workspace=workspace)
+    assert "missing_meta" not in config.skills

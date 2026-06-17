@@ -59,7 +59,7 @@ Built-in adapters:
     - `commands()` — slash / control commands for the human. Plugins override `commands()` to return `CommandSpec(event_cls, handler, completer)` bindings that `CommandManager` dispatches. Commands run locally without calling the LLM, saving time and tokens.
     - `history_processor()` — async hook that modifies message history before each LLM call.
 - **Slots** (`arox/core/slot.py`): typed tokens for loose coupling, used for both pull and push patterns. Producers call `agent.provide_slot(slot, impl)`; consumers pull or push notifications with `await agent.invoke_slot(slot, ...)`. Built-in slots live in `arox/plugins/slots.py` (e.g. `SUBAGENTS`, `PERSISTENT_CONTEXT`, `AGENT_RESET`).
-- **Skills** (`arox/core/skills.py`): discovered from `.arox/skills/` in the workspace and injected into the agent's system prompt as a catalog. `AgentConfig.skills` restricts which skills are visible to a given agent.
+- **Skills**: Discovered automatically during configuration loading (`arox/core/config.py`) from `.arox/skills/` and `.agents/skills/` directories in the workspace and global paths. They are injected into the agent's system prompt as an XML catalog. `AgentConfig.skills` restricts which skills are visible to a given agent.
 
 ## Data flow
 
