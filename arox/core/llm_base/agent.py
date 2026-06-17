@@ -3,13 +3,11 @@ import logging
 import re
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterable, Callable
-from dataclasses import dataclass
+from collections.abc import AsyncIterable
 from pathlib import Path
 from typing import Any, Literal, overload
 
 import fastmcp
-from httpx import AsyncClient, HTTPStatusError, Timeout, TransportError
 from pydantic_ai import (
     AbstractToolset,
     Agent,
@@ -35,27 +33,12 @@ from pydantic_ai.messages import (
     UserContent,
 )
 from pydantic_ai.models import infer_model
-from pydantic_ai.providers import (
-    Provider,
-    gateway,
-    google,
-    google_cloud,
-    infer_provider_class,
-)
-from pydantic_ai.retries import AsyncTenacityTransport, RetryConfig, wait_retry_after
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
-from tenacity import (
-    before_sleep_log,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential,
-)
 
 from arox import utils
 from arox.core.config import AgentConfig, Config
 from arox.core.io import (
     AbstractIOAdapter,
-    IOEndpoint,
     IOHost,
 )
 from arox.core.plugin import CommandManager, load_plugins
@@ -78,155 +61,10 @@ from arox.plugins.slots import (
     AGENT_RESET,
 )
 
+from ._pydantic_ai_hack import infer_provider
+from .types import AgentDeps, ServerIdMapping, UserInput
+
 logger = logging.getLogger(__name__)
-
-
-def build_skill_catalog(skills: dict) -> str:
-    """Build the skill catalog XML string."""
-    if not skills:
-        return ""
-
-    catalog = ["<available_skills>"]
-    for skill in skills.values():
-        catalog.append("  <skill>")
-        catalog.append(f"    <name>{skill['name']}</name>")
-        catalog.append(f"    <description>{skill['description']}</description>")
-        catalog.append(f"    <location>{skill['location']}</location>")
-        catalog.append("  </skill>")
-    catalog.append("</available_skills>")
-
-    instructions = """
-The following skills provide specialized instructions for specific tasks.
-When a task matches a skill's description, use your file-read tool to load
-the SKILL.md at the listed location before proceeding.
-When a skill references relative paths, resolve them against the skill's
-directory (the parent of SKILL.md) and use absolute paths in tool calls.
-"""
-    return instructions + "\n" + "\n".join(catalog)
-
-
-def create_retrying_client(extra_request_hooks=None, **client_args):
-    """Create a client with smart retry handling for multiple error types."""
-
-    def should_retry_status(response):
-        """Raise exceptions for retryable HTTP status codes."""
-        if response.status_code in (429, 499, 502, 503, 504):
-            response.raise_for_status()  # This will raise HTTPStatusError
-
-    async def log_request(request):
-        logger.info(f"Sending request: {request.method} {request.url}")
-
-    transport = AsyncTenacityTransport(
-        config=RetryConfig(
-            # Retry on HTTP errors and connection issues
-            retry=retry_if_exception_type(
-                (HTTPStatusError, TransportError, ConnectionError)
-            ),
-            # Smart waiting: respects Retry-After headers, falls back to exponential backoff
-            wait=wait_retry_after(
-                fallback_strategy=wait_exponential(multiplier=2, max=30)
-            ),
-            stop=stop_after_attempt(8),
-            # Re-raise the last exception if all retries fail
-            reraise=True,
-            before_sleep=before_sleep_log(logger, logging.WARNING),
-        ),
-        validate_response=should_retry_status,
-    )
-    request_hooks = [log_request] + (extra_request_hooks or [])
-    return AsyncClient(
-        transport=transport,
-        event_hooks={"request": request_hooks},
-        **client_args,
-    )
-
-
-# Copyied from pydantic_ai.providers.infer_provider and add http_client parameter.
-def infer_provider(
-    provider: str,
-    base_url: str = "",
-    session_id_fn: Callable[[], str] | None = None,
-    session_header: str = "",
-) -> Provider[Any]:
-    """Infer the provider from the provider name."""
-
-    async def _add_session_header(request):
-        session_id = session_id_fn() if session_id_fn else ""
-        if session_id and session_header:
-            request.headers[session_header] = session_id
-
-    client = create_retrying_client(
-        timeout=Timeout(timeout=80),
-        extra_request_hooks=[_add_session_header],
-    )
-
-    kwargs: dict[str, Any] = {"http_client": client}
-    if base_url:
-        kwargs["base_url"] = base_url
-
-    if provider.startswith("gateway/"):
-        upstream_provider = provider.removeprefix("gateway/")
-        return gateway.gateway_provider(upstream_provider, **kwargs)
-    elif provider in ("google-vertex", "google-gla"):
-        # Google GenAI SDK uses HttpOptions.timeout for both the httpx
-        # per-request timeout AND the X-Server-Timeout header sent to the
-        # server. pydantic_ai reads the httpx client's timeout and forwards
-        # it to HttpOptions.timeout, so they are always coupled.
-        #
-        # To decouple them we:
-        # 1. Set timeout to 40, which is set for both client and server timeout by genai sdk.
-        # 2. Then use an httpx request event hook to remove the X-Server-Timeout
-        #    header before the request is sent, so the server is not
-        #    constrained by that deadline.
-        async def _remove_server_timeout(request):
-            request.headers.pop("X-Server-Timeout", None)
-
-        client = create_retrying_client(
-            timeout=80,
-            extra_request_hooks=[_remove_server_timeout, _add_session_header],
-        )
-        kwargs["http_client"] = client
-        if provider == "google-vertex":
-            return google_cloud.GoogleCloudProvider(**kwargs)
-        return google.GoogleProvider(**kwargs)
-    else:
-        provider_class = infer_provider_class(provider)
-        return provider_class(**kwargs)
-
-
-@dataclass
-class UserInput:
-    """A unit of user input passed to :meth:`LLMBaseAgent.step`.
-
-    ``client_message_id`` is an opaque id assigned by a client to the message that
-    produced this input; it is echoed back in :class:`ServerIdMapping` so the client
-    can map its own messages to backend session-event ids.
-    """
-
-    user_input: str | None = None
-    client_message_id: str | None = None
-
-
-@dataclass
-class ServerIdMapping:
-    """Maps a UI-assigned ``message_id`` to the ``event_id`` of the recorded
-    user-input session event, so the UI can resolve stable backend event ids
-    (used for forking) without relying on positional ordering."""
-
-    event_id: str | None = None
-    client_id: str | None = None
-
-
-@dataclass
-class AgentInfoUpdate:
-    """Carries updated agent info to broadcast to clients."""
-
-    agent_id: str
-
-
-@dataclass
-class AgentDeps:
-    agent_io: IOEndpoint
 
 
 class LLMBaseAgent(IOHost):
@@ -453,6 +291,30 @@ class LLMBaseAgent(IOHost):
         self.additional_prompt = additional_prompt
         self.model = model
 
+    @staticmethod
+    def _build_skill_catalog(skills: dict) -> str:
+        """Build the skill catalog XML string."""
+        if not skills:
+            return ""
+
+        catalog = ["<available_skills>"]
+        for skill in skills.values():
+            catalog.append("  <skill>")
+            catalog.append(f"    <name>{skill['name']}</name>")
+            catalog.append(f"    <description>{skill['description']}</description>")
+            catalog.append(f"    <location>{skill['location']}</location>")
+            catalog.append("  </skill>")
+        catalog.append("</available_skills>")
+
+        instructions = """
+The following skills provide specialized instructions for specific tasks.
+When a task matches a skill's description, use your file-read tool to load
+the SKILL.md at the listed location before proceeding.
+When a skill references relative paths, resolve them against the skill's
+directory (the parent of SKILL.md) and use absolute paths in tool calls.
+"""
+        return instructions + "\n" + "\n".join(catalog)
+
     def parse_configs(self):
         # model configs
         self.model_ref = self.agent_config.model_ref or self.parsed_config.model_ref
@@ -490,7 +352,7 @@ class LLMBaseAgent(IOHost):
 
         self.skill_catalog = ""
         if skills:
-            self.skill_catalog = build_skill_catalog(skills)
+            self.skill_catalog = self._build_skill_catalog(skills)
 
         # Tools and mcp servers
         self.toolsets: list[AbstractToolset[AgentDeps]] = [self.local_toolset]

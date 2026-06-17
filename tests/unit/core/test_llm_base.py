@@ -4,7 +4,7 @@ import pytest
 
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter, RequestEvent
-from arox.core.llm_base import LLMBaseAgent, build_skill_catalog
+from arox.core.llm_base import LLMBaseAgent
 from arox.core.session import AgentSession
 from arox.plugins.core import SetModelEvent
 
@@ -257,7 +257,7 @@ system_prompt = "Hi."
 
 
 def test_build_skill_catalog():
-    assert build_skill_catalog({}) == ""
+    assert LLMBaseAgent._build_skill_catalog({}) == ""
 
     skills = {
         "test_skill": {
@@ -267,7 +267,7 @@ def test_build_skill_catalog():
         }
     }
 
-    catalog = build_skill_catalog(skills)
+    catalog = LLMBaseAgent._build_skill_catalog(skills)
     assert "<available_skills>" in catalog
     assert "<name>test_skill</name>" in catalog
     assert "<description>A test skill</description>" in catalog
