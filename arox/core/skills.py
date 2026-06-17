@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 
-import yaml
+from arox.utils.markdown import parse_yaml_frontmatter
 
 logger = logging.getLogger(__name__)
 
@@ -30,41 +30,7 @@ def discover_skills(workspace: Path):
 
             try:
                 content = skill_file.read_text(encoding="utf-8")
-                if not content.startswith("---"):
-                    continue
-
-                parts = content.split("---", 2)
-                if len(parts) < 3:
-                    continue
-
-                frontmatter = parts[1]
-                try:
-                    metadata = yaml.safe_load(frontmatter)
-                except yaml.YAMLError:
-                    # Try to fix malformed YAML (e.g. unquoted colons)
-                    fixed_lines = []
-                    for line in frontmatter.splitlines():
-                        if ":" in line:
-                            k, v = line.split(":", 1)
-                            v = v.strip()
-                            if (
-                                ":" in v
-                                and not (v.startswith("'") and v.endswith("'"))
-                                and not (v.startswith('"') and v.endswith('"'))
-                            ):
-                                fixed_lines.append(f"{k}: '{v}'")
-                            else:
-                                fixed_lines.append(line)
-                        else:
-                            fixed_lines.append(line)
-                    fixed_frontmatter = "\n".join(fixed_lines)
-                    try:
-                        metadata = yaml.safe_load(fixed_frontmatter)
-                    except yaml.YAMLError:
-                        logger.warning(
-                            f"Failed to parse YAML frontmatter in {skill_file}"
-                        )
-                        continue
+                metadata, body = parse_yaml_frontmatter(content)
 
                 if (
                     not isinstance(metadata, dict)

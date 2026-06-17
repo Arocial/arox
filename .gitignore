@@ -3,6 +3,7 @@ __pycache__
 __verbose_out__
 dist/
 build/
+site/
 *.egg-info/
 .arox*
 !.arox.config.toml

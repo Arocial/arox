@@ -126,7 +126,7 @@ def _read_config_file(path: Path) -> dict[str, Any]:
         with open(path, "rb") as f:
             return tomllib.load(f)
     elif suffix in (".yaml", ".yml"):
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return yaml.safe_load(f) or {}
     else:
         raise ValueError(f"Unsupported config file format: {suffix}")
@@ -182,27 +182,85 @@ def _discover_config_files(base: Path, stem: str) -> list[Path]:
     return found
 
 
+def _discover_agents_in_scopes(scopes: list[Path]) -> dict[str, dict[str, Any]]:
+    """Discover agent configurations from `.agents` directories in given scopes."""
+    agent_configs: dict[str, Any] = {}
+
+    from arox.utils.markdown import parse_yaml_frontmatter
+
+    for scope in scopes:
+        if not scope.exists() or not scope.is_dir():
+            continue
+
+        for file_path in scope.iterdir():
+            if not file_path.is_file():
+                continue
+
+            suffix = file_path.suffix.lower()
+            agent_name = file_path.stem
+
+            if suffix == ".md":
+                with open(file_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                metadata, body = parse_yaml_frontmatter(content)
+                metadata = metadata or {}
+
+                if body and "system_prompt" not in metadata:
+                    metadata["system_prompt"] = body
+
+                if metadata:
+                    agent_configs[agent_name] = deep_merge(
+                        agent_configs.get(agent_name, {}), metadata
+                    )
+
+    return {"agent": agent_configs} if agent_configs else {}
+
+
 def load_config(
     config_files: list[str | Path] | None = None,
     cli_args: list[str] | dict[str, Any] | None = None,
     workspace: Path | None = None,
 ) -> Config:
-    search_paths: list[Path] = []
-    if config_files:
-        search_paths.extend([Path(f) for f in config_files])
+    import os
 
-    search_paths.extend(
-        _discover_config_files(Path.home() / ".config" / "arox", "config")
-    )
-
+    xdg_config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
     workspace = workspace if workspace else Path.cwd()
-    search_paths.extend(_discover_config_files(workspace, ".arox.config"))
 
     raw_config: dict[str, Any] = {}
-    for path in search_paths:
+
+    # --- 1. Global Scope ---
+    global_agent_scopes = [
+        Path.home() / ".arox" / "agents",
+        xdg_config_home / "arox" / "agents",
+        Path.home() / ".agents",
+    ]
+    raw_config = deep_merge(raw_config, _discover_agents_in_scopes(global_agent_scopes))
+
+    for path in _discover_config_files(xdg_config_home / "arox", "config"):
         if path.exists():
             raw_config = deep_merge(raw_config, _load_config_file(path))
 
+    # --- 2. Workspace Scope ---
+    workspace_agent_scopes = [
+        workspace / ".arox" / "agents",
+        workspace / ".agents",
+    ]
+    raw_config = deep_merge(
+        raw_config, _discover_agents_in_scopes(workspace_agent_scopes)
+    )
+
+    for path in _discover_config_files(workspace, ".arox.config"):
+        if path.exists():
+            raw_config = deep_merge(raw_config, _load_config_file(path))
+
+    # --- 3. Explicit Config Files ---
+    if config_files:
+        for f in config_files:
+            path = Path(f)
+            if path.exists():
+                raw_config = deep_merge(raw_config, _load_config_file(path))
+
+    # --- 4. CLI Overrides ---
     if cli_args is not None:
         if isinstance(cli_args, list):
             cli_overrides = parse_dot_config(cli_args)

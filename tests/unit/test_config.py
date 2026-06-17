@@ -110,3 +110,81 @@ def test_config_include_missing_raises(tmp_path):
     host.write_text('include = ["does_not_exist.toml"]\n')
     with pytest.raises(FileNotFoundError):
         load_config([host])
+
+
+def test_config_search_paths_precedence(tmp_path, monkeypatch):
+    """Test precedence: XDG_CONFIG_HOME < workspace < config_files < cli_args"""
+    xdg_config = tmp_path / "xdg"
+    workspace = tmp_path / "ws"
+    explicit = tmp_path / "explicit"
+
+    xdg_config.mkdir()
+    workspace.mkdir()
+    explicit.mkdir()
+
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config))
+
+    # 1. XDG Config
+    (xdg_config / "arox").mkdir()
+    (xdg_config / "arox" / "config.toml").write_text("model_ref = 'xdg'")
+
+    # 2. Workspace
+    (workspace / ".arox.config.toml").write_text("model_ref = 'workspace'")
+
+    # 3. Explicit config
+    explicit_file = explicit / "config.toml"
+    explicit_file.write_text("model_ref = 'explicit'")
+
+    # Load with only XDG
+    config1 = load_config(workspace=workspace)
+    assert config1.model_ref == "workspace"
+
+    # Load without workspace config
+    (workspace / ".arox.config.toml").unlink()
+    config2 = load_config(workspace=workspace)
+    assert config2.model_ref == "xdg"
+
+    # Load with explicit
+    (workspace / ".arox.config.toml").write_text("model_ref = 'workspace'")
+    config3 = load_config(config_files=[explicit_file], workspace=workspace)
+    assert config3.model_ref == "explicit"
+
+
+def test_config_interleaved_scope_precedence(tmp_path, monkeypatch):
+    """Test interleaved scope precedence:
+    Global Agents < Global Config < Workspace Agents < Workspace Config
+    """
+    xdg_config = tmp_path / "xdg"
+    workspace = tmp_path / "ws"
+    xdg_config.mkdir()
+    workspace.mkdir()
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config))
+
+    # Global Setup
+    (xdg_config / "arox").mkdir()
+    (xdg_config / "arox" / "agents").mkdir()
+    (xdg_config / "arox" / "agents" / "myagent.md").write_text(
+        "---\nsystem_prompt: global-agent\n---\n"
+    )
+    (xdg_config / "arox" / "config.toml").write_text(
+        '[agent.myagent]\nsystem_prompt = "global-config"'
+    )
+
+    # Test 1: Global Agents < Global Config
+    config1 = load_config(workspace=workspace)
+    assert config1.agent["myagent"].system_prompt == "global-config"
+
+    # Test 2: Global Config < Workspace Agents
+    (workspace / ".agents").mkdir()
+    (workspace / ".agents" / "myagent.md").write_text(
+        "---\nsystem_prompt: workspace-agent\n---\n"
+    )
+    config2 = load_config(workspace=workspace)
+    assert config2.agent["myagent"].system_prompt == "workspace-agent"
+
+    # Test 3: Workspace Agents < Workspace Config
+    (workspace / ".arox.config.toml").write_text(
+        '[agent.myagent]\nsystem_prompt = "workspace-config"'
+    )
+    config3 = load_config(workspace=workspace)
+    assert config3.agent["myagent"].system_prompt == "workspace-config"
