@@ -63,10 +63,13 @@ where = ["."]
 [tool.poe.tasks]
 format = "ruff format"
 check = "ruff check --fix"
+lint = ["check", "format"]
 typecheck = "ty check"
 test = "pytest"
-lint = ["check", "format"]
-pre-commit = ["typecheck", "test", "lint"]
+agent-check = ["typecheck", "test"] # We don't run commands that modify files silently in agent-commit, which will confuse agents when generate diffs.
+pre-commit = ["agent-check", "lint"]
+amend-commit = "git commit -a --amend --no-edit"
+lint-commit = ["lint", "amend-commit"]
 
 [tool.ruff.lint]
 extend-select = ["I"]
