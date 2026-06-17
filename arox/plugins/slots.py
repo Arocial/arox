@@ -28,6 +28,11 @@ PERSISTENT_CONTEXT = ListSlot[Callable[[], list[ModelMessage]], list[ModelMessag
     "persistent_context", "Provides messages that should persist across compaction"
 )
 
+# Slot for providing additional system prompt fragments
+SYSTEM_PROMPT = ListSlot[Callable[[], str], str](
+    "system_prompt", "Provides additional system prompt fragments"
+)
+
 
 # --- Push slots (handlers invoked by agent.notify) ---
 

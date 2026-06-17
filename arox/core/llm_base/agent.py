@@ -4,6 +4,7 @@ import re
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, overload
 
@@ -39,6 +40,7 @@ from arox import utils
 from arox.core.config import AgentConfig, Config
 from arox.core.io import (
     AbstractIOAdapter,
+    IOEndpoint,
     IOHost,
 )
 from arox.core.plugin import CommandManager, load_plugins
@@ -59,12 +61,19 @@ from arox.core.slot import (
 )
 from arox.plugins.slots import (
     AGENT_RESET,
+    SYSTEM_PROMPT,
 )
 
 from ._pydantic_ai_hack import infer_provider
-from .types import AgentDeps, ServerIdMapping, UserInput
+from .types import ServerIdMapping, UserInput
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class AgentDeps:
+    agent_io: IOEndpoint
+    agent: "LLMBaseAgent"
 
 
 class LLMBaseAgent(IOHost):
@@ -107,6 +116,7 @@ class LLMBaseAgent(IOHost):
 
         self.pydantic_agent = Agent[AgentDeps, DeferredToolRequests | str](
             self.model,
+            instructions=self.system_prompt,
             capabilities=capabilities,
             toolsets=self.toolsets,
             deps_type=AgentDeps,
@@ -221,7 +231,8 @@ class LLMBaseAgent(IOHost):
                     result = handler(*args, **kwargs)
                     if asyncio.iscoroutine(result):
                         result = await result
-                    results.append(result)
+                    if result:
+                        results.append(result)
                 return results
 
     def _restore_agent_session(self, agent_session: AgentSession) -> None:
@@ -371,14 +382,21 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
             self.toolsets.append(mcp_toolset)
 
     @property
-    def system_prompt(self) -> str:
-        prompt = utils.render_template(
-            self.raw_system_prompt, config=self.parsed_config, agent=self
-        )
+    def system_prompt(self):
+        async def _wrapper() -> str:
+            prompt = self.raw_system_prompt
+            if self.additional_prompt:
+                prompt += f"\n{self.additional_prompt}"
+            if self.skill_catalog:
+                prompt += f"\n\n{self.skill_catalog}"
 
-        if self.skill_catalog:
-            prompt += f"\n\n{self.skill_catalog}"
-        return prompt
+            slot_prompts = await self.invoke_slot(SYSTEM_PROMPT)
+            if slot_prompts:
+                prompt += "\n\n" + "\n\n".join(slot_prompts)
+
+            return utils.render_template(prompt, agent=self)
+
+        return _wrapper
 
     async def _wrap_model_request(
         self,
@@ -445,9 +463,8 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                     model=self.model,
                     event_stream_handler=self.handle_event,
                     model_settings=ModelSettings(**self.model_params),
-                    instructions=f"{self.system_prompt}\n{self.additional_prompt}",
                     message_history=message_history,
-                    deps=AgentDeps(agent_io=self.agent_io),
+                    deps=AgentDeps(agent_io=self.agent_io, agent=self),
                     deferred_tool_results=deferred_tool_results,
                 )
 

@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
 from pydantic_ai import RunContext
-from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.tools import ToolDefinition
 
 from arox.core.config import AgentConfig
@@ -13,35 +12,10 @@ from arox.core.llm_base import AgentInfoUpdate, create_agent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, ToolDef
 from arox.plugins.slots import (
     SUBAGENTS,
+    SYSTEM_PROMPT,
 )
 
 logger = logging.getLogger(__name__)
-
-
-class SubagentInstructionsCapability(AbstractCapability[Any]):
-    def __init__(self, plugin: "SubagentPlugin"):
-        self.plugin = plugin
-
-    def get_instructions(self) -> str | None:
-        subagent_names = self.plugin.agent.agent_config.subagents
-        if not subagent_names:
-            return None
-
-        descriptions = []
-        for name in subagent_names:
-            agent_config = self.plugin.agent.parsed_config.agent.get(name)
-            desc = (
-                agent_config.description
-                if agent_config and agent_config.description
-                else "No description"
-            )
-            descriptions.append(f"- {name}: {desc}")
-
-        return (
-            "## Subagent Collaboration Framework\n"
-            "You act as a Lead Orchestrator. You have access to specialized subagents.\n"
-            "Available subagents:\n" + "\n".join(descriptions)
-        )
 
 
 @dataclass(kw_only=True)
@@ -92,7 +66,29 @@ class SubagentPlugin(Plugin):
         def get_subagents():
             return list(self.active_subagents.values())
 
+        def get_subagent_instructions() -> str:
+            subagent_names = self.agent.agent_config.subagents
+            if not subagent_names:
+                return ""
+
+            descriptions = []
+            for name in subagent_names:
+                agent_config = self.agent.parsed_config.agent.get(name)
+                desc = (
+                    agent_config.description
+                    if agent_config and agent_config.description
+                    else "No description"
+                )
+                descriptions.append(f"- {name}: {desc}")
+
+            return (
+                "## Subagent Collaboration Framework\n"
+                "You act as a Lead Orchestrator. You have access to specialized subagents.\n"
+                "Available subagents:\n" + "\n".join(descriptions)
+            )
+
         self.agent.provide_slot(SUBAGENTS, get_subagents)
+        self.agent.provide_slot(SYSTEM_PROMPT, get_subagent_instructions)
 
     async def _create_subagent(
         self,
@@ -272,11 +268,6 @@ class SubagentPlugin(Plugin):
             )
             lines.append(f"- {name}: {desc}")
         return "\n".join(lines)
-
-    def capabilities(self):
-        caps: list[AbstractCapability] = list(super().capabilities())
-        caps.append(SubagentInstructionsCapability(self))
-        return caps
 
     async def handle_subagent_event(self, event: SubagentEvent) -> str | None:
         if event.action == "list":

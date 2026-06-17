@@ -65,8 +65,8 @@ skills = ["skill1"]
     )
 
     async with agent:
-        assert "skill1" in agent.system_prompt
-    assert "skill2" not in agent.system_prompt
+        assert "skill1" in agent.skill_catalog
+    assert "skill2" not in agent.skill_catalog
 
 
 @pytest.mark.asyncio
@@ -120,8 +120,8 @@ skills = "skill2"
     )
 
     async with agent:
-        assert "skill1" not in agent.system_prompt
-    assert "skill2" in agent.system_prompt
+        assert "skill1" not in agent.skill_catalog
+    assert "skill2" in agent.skill_catalog
 
 
 @pytest.mark.asyncio
@@ -174,8 +174,8 @@ system_prompt = "Hi there."
     )
 
     async with agent:
-        assert "skill1" in agent.system_prompt
-    assert "skill2" in agent.system_prompt
+        assert "skill1" in agent.skill_catalog
+    assert "skill2" in agent.skill_catalog
 
 
 @pytest.mark.asyncio

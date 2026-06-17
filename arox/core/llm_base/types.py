@@ -1,7 +1,5 @@
 from dataclasses import dataclass
 
-from arox.core.io import IOEndpoint
-
 
 @dataclass
 class UserInput:
@@ -31,8 +29,3 @@ class AgentInfoUpdate:
     """Carries updated agent info to broadcast to clients."""
 
     agent_id: str
-
-
-@dataclass
-class AgentDeps:
-    agent_io: IOEndpoint
