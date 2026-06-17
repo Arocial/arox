@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from pydantic_ai.models.test import TestModel
 
@@ -8,8 +10,9 @@ from arox.ui.headless import HeadlessIOAdapter
 
 
 @pytest.mark.asyncio
-async def test_headless_runs_one_step_and_exits(tmp_path, capsys):
-    default_agent_config = tmp_path / "dummy_chat.toml"
+async def test_headless_runs_one_step_and_exits(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    default_agent_config = tmp_path / ".arox.config.toml"
     default_agent_config.write_text("""
 model_ref = "test"
 [agent.dummy_chat]
@@ -17,7 +20,6 @@ system_prompt = "Hi there."
 """)
 
     parsed_config = app_setup(
-        config_files=[default_agent_config],
         cli_args={"workspace": str(tmp_path)},
     )
 
@@ -39,8 +41,9 @@ system_prompt = "Hi there."
 
 
 @pytest.mark.asyncio
-async def test_headless_records_step_exception(tmp_path):
-    default_agent_config = tmp_path / "dummy_chat.toml"
+async def test_headless_records_step_exception(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    default_agent_config = tmp_path / ".arox.config.toml"
     default_agent_config.write_text("""
 model_ref = "test"
 [agent.dummy_chat]
@@ -48,7 +51,6 @@ system_prompt = "Hi there."
 """)
 
     parsed_config = app_setup(
-        config_files=[default_agent_config],
         cli_args={"workspace": str(tmp_path)},
     )
 

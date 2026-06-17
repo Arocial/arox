@@ -19,10 +19,11 @@ def get_original_env_copy() -> dict[str, str]:
 
 
 def app_setup(
-    config_files: list[str | Path] | None = None,
+    app_name: str | None = None,
+    profile: str | Path | None = None,
     cli_args: list[str] | dict[str, Any] | None = None,
 ) -> Config:
-    config = load_config(config_files, cli_args)
+    config = load_config(app_name, profile, cli_args)
 
     for var_name, value in config.app.env_vars.items():
         os.environ[var_name] = value

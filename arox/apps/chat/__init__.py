@@ -67,19 +67,16 @@ def main(profile: str | None = None):
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
 
-    default_agent_config = (
-        Path(__file__).parent / "profiles" / profile_name / "config.toml"
-    )
-
     parsed_config = app_setup(
-        config_files=[default_agent_config], cli_args=unknown_args
+        app_name="chat", profile=profile_name, cli_args=unknown_args
     )
 
     if args.ui == "vercel_ai":
         from arox.ui.vercel_ai import VercelStreamServer
 
         server = VercelStreamServer(
-            config_files=[default_agent_config],
+            app_name="chat",
+            profile=profile_name,
             cli_args=unknown_args,
             host=args.host,
             port=args.port,

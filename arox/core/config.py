@@ -265,7 +265,8 @@ def _discover_skills_in_scopes(scopes: list[Path]) -> dict[str, dict[str, Any]]:
 
 
 def load_config(
-    config_files: list[str | Path] | None = None,
+    app_name: str | None = None,
+    profile: str | Path | None = None,
     cli_args: list[str] | dict[str, Any] | None = None,
     workspace: Path | None = None,
 ) -> Config:
@@ -295,7 +296,32 @@ def load_config(
         if path.exists():
             raw_config = deep_merge(raw_config, _load_config_file(path))
 
-    # --- 2. Workspace Scope ---
+    # --- 2. App Scope ---
+    if app_name and profile:
+        profile_path = Path(profile)
+        if profile_path.is_absolute():
+            p_dir = profile_path
+        else:
+            user_profile_dir = (
+                xdg_config_home / "arox" / "profiles" / app_name / profile_path
+            )
+            p_dir = user_profile_dir
+
+        app_agent_scopes = [p_dir / ".agents", p_dir / "agents"]
+        raw_config = deep_merge(
+            raw_config, _discover_agents_in_scopes(app_agent_scopes)
+        )
+
+        app_skill_scopes = [p_dir / ".skills", p_dir / "skills"]
+        raw_config = deep_merge(
+            raw_config, _discover_skills_in_scopes(app_skill_scopes)
+        )
+
+        for path in _discover_config_files(p_dir, "config"):
+            if path.exists():
+                raw_config = deep_merge(raw_config, _load_config_file(path))
+
+    # --- 3. Workspace Scope ---
     workspace_agent_scopes = [
         workspace / ".arox" / "agents",
         workspace / ".agents",
@@ -315,13 +341,6 @@ def load_config(
     for path in _discover_config_files(workspace, ".arox.config"):
         if path.exists():
             raw_config = deep_merge(raw_config, _load_config_file(path))
-
-    # --- 3. Explicit Config Files ---
-    if config_files:
-        for f in config_files:
-            path = Path(f)
-            if path.exists():
-                raw_config = deep_merge(raw_config, _load_config_file(path))
 
     # --- 4. CLI Overrides ---
     if cli_args is not None:

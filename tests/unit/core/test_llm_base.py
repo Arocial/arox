@@ -37,7 +37,7 @@ description: Skill 2
 """)
 
     # Create dummy config
-    config_file = tmp_path / "config.toml"
+    config_file = tmp_path / ".arox.config.toml"
     config_file.write_text("""
 model_ref = "test"
 [agent.test_agent]
@@ -49,7 +49,6 @@ skills = ["skill1"]
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
     parsed_config = app_setup(
-        config_files=[config_file],
         cli_args={"workspace": str(tmp_path)},
     )
 
@@ -93,7 +92,7 @@ description: Skill 2
 """)
 
     # Create dummy config
-    config_file = tmp_path / "config.toml"
+    config_file = tmp_path / ".arox.config.toml"
     config_file.write_text("""
 model_ref = "test"
 [agent.test_agent]
@@ -105,7 +104,6 @@ skills = "skill2"
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
     parsed_config = app_setup(
-        config_files=[config_file],
         cli_args={"workspace": str(tmp_path)},
     )
 
@@ -149,7 +147,7 @@ description: Skill 2
 """)
 
     # Create dummy config
-    config_file = tmp_path / "config.toml"
+    config_file = tmp_path / ".arox.config.toml"
     config_file.write_text("""
 model_ref = "test"
 [agent.test_agent]
@@ -160,7 +158,6 @@ system_prompt = "Hi there."
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
     parsed_config = app_setup(
-        config_files=[config_file],
         cli_args={"workspace": str(tmp_path)},
     )
 
@@ -182,15 +179,15 @@ system_prompt = "Hi there."
 
 
 @pytest.mark.asyncio
-async def test_request_event_dispatches_to_handler(tmp_path):
-    config_file = tmp_path / "config.toml"
+async def test_request_event_dispatches_to_handler(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox.config.toml"
     config_file.write_text("""
 model_ref = "test"
 [agent.test_agent]
 system_prompt = "Hi."
 """)
     parsed_config = app_setup(
-        config_files=[config_file],
         cli_args={"workspace": str(tmp_path)},
     )
 
@@ -218,15 +215,15 @@ system_prompt = "Hi."
 
 
 @pytest.mark.asyncio
-async def test_set_model_event_updates_model_ref(tmp_path):
-    config_file = tmp_path / "config.toml"
+async def test_set_model_event_updates_model_ref(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox.config.toml"
     config_file.write_text("""
 model_ref = "test"
 [agent.test_agent]
 system_prompt = "Hi."
 """)
     parsed_config = app_setup(
-        config_files=[config_file],
         cli_args={"workspace": str(tmp_path)},
     )
 

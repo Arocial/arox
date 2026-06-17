@@ -508,7 +508,8 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 class VercelStreamServer:
     def __init__(
         self,
-        config_files: list[str | Path] | None = None,
+        app_name: str | None = None,
+        profile: str | Path | None = None,
         cli_args: list[str] | None = None,
         host: str = "0.0.0.0",
         port: int = 8000,
@@ -517,12 +518,13 @@ class VercelStreamServer:
 
         from arox.core.session import AgentSession, FileSessionStore, SessionManager
 
-        self.config_files = config_files or []
+        self.app_name = app_name
+        self.profile = profile
         self.cli_args = cli_args or []
         self.host = host
         self.port = port
         self.parsed_config = app_setup(
-            config_files=self.config_files, cli_args=self.cli_args
+            app_name=self.app_name, profile=self.profile, cli_args=self.cli_args
         )
         self.io_adapter = VercelStreamIOAdapter()
         self.session_store = FileSessionStore(
