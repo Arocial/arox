@@ -173,14 +173,19 @@ def _load_config_file(path: Path, _visited: set[Path] | None = None) -> dict[str
     return deep_merge(merged, raw)
 
 
-def _discover_config_files(base: Path, stem: str) -> list[Path]:
-    """Discover config files with the given stem in toml/yaml formats."""
-    found = []
-    for suffix in (".toml", ".yaml", ".yml"):
-        candidate = base / f"{stem}{suffix}"
-        if candidate.exists():
-            found.append(candidate)
-    return found
+def _discover_configs_in_scopes(
+    scopes: list[Path], stem: str = "config"
+) -> dict[str, Any]:
+    """Discover and merge config files with the given stem in toml/yaml formats."""
+    merged: dict[str, Any] = {}
+    for scope in scopes:
+        if not scope.exists() or not scope.is_dir():
+            continue
+        for suffix in (".toml", ".yaml", ".yml"):
+            candidate = scope / f"{stem}{suffix}"
+            if candidate.exists():
+                merged = deep_merge(merged, _load_config_file(candidate))
+    return merged
 
 
 def _discover_agents_in_scopes(scopes: list[Path]) -> dict[str, dict[str, Any]]:
@@ -270,31 +275,25 @@ def load_config(
     cli_args: list[str] | dict[str, Any] | None = None,
     workspace: Path | None = None,
 ) -> Config:
-    import os
+    from platformdirs import user_config_dir
 
-    xdg_config_home = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    user_config_path = Path(user_config_dir("arox"))
     workspace = workspace if workspace else Path.cwd()
 
     raw_config: dict[str, Any] = {}
 
     # --- 1. Global Scope ---
-    global_agent_scopes = [
-        Path.home() / ".arox" / "agents",
-        xdg_config_home / "arox" / "agents",
+    global_scopes = [
+        user_config_path,
         Path.home() / ".agents",
     ]
+    global_agent_scopes = [s / "agents" for s in global_scopes]
     raw_config = deep_merge(raw_config, _discover_agents_in_scopes(global_agent_scopes))
 
-    global_skill_scopes = [
-        Path.home() / ".arox" / "skills",
-        xdg_config_home / "arox" / "skills",
-        Path.home() / ".agents" / "skills",
-    ]
+    global_skill_scopes = [s / "skills" for s in global_scopes]
     raw_config = deep_merge(raw_config, _discover_skills_in_scopes(global_skill_scopes))
 
-    for path in _discover_config_files(xdg_config_home / "arox", "config"):
-        if path.exists():
-            raw_config = deep_merge(raw_config, _load_config_file(path))
+    raw_config = deep_merge(raw_config, _discover_configs_in_scopes([user_config_path]))
 
     # --- 2. App Scope ---
     if app_name and profile:
@@ -302,45 +301,39 @@ def load_config(
         if profile_path.is_absolute():
             p_dir = profile_path
         else:
-            user_profile_dir = (
-                xdg_config_home / "arox" / "profiles" / app_name / profile_path
-            )
+            user_profile_dir = user_config_path / "profiles" / app_name / profile_path
             p_dir = user_profile_dir
 
-        app_agent_scopes = [p_dir / ".agents", p_dir / "agents"]
+        app_agent_scopes = [p_dir / "agents"]
         raw_config = deep_merge(
             raw_config, _discover_agents_in_scopes(app_agent_scopes)
         )
 
-        app_skill_scopes = [p_dir / ".skills", p_dir / "skills"]
+        app_skill_scopes = [p_dir / "skills"]
         raw_config = deep_merge(
             raw_config, _discover_skills_in_scopes(app_skill_scopes)
         )
 
-        for path in _discover_config_files(p_dir, "config"):
-            if path.exists():
-                raw_config = deep_merge(raw_config, _load_config_file(path))
+        raw_config = deep_merge(raw_config, _discover_configs_in_scopes([p_dir]))
 
     # --- 3. Workspace Scope ---
-    workspace_agent_scopes = [
-        workspace / ".arox" / "agents",
+    workspace_scopes = [
+        workspace / ".arox",
         workspace / ".agents",
     ]
+    workspace_agent_scopes = [s / "agents" for s in workspace_scopes]
     raw_config = deep_merge(
         raw_config, _discover_agents_in_scopes(workspace_agent_scopes)
     )
 
-    workspace_skill_scopes = [
-        workspace / ".arox" / "skills",
-        workspace / ".agents" / "skills",
-    ]
+    workspace_skill_scopes = [s / "skills" for s in workspace_scopes]
     raw_config = deep_merge(
         raw_config, _discover_skills_in_scopes(workspace_skill_scopes)
     )
 
-    for path in _discover_config_files(workspace, ".arox.config"):
-        if path.exists():
-            raw_config = deep_merge(raw_config, _load_config_file(path))
+    raw_config = deep_merge(
+        raw_config, _discover_configs_in_scopes([workspace / ".arox"])
+    )
 
     # --- 4. CLI Overrides ---
     if cli_args is not None:

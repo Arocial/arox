@@ -31,6 +31,7 @@ dependencies = [
     "jinja2>=3.1.6",
     "python-telegram-bot>=21.0",
     "lark-oapi>=1.5.3",
+    "platformdirs>=4.3.8",
 ]
 [project.urls]
 Homepage = "https://github.com/Arocial/arox"

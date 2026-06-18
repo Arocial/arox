@@ -17,7 +17,7 @@ class _StubIOAdapter(AbstractIOAdapter):
 @pytest.mark.asyncio
 async def test_agent_skills_filtering(tmp_path, monkeypatch):
     # Create dummy skills
-    skills_dir = tmp_path / ".arox" / "skills"
+    skills_dir = tmp_path / ".agents" / "skills"
     skills_dir.mkdir(parents=True)
 
     skill1_dir = skills_dir / "skill1"
@@ -37,7 +37,8 @@ description: Skill 2
 """)
 
     # Create dummy config
-    config_file = tmp_path / ".arox.config.toml"
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text("""
 model_ref = "test"
 [agent.test_agent]
@@ -72,7 +73,7 @@ skills = ["skill1"]
 @pytest.mark.asyncio
 async def test_agent_skills_string(tmp_path, monkeypatch):
     # Create dummy skills
-    skills_dir = tmp_path / ".arox" / "skills"
+    skills_dir = tmp_path / ".agents" / "skills"
     skills_dir.mkdir(parents=True)
 
     skill1_dir = skills_dir / "skill1"
@@ -92,7 +93,8 @@ description: Skill 2
 """)
 
     # Create dummy config
-    config_file = tmp_path / ".arox.config.toml"
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text("""
 model_ref = "test"
 [agent.test_agent]
@@ -127,7 +129,7 @@ skills = "skill2"
 @pytest.mark.asyncio
 async def test_agent_skills_none(tmp_path, monkeypatch):
     # Create dummy skills
-    skills_dir = tmp_path / ".arox" / "skills"
+    skills_dir = tmp_path / ".agents" / "skills"
     skills_dir.mkdir(parents=True)
 
     skill1_dir = skills_dir / "skill1"
@@ -147,7 +149,8 @@ description: Skill 2
 """)
 
     # Create dummy config
-    config_file = tmp_path / ".arox.config.toml"
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text("""
 model_ref = "test"
 [agent.test_agent]
@@ -181,7 +184,8 @@ system_prompt = "Hi there."
 @pytest.mark.asyncio
 async def test_request_event_dispatches_to_handler(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
-    config_file = tmp_path / ".arox.config.toml"
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text("""
 model_ref = "test"
 [agent.test_agent]
@@ -217,7 +221,8 @@ system_prompt = "Hi."
 @pytest.mark.asyncio
 async def test_set_model_event_updates_model_ref(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
-    config_file = tmp_path / ".arox.config.toml"
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text("""
 model_ref = "test"
 [agent.test_agent]

@@ -7,7 +7,8 @@ from arox.core.config import load_config, parse_dot_config
 
 def test_config_basic_parsing(tmp_path):
     """Test basic config file parsing"""
-    config_file = tmp_path / ".arox.config.toml"
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text("""
     model_ref = "test-model"
     [agent.test_agent]
@@ -24,7 +25,9 @@ def test_config_override_order(tmp_path):
     """Test config file precedence using workspace"""
     ws1 = tmp_path / "ws1"
     ws1.mkdir()
-    (ws1 / ".arox.config.toml").write_text("model_ref = 'second'")
+    ws1_arox = ws1 / ".arox"
+    ws1_arox.mkdir(exist_ok=True)
+    (ws1_arox / "config.toml").write_text("model_ref = 'second'")
 
     config = load_config(workspace=ws1)
     assert config.model_ref == "second"
@@ -53,7 +56,8 @@ def test_parse_dot_config():
 
 def test_cli_overrides(tmp_path):
     """Test CLI overrides merging with file config"""
-    config_file = tmp_path / ".arox.config.toml"
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text("""
     model_ref = "file-model"
     [agent.test_agent]
@@ -80,9 +84,10 @@ def test_config_include_merges_and_overrides(tmp_path):
     task_prompt = "shared-task"
     """)
 
-    host = tmp_path / ".arox.config.toml"
+    host = tmp_path / ".arox" / "config.toml"
+    host.parent.mkdir(parents=True, exist_ok=True)
     host.write_text("""
-    include = ["shared.toml"]
+    include = ["../shared.toml"]
     [agent.compaction]
     system_prompt = "host-override"
     """)
@@ -96,17 +101,19 @@ def test_config_include_merges_and_overrides(tmp_path):
 
 
 def test_config_include_circular_raises(tmp_path):
-    a = tmp_path / ".arox.config.toml"
+    a = tmp_path / ".arox" / "config.toml"
+    a.parent.mkdir(parents=True, exist_ok=True)
     b = tmp_path / "b.toml"
-    a.write_text('include = ["b.toml"]\n')
-    b.write_text('include = [".arox.config.toml"]\n')
+    a.write_text('include = ["../b.toml"]\n')
+    b.write_text('include = [".arox/config.toml"]\n')
 
     with pytest.raises(ValueError, match="Circular config include"):
         load_config(workspace=tmp_path)
 
 
 def test_config_include_missing_raises(tmp_path):
-    host = tmp_path / ".arox.config.toml"
+    host = tmp_path / ".arox" / "config.toml"
+    host.parent.mkdir(parents=True, exist_ok=True)
     host.write_text('include = ["does_not_exist.toml"]\n')
     with pytest.raises(FileNotFoundError):
         load_config(workspace=tmp_path)
@@ -129,7 +136,8 @@ def test_config_search_paths_precedence(tmp_path, monkeypatch):
     (xdg_config / "arox" / "config.toml").write_text("model_ref = 'xdg'")
 
     # 2. Workspace
-    (workspace / ".arox.config.toml").write_text("model_ref = 'workspace'")
+    (workspace / ".arox").mkdir(exist_ok=True)
+    (workspace / ".arox" / "config.toml").write_text("model_ref = 'workspace'")
 
     # 3. Explicit config
     explicit_file = explicit / "config.toml"
@@ -140,12 +148,12 @@ def test_config_search_paths_precedence(tmp_path, monkeypatch):
     assert config1.model_ref == "workspace"
 
     # Load without workspace config
-    (workspace / ".arox.config.toml").unlink()
+    (workspace / ".arox" / "config.toml").unlink()
     config2 = load_config(workspace=workspace)
     assert config2.model_ref == "xdg"
 
     # Load with CLI args
-    (workspace / ".arox.config.toml").write_text("model_ref = 'workspace'")
+    (workspace / ".arox" / "config.toml").write_text("model_ref = 'workspace'")
     config3 = load_config(cli_args=["model_ref=cli"], workspace=workspace)
     assert config3.model_ref == "cli"
 
@@ -176,14 +184,16 @@ def test_config_interleaved_scope_precedence(tmp_path, monkeypatch):
 
     # Test 2: Global Config < Workspace Agents
     (workspace / ".agents").mkdir()
-    (workspace / ".agents" / "myagent.md").write_text(
+    (workspace / ".agents" / "agents").mkdir()
+    (workspace / ".agents" / "agents" / "myagent.md").write_text(
         "---\nsystem_prompt: workspace-agent\n---\n"
     )
     config2 = load_config(workspace=workspace)
     assert config2.agent["myagent"].system_prompt == "workspace-agent"
 
     # Test 3: Workspace Agents < Workspace Config
-    (workspace / ".arox.config.toml").write_text(
+    (workspace / ".arox").mkdir(exist_ok=True)
+    (workspace / ".arox" / "config.toml").write_text(
         '[agent.myagent]\nsystem_prompt = "workspace-config"'
     )
     config3 = load_config(workspace=workspace)
@@ -212,7 +222,7 @@ def test_discover_skills_valid(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    skill_dir = workspace / ".arox" / "skills" / "test_skill"
+    skill_dir = workspace / ".agents" / "skills" / "test_skill"
     skill_dir.mkdir(parents=True)
     skill_file = skill_dir / "SKILL.md"
     skill_file.write_text(
@@ -236,7 +246,7 @@ def test_discover_skills_malformed_yaml_fixed(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    skill_dir = workspace / ".arox" / "skills" / "malformed_skill"
+    skill_dir = workspace / ".agents" / "skills" / "malformed_skill"
     skill_dir.mkdir(parents=True)
     skill_file = skill_dir / "SKILL.md"
     skill_file.write_text(
@@ -265,7 +275,7 @@ def test_discover_skills_missing_metadata(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    skill_dir = workspace / ".arox" / "skills" / "missing_meta"
+    skill_dir = workspace / ".agents" / "skills" / "missing_meta"
     skill_dir.mkdir(parents=True)
     skill_file = skill_dir / "SKILL.md"
     skill_file.write_text("---\nname: missing_meta\n---\nContent", encoding="utf-8")

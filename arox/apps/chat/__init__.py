@@ -53,8 +53,10 @@ def main(profile: str | None = None):
     profile_name = args.profile or "coder"
 
     if args.ui in ("text", "headless"):
-        log_dir = Path(".arox")
-        log_dir.mkdir(exist_ok=True)
+        from platformdirs import user_log_dir
+
+        log_dir = Path(user_log_dir("arox"))
+        log_dir.mkdir(parents=True, exist_ok=True)
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",

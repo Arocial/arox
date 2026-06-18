@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import signal
+from pathlib import Path
 from typing import Any, override
 
 from prompt_toolkit import PromptSession
@@ -40,7 +41,11 @@ class UserInputGenerator:
     def __init__(self, completer=None, input=None, output=None):
         self.input = input
         self.output = output
-        self.history = FileHistory(".arox_history")
+
+        arox_dir = Path(".arox")
+        arox_dir.mkdir(parents=True, exist_ok=True)
+        self.history = FileHistory(arox_dir / "history")
+
         self.kb = KeyBindings()
 
         @self.kb.add("enter")

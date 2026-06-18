@@ -21,13 +21,13 @@ def multiply(a: int, b: int) -> int:
 async def test_chat_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
     # Create dummy config
-    default_agent_config = tmp_path / ".arox.config.toml"
+    default_agent_config = tmp_path / ".arox" / "config.toml"
+    default_agent_config.parent.mkdir(parents=True, exist_ok=True)
     default_agent_config.write_text("""
 model_ref = "test"
 [agent.dummy_chat]
 system_prompt = "Hi there."
 """)
-
     parsed_config = app_setup(
         cli_args={"workspace": str(tmp_path)},
     )
