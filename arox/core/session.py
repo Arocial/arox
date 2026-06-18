@@ -143,9 +143,6 @@ class Session(BaseModel):
             self.manager.notify_dirty(self)
         return event
 
-    async def build_instance(self, session_manager: SessionManager, **kwargs) -> Any:
-        raise NotImplementedError
-
     def index_of_event(self, event_id: str) -> int | None:
         for i, ev in enumerate(self.events):
             if ev.id == event_id:
@@ -167,16 +164,6 @@ class AgentSession(Session):
     workspace: str | None = None
     run_info: AgentRunInfo = Field(default_factory=AgentRunInfo)
     extra: dict[str, Any] = Field(default_factory=dict)
-
-    async def build_instance(self, session_manager: SessionManager, **kwargs) -> Any:
-        from arox.utils import import_class
-
-        agent_cls = import_class(self.agent_config.type, group="arox.agents")
-
-        return agent_cls(
-            session=self,
-            **kwargs,
-        )
 
     def rebuild_message_history(self) -> list[ModelMessage]:
         history: list[ModelMessage] = []
@@ -420,16 +407,6 @@ class SessionManager:
         if session:
             session.owner = owner
         return session
-
-    async def build_from_session(
-        self, session_id: str, owner: Session | None = None, **kwargs
-    ) -> Any:
-
-        session = await self.load_session(session_id, owner)
-        if not session or session.status == "closed":
-            return None
-        session.manager = self
-        return await session.build_instance(self, **kwargs)
 
 
 class SessionStore(Protocol):

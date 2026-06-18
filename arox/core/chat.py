@@ -2,7 +2,6 @@ import asyncio
 import logging
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from pathlib import Path
 
 from pydantic_ai import DeferredToolResults
 from pydantic_ai.tools import DeferredToolRequests
