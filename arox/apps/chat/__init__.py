@@ -73,10 +73,20 @@ def main(profile: str | None = None):
         app_name="chat", profile=profile_name, cli_args=unknown_args
     )
 
+    from arox.core.session import AgentSession, FileSessionStore, SessionManager
+
+    session_store = FileSessionStore(
+        namespace=f"chat/{profile_name}",
+        max_age_days=parsed_config.app.session_max_age_days,
+    )
+    session_manager = SessionManager(session_store)
+    session_manager.register_session_type(AgentSession)
+
     if args.ui == "vercel_ai":
         from arox.ui.vercel_ai import VercelStreamServer
 
         server = VercelStreamServer(
+            session_manager=session_manager,
             app_name="chat",
             profile=profile_name,
             cli_args=unknown_args,
@@ -112,15 +122,6 @@ def main(profile: str | None = None):
             raise ValueError(f"Unknown UI: {args.ui}")
 
         async def run_all():
-            from arox.core.session import AgentSession, FileSessionStore, SessionManager
-
-            session_store = FileSessionStore(
-                namespace=f"chat/{profile_name}",
-                max_age_days=parsed_config.app.session_max_age_days
-            )
-            session_manager = SessionManager(session_store)
-            session_manager.register_session_type(AgentSession)
-
             await session_store.cleanup()
             session = None
             if args.session:

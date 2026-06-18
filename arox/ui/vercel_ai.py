@@ -5,7 +5,11 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import override
+from typing import TYPE_CHECKING, override
+
+if TYPE_CHECKING:
+    from arox.core.session import SessionManager
+
 
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -508,6 +512,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 class VercelStreamServer:
     def __init__(
         self,
+        session_manager: "SessionManager",
         app_name: str | None = None,
         profile: str | Path | None = None,
         cli_args: list[str] | None = None,
@@ -515,8 +520,6 @@ class VercelStreamServer:
         port: int = 8000,
     ):
         from contextlib import asynccontextmanager
-
-        from arox.core.session import AgentSession, FileSessionStore, SessionManager
 
         self.app_name = app_name
         self.profile = profile
@@ -527,12 +530,8 @@ class VercelStreamServer:
             app_name=self.app_name, profile=self.profile, cli_args=self.cli_args
         )
         self.io_adapter = VercelStreamIOAdapter()
-        self.session_store = FileSessionStore(
-            namespace=f"{self.app_name}/{self.profile}",
-            max_age_days=self.parsed_config.app.session_max_age_days,
-        )
-        self.session_manager = SessionManager(self.session_store)
-        self.session_manager.register_session_type(AgentSession)
+        self.session_manager = session_manager
+        self.session_store = session_manager.session_store
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
