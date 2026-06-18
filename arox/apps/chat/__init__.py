@@ -186,13 +186,5 @@ def _resolve_headless_prompt(cli_prompt: str | None) -> str:
     return "\n".join(parts).strip()
 
 
-def coder():
-    main(profile="coder")
-
-
-def general():
-    main(profile="general")
-
-
 if __name__ == "__main__":
     main()
