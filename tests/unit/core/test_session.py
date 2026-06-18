@@ -216,7 +216,8 @@ class TestFileSessionStore:
     def store(self, tmp_path):
         from arox.core.session import AgentSession, SessionManager
 
-        s = FileSessionStore(base_dir=tmp_path / "sessions")
+        s = FileSessionStore()
+        s.base_dir = tmp_path / "sessions"
         sm = SessionManager(s)
         sm.register_session_type(AgentSession)
         return s
@@ -398,7 +399,8 @@ class TestFileSessionStore:
 
     @pytest.mark.asyncio
     async def test_cleanup_uses_default_max_age(self, tmp_path):
-        store = FileSessionStore(base_dir=tmp_path / "sessions", max_age_days=7)
+        store = FileSessionStore(max_age_days=7)
+        store.base_dir = tmp_path / "sessions"
         old_session = AgentSession(agent_name="coder")
         await store.save_session(old_session)
         self._backdate_session(store, old_session, days=10)

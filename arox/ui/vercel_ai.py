@@ -528,7 +528,8 @@ class VercelStreamServer:
         )
         self.io_adapter = VercelStreamIOAdapter()
         self.session_store = FileSessionStore(
-            max_age_days=self.parsed_config.app.session_max_age_days
+            namespace=f"{self.app_name}/{self.profile}",
+            max_age_days=self.parsed_config.app.session_max_age_days,
         )
         self.session_manager = SessionManager(self.session_store)
         self.session_manager.register_session_type(AgentSession)

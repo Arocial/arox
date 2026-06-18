@@ -116,7 +116,8 @@ async def test_delegate_to_subagent_creates_and_destroys(tmp_path, monkeypatch):
     monkeypatch.setattr(
         arox.utils, "import_class", lambda *_args, **_kwargs: _FakeDynamicAgent
     )
-    store = FileSessionStore(base_dir=tmp_path / "sessions")
+    store = FileSessionStore()
+    store.base_dir = tmp_path / "sessions"
     main_session = AgentSession(path=["main-session"], agent_name="main")
     main_agent = _MainAgent(main_session, store)
     plugin = SubagentPlugin(main_agent)
@@ -142,7 +143,8 @@ async def test_dispatch_background_task_creates_and_destroys(tmp_path, monkeypat
     monkeypatch.setattr(
         arox.utils, "import_class", lambda *_args, **_kwargs: _FakeDynamicAgent
     )
-    store = FileSessionStore(base_dir=tmp_path / "sessions")
+    store = FileSessionStore()
+    store.base_dir = tmp_path / "sessions"
     main_session = AgentSession(path=["main-session"], agent_name="main")
     main_agent = _MainAgent(main_session, store)
     plugin = SubagentPlugin(main_agent)
@@ -183,7 +185,8 @@ async def test_subagent_command_list_call(tmp_path, monkeypatch):
     monkeypatch.setattr(
         arox.utils, "import_class", lambda *_args, **_kwargs: _FakeDynamicAgent
     )
-    store = FileSessionStore(base_dir=tmp_path / "sessions")
+    store = FileSessionStore()
+    store.base_dir = tmp_path / "sessions"
     main_agent = _MainAgent(
         AgentSession(path=["main-session"], agent_name="main"), store
     )

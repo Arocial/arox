@@ -115,6 +115,7 @@ def main(profile: str | None = None):
             from arox.core.session import AgentSession, FileSessionStore, SessionManager
 
             session_store = FileSessionStore(
+                namespace=f"chat/{profile_name}",
                 max_age_days=parsed_config.app.session_max_age_days
             )
             session_manager = SessionManager(session_store)
