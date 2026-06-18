@@ -82,7 +82,6 @@ class LLMBaseAgent(IOHost):
         parsed_config: Config,
         io_adapter: AbstractIOAdapter,
         session: AgentSession,
-        workspace: Path | str | None = None,
     ):
         super().__init__(io_adapter)
         self.uuid = str(uuid.uuid4())
@@ -599,7 +598,6 @@ def create_agent(
     agent = agent_cls(
         parsed_config=parsed_config,
         io_adapter=io_adapter,
-        workspace=workspace,
         session=session,
     )
     return agent

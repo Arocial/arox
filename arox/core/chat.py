@@ -83,14 +83,12 @@ class ChatAgent(MainAgent, DelegatableAgent):
         parsed_config,
         io_adapter,
         session: AgentSession,
-        workspace: Path | str | None = None,
     ):
         self.foreground_task: asyncio.Task | None = None
         super().__init__(
             parsed_config,
             io_adapter,
             session,
-            workspace,
         )
 
     def cancel_foreground_task(self):

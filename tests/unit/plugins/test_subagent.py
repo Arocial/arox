@@ -26,13 +26,11 @@ class _FakeDynamicAgent(DelegatableAgent):
         parsed_config,
         io_adapter,
         session,
-        workspace=None,
     ):
         super().__init__(
             parsed_config,
             io_adapter,
             session,
-            workspace,
         )
         self.plugins = [CorePlugin(self)]
 
