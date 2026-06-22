@@ -6,6 +6,21 @@ Arox provides a REST API that is compatible with the Vercel AI SDK, allowing you
 
 ### Agents
 
+#### `GET /api/agents`
+List all currently active agent instances.
+
+**Response:**
+```json
+[
+  {
+    "id": "agent-uuid",
+    "workspace": "/path/to/workspace",
+    "main_agent": "main",
+    "subagents": ["coder", "planner"]
+  }
+]
+```
+
 #### `POST /api/agents`
 Create a new agent instance.
 

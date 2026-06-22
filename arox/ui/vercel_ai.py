@@ -605,6 +605,7 @@ class VercelStreamServer:
             allow_headers=["*"],
         )
 
+        self.app.get("/api/agents", response_model=list[AgentInfo])(self.list_agents)
         self.app.post("/api/agents", response_model=AgentInfo)(self.create_agent)
         self.app.delete("/api/agents/{main_agent_uuid}")(self.delete_agent)
         self.app.websocket("/api/agents/{main_agent_uuid}/{agent_name}/ws")(self.ws)
@@ -634,6 +635,12 @@ class VercelStreamServer:
                 status_code=404, detail=f"Agent {agent_name} not found."
             )
         return agent
+
+    async def list_agents(self) -> list[AgentInfo]:
+        agents = []
+        for run_instance in self.io_adapter.run_instances.values():
+            agents.append(await run_instance.get_agent_info())
+        return agents
 
     async def create_agent(self, request: CreateAgentRequest):
         from arox.core.session import AgentSession
