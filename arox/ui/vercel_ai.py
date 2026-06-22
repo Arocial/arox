@@ -28,6 +28,7 @@ from pydantic_ai import (
     ToolCallPart,
     ToolCallPartDelta,
 )
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from arox.core.app import app_setup
 from arox.core.chat import (
@@ -48,6 +49,52 @@ from arox.core.llm_base import (
     create_agent,
 )
 from arox.plugins.slots import SUBAGENTS
+
+
+class TokenAuthASGIMiddleware:
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] not in ("http", "websocket"):
+            return await self.app(scope, receive, send)
+
+        import os
+        import secrets
+
+        expected_token = os.environ.get("AROX_API_TOKEN")
+        if not expected_token:
+            return await self.app(scope, receive, send)
+
+        if scope["path"] == "/api/health":
+            return await self.app(scope, receive, send)
+
+        token = None
+        headers = dict(scope.get("headers", []))
+
+        auth_header = headers.get(b"authorization")
+        if auth_header and auth_header.startswith(b"Bearer "):
+            token = auth_header[7:].decode("utf-8")
+        else:
+            query_string = scope.get("query_string", b"").decode("utf-8")
+            from urllib.parse import parse_qs
+
+            qs = parse_qs(query_string)
+            if "token" in qs:
+                token = qs["token"][0]
+
+        if not token or not secrets.compare_digest(token, expected_token):
+            if scope["type"] == "http":
+                await send(
+                    {"type": "http.response.start", "status": 401, "headers": []}
+                )
+                await send({"type": "http.response.body", "body": b""})
+            elif scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 4001})
+            return
+
+        return await self.app(scope, receive, send)
+
 
 logger = logging.getLogger(__name__)
 
@@ -549,6 +596,7 @@ class VercelStreamServer:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
         self.app = FastAPI(lifespan=lifespan)
+        self.app.add_middleware(TokenAuthASGIMiddleware)
         self.app.add_middleware(
             CORSMiddleware,
             allow_origins=["*"],
