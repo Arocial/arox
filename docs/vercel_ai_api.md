@@ -27,14 +27,14 @@ Create a new agent instance.
 }
 ```
 
-#### `DELETE /api/agents/{agent_id}`
+#### `DELETE /api/agents/{main_agent_uuid}`
 Stop and delete an agent instance.
 
 ### Agent Interactions
 
-The following endpoints are per-agent, meaning you must specify both the `agent_id` and the `agent_name` (which can be the `main_agent` or one of the `subagents` from the `AgentInfo` response).
+The following endpoints are per-agent, meaning you must specify both the `main_agent_uuid` and the `agent_name` (which can be the `main_agent` or one of the `subagents` from the `AgentInfo` response).
 
-#### `WS /api/agents/{agent_id}/{agent_name}/ws`
+#### `WS /api/agents/{main_agent_uuid}/{agent_name}/ws`
 Full-duplex WebSocket for async interaction with an agent. This connection is long-lived across multiple steps — sending input and receiving events are decoupled.
 
 **Server → Client messages** (JSON, one object per frame)
@@ -76,7 +76,7 @@ The server responds to every client message with `{"type": "ack", "status": "ok"
 
 The connection stays open until either side closes it. Closing the client disconnects the stream but does **not** cancel any in-flight step — send `{"cancel": true}` first if needed.
 
-#### `GET /api/agents/{agent_id}/{agent_name}/suggestions`
+#### `GET /api/agents/{main_agent_uuid}/{agent_name}/suggestions`
 Get command suggestions or auto-completions for a specific agent.
 
 **Query Parameters:**
@@ -85,7 +85,7 @@ Get command suggestions or auto-completions for a specific agent.
 
 **Response:** `{"items": [{"id", "value", "label", "description"}, ...]}`. When listing slash commands, `description` is taken from the `CommandEvent` subclass's `description` ClassVar.
 
-#### `GET /api/agents/{agent_id}/{agent_name}/state`
+#### `GET /api/agents/{main_agent_uuid}/{agent_name}/state`
 Get the current state for a specific agent: message history plus any pending input request.
 
 **Response:**

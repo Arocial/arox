@@ -28,4 +28,4 @@ class ServerIdMapping:
 class AgentInfoUpdate:
     """Carries updated agent info to broadcast to clients."""
 
-    agent_id: str
+    agent_uuid: str

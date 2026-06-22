@@ -400,7 +400,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
         else:
             if isinstance(event, AgentInfoUpdate):
-                if event.agent_id == target_run.main_agent.uuid:
+                if event.agent_uuid == target_run.main_agent.uuid:
                     messages.append(
                         {
                             "type": "cmd-agent-info",
@@ -606,13 +606,13 @@ class VercelStreamServer:
         )
 
         self.app.post("/api/agents", response_model=AgentInfo)(self.create_agent)
-        self.app.delete("/api/agents/{agent_id}")(self.delete_agent)
-        self.app.websocket("/api/agents/{agent_id}/{agent_name}/ws")(self.ws)
+        self.app.delete("/api/agents/{main_agent_uuid}")(self.delete_agent)
+        self.app.websocket("/api/agents/{main_agent_uuid}/{agent_name}/ws")(self.ws)
         self.app.get(
-            "/api/agents/{agent_id}/{agent_name}/suggestions",
+            "/api/agents/{main_agent_uuid}/{agent_name}/suggestions",
             response_model=SuggestionResponse,
         )(self.suggestions)
-        self.app.get("/api/agents/{agent_id}/{agent_name}/state")(self.state)
+        self.app.get("/api/agents/{main_agent_uuid}/{agent_name}/state")(self.state)
         self.app.get("/api/sessions", response_model=list[SessionInfo])(
             self.list_sessions
         )
@@ -622,10 +622,12 @@ class VercelStreamServer:
     async def health(self):
         return {"status": "ok"}
 
-    async def _get_agent(self, agent_id: str, agent_name: str):
-        run_instance = self.io_adapter.run_instances.get(agent_id)
+    async def _get_agent(self, main_agent_uuid: str, agent_name: str):
+        run_instance = self.io_adapter.run_instances.get(main_agent_uuid)
         if not run_instance:
-            raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found.")
+            raise HTTPException(
+                status_code=404, detail=f"Agent {main_agent_uuid} not found."
+            )
         agent = await run_instance.get_agent(agent_name)
         if not agent:
             raise HTTPException(
@@ -692,16 +694,16 @@ class VercelStreamServer:
 
         return await run_instance.get_agent_info()
 
-    async def delete_agent(self, agent_id: str):
-        run_instance = self.io_adapter.run_instances.pop(agent_id, None)
+    async def delete_agent(self, main_agent_uuid: str):
+        run_instance = self.io_adapter.run_instances.pop(main_agent_uuid, None)
         if not run_instance:
             raise HTTPException(status_code=404, detail="Agent not found")
         if run_instance.task and not run_instance.task.done():
             run_instance.task.cancel()
         return {"status": "deleted"}
 
-    async def ws(self, websocket: WebSocket, agent_id: str, agent_name: str):
-        run_instance = self.io_adapter.run_instances.get(agent_id)
+    async def ws(self, websocket: WebSocket, main_agent_uuid: str, agent_name: str):
+        run_instance = self.io_adapter.run_instances.get(main_agent_uuid)
         if not run_instance:
             await websocket.close(code=4004, reason="agent not found")
             return
@@ -713,16 +715,16 @@ class VercelStreamServer:
 
     async def suggestions(
         self,
-        agent_id: str,
+        main_agent_uuid: str,
         agent_name: str,
         command: str | None = None,
         q: str | None = None,
     ):
-        agent = await self._get_agent(agent_id, agent_name)
+        agent = await self._get_agent(main_agent_uuid, agent_name)
         return await self.io_adapter.suggestions(agent, command, q)
 
-    async def state(self, agent_id: str, agent_name: str):
-        agent = await self._get_agent(agent_id, agent_name)
+    async def state(self, main_agent_uuid: str, agent_name: str):
+        agent = await self._get_agent(main_agent_uuid, agent_name)
 
         from pydantic_ai import ModelRequest
         from pydantic_ai.ui.vercel_ai._adapter import VercelAIAdapter

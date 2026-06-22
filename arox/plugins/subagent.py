@@ -136,7 +136,7 @@ class SubagentPlugin(Plugin):
                 await session_manager.save_session(child_session)
 
     async def _broadcast_agent_info(self):
-        info = AgentInfoUpdate(agent_id=self.agent.uuid)
+        info = AgentInfoUpdate(agent_uuid=self.agent.uuid)
         await self.agent.agent_io.send(info)
 
     def commands(self):
