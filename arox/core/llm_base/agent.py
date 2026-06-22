@@ -364,6 +364,27 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         if skills:
             self.skill_catalog = self._build_skill_catalog(skills)
 
+        default_skills = self.agent_config.default_skills
+        if default_skills is not None:
+            if isinstance(default_skills, str):
+                default_skills = [default_skills]
+        else:
+            default_skills = []
+
+        self.default_skill_prompts = []
+        for skill_name in default_skills:
+            skill = self.parsed_config.skills.get(skill_name)
+            if skill:
+                try:
+                    with open(skill["location"], "r", encoding="utf-8") as f:
+                        self.default_skill_prompts.append(f.read())
+                except Exception as e:
+                    logger.warning(f"Failed to read default skill {skill_name}: {e}")
+            else:
+                logger.warning(
+                    f"Default skill {skill_name} not found in available skills"
+                )
+
         # Tools and mcp servers
         self.toolsets: list[AbstractToolset[AgentDeps]] = [self.local_toolset]
         mcp_server_configs = self.parsed_config.mcp_servers
@@ -386,6 +407,10 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
             prompt = self.raw_system_prompt
             if self.additional_prompt:
                 prompt += f"\n{self.additional_prompt}"
+
+            if hasattr(self, "default_skill_prompts") and self.default_skill_prompts:
+                prompt += "\n\n" + "\n\n".join(self.default_skill_prompts)
+
             if self.skill_catalog:
                 prompt += f"\n\n{self.skill_catalog}"
 
