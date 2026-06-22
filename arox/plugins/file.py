@@ -337,7 +337,10 @@ class FilePlugin(Plugin):
                 )
                 self._dump_failed_replace(file_path, old_str, new_str)
             else:
-                msg = f"Cannot find a match for passed old_str in {file_path}"
+                msg = (
+                    f"Cannot find a match for passed old_str in {file_path}. "
+                    "Please use the `read` tool to read the file again and ensure your `old_str` matches the file exactly."
+                )
                 self._dump_failed_replace(file_path, old_str, new_str)
             logger.info(msg)
             return msg
