@@ -131,28 +131,25 @@ class ChatAgent(MainAgent, DelegatableAgent):
                     self.step(reply, deferred_tool_results=deferred_results)
                 )
                 self.foreground_task = step_task
-                try:
-                    result = await step_task
 
-                    if result and isinstance(result.output, BaseException):
-                        raise result.output
+                result = await step_task
 
-                    if result and isinstance(result.output, DeferredToolRequests):
-                        deferred_requests = result.output
-                    else:
-                        deferred_requests = None
-                except asyncio.CancelledError:
-                    logger.info("Step cancelled.")
-                    await self.agent_io.send("\n[Step cancelled]\n")
+                if result and isinstance(result.output, Exception):
+                    e = result.output
+                    logger.error("An error occurred.", exc_info=e)
+                    self.session.record_error(e)
+                    pending_exception = e
+                elif result and isinstance(result.output, DeferredToolRequests):
+                    deferred_requests = result.output
+                else:
                     deferred_requests = None
-                finally:
-                    self.foreground_task = None
 
-            except Exception as e:
-                logger.exception("An error occurred.")
-
-                self.session.record_error(e)
-                pending_exception = e
+            except asyncio.CancelledError:
+                logger.info("Step cancelled.")
+                await self.agent_io.send("\n[Step cancelled]\n")
+                deferred_requests = None
+            finally:
+                self.foreground_task = None
 
             # 6. Send StepDoneEvent to indicate the step is finished
             await self.agent_io.send(StepDoneEvent())

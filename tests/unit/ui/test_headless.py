@@ -64,7 +64,10 @@ system_prompt = "Hi there."
     )
 
     async def failing_step(*args, **kwargs):
-        raise RuntimeError("step blew up")
+        class MockResult:
+            output = RuntimeError("step blew up")
+
+        return MockResult()
 
     agent.step = failing_step  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
