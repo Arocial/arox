@@ -245,7 +245,7 @@ class ShellPlugin(Plugin):
     async def shell(
         self,
         command: str,
-        description: str,
+        description: str = "",
         timeout: int | None = 100,
         run_in_background: bool = False,
     ) -> str:
@@ -404,7 +404,7 @@ class ShellPlugin(Plugin):
         return text
 
     @tool()
-    async def shell_state(self, task_id: str, description: str) -> str:
+    async def shell_state(self, task_id: str, description: str = "") -> str:
         """Check on a background (or promoted) task. Waits briefly (with
         per-task exponential backoff: 20s, 40s, 80s, ..., capped at 300s)
         so the model doesn't busy-poll, then returns new output, run status,
@@ -489,7 +489,7 @@ class ShellPlugin(Plugin):
         return f"{header}\n{body}"
 
     @tool()
-    async def shell_input(self, task_id: str, text: str, description: str) -> str:
+    async def shell_input(self, task_id: str, text: str, description: str = "") -> str:
         """Send text to the stdin of a running background task.
 
         Args:
@@ -521,7 +521,7 @@ class ShellPlugin(Plugin):
             return f"Failed to send input: {e!s}"
 
     @tool()
-    async def kill_shell(self, task_id: str, description: str) -> str:
+    async def kill_shell(self, task_id: str, description: str = "") -> str:
         """Terminate a background (or promoted) task. Sends SIGTERM to the
         whole process group, escalating to SIGKILL after a short grace period.
 
