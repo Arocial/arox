@@ -78,12 +78,8 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
             if not self.input_queue:
                 logger.error("input_queue is not initialized")
                 return
-            deferred_answers: dict[str, str | None] = {}
             user_input: str | None = None
             retry = False
-            for key, question in event.deferred_tools.items():
-                await self.send_message(f"❓ {question}")
-                deferred_answers[key] = await self.input_queue.get()
             if event.pending_exception is not None:
                 await self.send_message(
                     f"⚠️ An error occurred: {event.pending_exception}\nDo you want to continue? (y/n)"
@@ -109,7 +105,6 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
             await adapter_io.send(
                 ChatInputReply(
                     req_id=event.req_id,
-                    deferred_answers=deferred_answers,
                     user_input=user_input,
                     retry=retry,
                 )

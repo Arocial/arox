@@ -44,7 +44,6 @@ class HeadlessIOAdapter(AbstractIOAdapter):
             await adapter_io.send(
                 ChatInputReply(
                     req_id=event.req_id,
-                    deferred_answers={k: "" for k in event.deferred_tools},
                     user_input=user_input,
                     retry=False,
                 )

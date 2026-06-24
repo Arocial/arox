@@ -209,16 +209,8 @@ class TextIOAdapter(AbstractIOAdapter):
                 f"tool call: {part.tool_call_id}: {part.tool_name} args: {str(part.args)[:100]}"
             )
         elif isinstance(event, ChatInputRequest):
-            deferred_answers: dict[str, str | None] = {}
             user_input: str | None = None
             retry = False
-            for key, question in event.deferred_tools.items():
-                print(f"\n[Agent asks]: {question}")
-                try:
-                    deferred_answers[key] = await self.user_input()
-                except (EOFError, KeyboardInterrupt):
-                    deferred_answers[key] = ""
-                    await self._flush_stdin()
             if event.pending_exception is not None:
                 print(
                     f"An error occurred: {event.pending_exception}\nDo you want to continue? (y/n)"
@@ -257,7 +249,6 @@ class TextIOAdapter(AbstractIOAdapter):
             await adapter_io.send(
                 ChatInputReply(
                     req_id=event.req_id,
-                    deferred_answers=deferred_answers,
                     user_input=user_input,
                     retry=retry,
                 )

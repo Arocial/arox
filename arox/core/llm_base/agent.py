@@ -34,7 +34,7 @@ from pydantic_ai.messages import (
     UserContent,
 )
 from pydantic_ai.models import infer_model
-from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+
 
 from arox import utils
 from arox.core.config import AgentConfig, Config
@@ -113,13 +113,13 @@ class LLMBaseAgent(IOHost):
         )
         capabilities.append(self.builtin_hooks)
 
-        self.pydantic_agent = Agent[AgentDeps, DeferredToolRequests | str](
+        self.pydantic_agent = Agent[AgentDeps, str](
             self.model,
             instructions=self.system_prompt,
             capabilities=capabilities,
             toolsets=self.toolsets,
             deps_type=AgentDeps,
-            output_type=(DeferredToolRequests, str),
+            output_type=str,
         )
         self.session.initialized = True
 
@@ -464,8 +464,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         user_prompt: str | list[UserContent] | None,
         *,
         message_history: list[ModelMessage],
-        deferred_tool_results: DeferredToolResults | None = None,
-    ) -> AgentRunResult[DeferredToolRequests | str]:
+    ) -> AgentRunResult[str]:
         """Run a single LLM inference with fallback model handling.
 
         Stateless w.r.t. the agent's own message_history / agent_session: the
@@ -489,7 +488,6 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                     model_settings=ModelSettings(**self.model_params),
                     message_history=message_history,
                     deps=AgentDeps(agent_io=self.agent_io, agent=self),
-                    deferred_tool_results=deferred_tool_results,
                 )
 
                 if isinstance(result.output, ModelAPIError):
@@ -509,8 +507,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
     async def step(
         self,
         user_input: UserInput | str | None = None,
-        deferred_tool_results: DeferredToolResults | None = None,
-    ) -> AgentRunResult[DeferredToolRequests | str]:
+    ) -> AgentRunResult[str]:
         if isinstance(user_input, UserInput):
             input_content = user_input.user_input
             client_message_id = user_input.client_message_id
@@ -535,7 +532,6 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         result = await self._run_inference(
             input_content,
             message_history=self.message_history,
-            deferred_tool_results=deferred_tool_results,
         )
         self.result = result
         self.message_history = result.all_messages()
@@ -575,11 +571,6 @@ class DelegatableAgent(LLMBaseAgent, ABC):
         result = await self.step(task)
         if result and isinstance(result.output, str):
             return result.output
-        if result and isinstance(result.output, DeferredToolRequests):
-            return (
-                f"Sub-agent {self.name} requested deferred tools, "
-                "which is not supported in delegation yet."
-            )
         return None
 
 

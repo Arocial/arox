@@ -491,7 +491,6 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
             chat_input_reply = ChatInputReply(
                 req_id=reply_dict["req_id"],
-                deferred_answers=reply_dict.get("deferred_tools") or {},
                 user_input=list(input_content)
                 if not isinstance(input_content, str)
                 else input_content,

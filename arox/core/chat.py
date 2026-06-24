@@ -1,10 +1,7 @@
 import asyncio
 import logging
-from collections import OrderedDict
 from dataclasses import dataclass, field
 
-from pydantic_ai import DeferredToolResults
-from pydantic_ai.tools import DeferredToolRequests
 
 from arox.core.io import ReplyEvent, RequestEvent
 from arox.core.llm_base import DelegatableAgent, MainAgent, UserInput
@@ -19,17 +16,12 @@ class StepDoneEvent:
 
 @dataclass
 class ChatInputRequest(RequestEvent):
-    deferred_tools: OrderedDict[str, str] = field(default_factory=OrderedDict)
     request_normal_input: bool = True
     pending_exception: BaseException | None = None
-
-    def add_deferred_tool(self, question: str, key: str) -> None:
-        self.deferred_tools[key] = question
 
     def generate_request(self) -> dict:
         return {
             "req_id": self.req_id,
-            "deferred_tools": dict(self.deferred_tools),
             "normal_input": {"request": self.request_normal_input},
             "exception_input": {
                 "exception": f"{type(self.pending_exception).__name__}: {self.pending_exception}"
@@ -41,15 +33,11 @@ class ChatInputRequest(RequestEvent):
 
 @dataclass
 class ChatInputReply(UserInput, ReplyEvent):
-    deferred_answers: dict[str, str | None] = field(default_factory=dict)
     retry: bool = False
 
     def is_abort(self, request: ChatInputRequest) -> bool:
         if self.user_input is not None:
             return False
-        for key, question in request.deferred_tools.items():
-            if question and self.deferred_answers.get(key) is None:
-                return True
         return bool(request.request_normal_input and self.user_input is None)
 
 
@@ -73,7 +61,6 @@ class ChatAgent(MainAgent, DelegatableAgent):
 
     async def run(self):
         """Start the agent with optional input generator"""
-        deferred_requests: DeferredToolRequests | None = None
         pending_exception: BaseException | None = None
 
         while True:
@@ -92,19 +79,8 @@ class ChatAgent(MainAgent, DelegatableAgent):
 
             # 5. Execute the step
             try:
-                if deferred_requests:
-                    deferred_results = DeferredToolResults()
-                    for call in deferred_requests.calls:
-                        deferred_results.calls[
-                            call.tool_call_id
-                        ] = await deferred_requests.metadata[call.tool_call_id][
-                            "result_callback"
-                        ]()
-                else:
-                    deferred_results = None
-
                 step_task = asyncio.create_task(
-                    self.step(reply, deferred_tool_results=deferred_results)
+                    self.step(reply)
                 )
                 self.foreground_task = step_task
 
@@ -115,15 +91,10 @@ class ChatAgent(MainAgent, DelegatableAgent):
                     logger.error("An error occurred.", exc_info=e)
                     self.session.record_error(e)
                     pending_exception = e
-                elif result and isinstance(result.output, DeferredToolRequests):
-                    deferred_requests = result.output
-                else:
-                    deferred_requests = None
 
             except asyncio.CancelledError:
                 logger.info("Step cancelled.")
                 await self.agent_io.send("\n[Step cancelled]\n")
-                deferred_requests = None
             finally:
                 self.foreground_task = None
 
