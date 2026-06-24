@@ -15,7 +15,7 @@ from pydantic_ai import (
     ThinkingPartDelta,
 )
 
-from arox.core.chat import ChatInputEvent, ChatInputReply
+from arox.core.chat import ChatInputReply, ChatInputRequest
 from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
@@ -74,23 +74,23 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
             part = event.part
             call_text = f"🛠 Tool call: {part.tool_name}\nArgs: {str(part.args)[:500]}"
             await self.send_message(call_text)
-        elif isinstance(event, ChatInputEvent):
+        elif isinstance(event, ChatInputRequest):
             if not self.input_queue:
                 logger.error("input_queue is not initialized")
                 return
             deferred_answers: dict[str, str | None] = {}
             user_input: str | None = None
             retry = False
-            for key, tool in event.deferred_tools.items():
-                await self.send_message(f"❓ {tool.question}")
+            for key, question in event.deferred_tools.items():
+                await self.send_message(f"❓ {question}")
                 deferred_answers[key] = await self.input_queue.get()
-            if event.exception_input.exception is not None:
+            if event.pending_exception is not None:
                 await self.send_message(
-                    f"⚠️ An error occurred: {event.exception_input.exception}\nDo you want to continue? (y/n)"
+                    f"⚠️ An error occurred: {event.pending_exception}\nDo you want to continue? (y/n)"
                 )
                 line = await self.input_queue.get()
                 retry = line.strip().lower() == "y"
-            if event.normal_input.request:
+            if event.request_normal_input:
                 agent = await self._find_agent(adapter_io)
                 while True:
                     line = await self.input_queue.get()

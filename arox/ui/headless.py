@@ -4,7 +4,7 @@ from typing import Any, override
 
 from pydantic_ai import AgentRunResultEvent
 
-from arox.core.chat import ChatInputEvent, ChatInputReply
+from arox.core.chat import ChatInputReply, ChatInputRequest
 from arox.core.io import AbstractIOAdapter, IOEndpoint
 
 logger = logging.getLogger(__name__)
@@ -15,7 +15,7 @@ class HeadlessIOAdapter(AbstractIOAdapter):
 
     The final answer is taken from the ``AgentRunResultEvent`` emitted at the
     end of a step (its ``result.output``); streaming text, tool calls and
-    thinking are dropped. On the first ChatInputEvent it replies with the
+    thinking are dropped. On the first ChatInputRequest it replies with the
     prompt; on any subsequent request it replies with abort so
     ChatAgent.run() exits cleanly.
     """
@@ -36,9 +36,9 @@ class HeadlessIOAdapter(AbstractIOAdapter):
                 sys.stdout.flush()
             return
 
-        if isinstance(event, ChatInputEvent):
-            if event.exception_input.exception is not None:
-                self.error = event.exception_input.exception
+        if isinstance(event, ChatInputRequest):
+            if event.pending_exception is not None:
+                self.error = event.pending_exception
             user_input = None if self._consumed else self.prompt
             self._consumed = True
             await adapter_io.send(

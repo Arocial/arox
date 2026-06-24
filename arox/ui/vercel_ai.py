@@ -33,8 +33,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from arox.core.app import app_setup
 from arox.core.chat import (
-    ChatInputEvent,
     ChatInputReply,
+    ChatInputRequest,
     StepDoneEvent,
 )
 from arox.core.completion import parse_request
@@ -236,12 +236,12 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         self.tool_ids = {}
         self.read_lock = asyncio.Lock()
         self.event_queues = {}
-        self.pending_inputs: dict[IOEndpoint, ChatInputEvent] = {}
+        self.pending_inputs: dict[IOEndpoint, ChatInputRequest] = {}
         self.run_instances: dict[str, AgentRun] = {}
 
     @override
     async def handle_event(self, adapter_io: IOEndpoint, event):
-        if isinstance(event, ChatInputEvent):
+        if isinstance(event, ChatInputRequest):
             self.pending_inputs[adapter_io] = event
         elif isinstance(event, StepDoneEvent):
             self.pending_inputs.pop(adapter_io, None)
@@ -378,7 +378,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         elif isinstance(event, FinalResultEvent):
             messages.append({"type": "finish"})
 
-        elif isinstance(event, ChatInputEvent):
+        elif isinstance(event, ChatInputRequest):
             messages.append(
                 {"type": "cmd-input-request", "payload": event.generate_request()}
             )
@@ -418,7 +418,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         await target.agent_io.send(output)
 
     async def _reissue_pending_input(self, target) -> None:
-        """Re-emit the current pending ChatInputEvent so the client sees a
+        """Re-emit the current pending ChatInputRequest so the client sees a
         fresh ``data-input-request``. Used after handling a command that did
         not consume the agent's pending input."""
         event = self.pending_inputs.get(target.adapter_io)
@@ -484,7 +484,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 cmd_reply = await target.command_manager.try_handle_slash(text_input)
                 if cmd_reply is not None:
                     await self._render_command_output(target, cmd_reply.output)
-                    # The agent is still blocked on its current ChatInputEvent;
+                    # The agent is still blocked on its current ChatInputRequest;
                     # re-emit it so the client can submit again.
                     await self._reissue_pending_input(target)
                     return {"status": "ok", "output": cmd_reply.output}

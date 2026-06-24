@@ -24,8 +24,8 @@ from pydantic_ai import (
 
 from arox.core.chat import (
     ChatAgent,
-    ChatInputEvent,
     ChatInputReply,
+    ChatInputRequest,
 )
 from arox.core.completion import CompletionRouter, parse_request
 from arox.core.io import (
@@ -208,20 +208,20 @@ class TextIOAdapter(AbstractIOAdapter):
             print(
                 f"tool call: {part.tool_call_id}: {part.tool_name} args: {str(part.args)[:100]}"
             )
-        elif isinstance(event, ChatInputEvent):
+        elif isinstance(event, ChatInputRequest):
             deferred_answers: dict[str, str | None] = {}
             user_input: str | None = None
             retry = False
-            for key, tool in event.deferred_tools.items():
-                print(f"\n[Agent asks]: {tool.question}")
+            for key, question in event.deferred_tools.items():
+                print(f"\n[Agent asks]: {question}")
                 try:
                     deferred_answers[key] = await self.user_input()
                 except (EOFError, KeyboardInterrupt):
                     deferred_answers[key] = ""
                     await self._flush_stdin()
-            if event.exception_input.exception is not None:
+            if event.pending_exception is not None:
                 print(
-                    f"An error occurred: {event.exception_input.exception}\nDo you want to continue? (y/n)"
+                    f"An error occurred: {event.pending_exception}\nDo you want to continue? (y/n)"
                 )
                 try:
                     line = await self.user_input()
@@ -229,7 +229,7 @@ class TextIOAdapter(AbstractIOAdapter):
                 except (EOFError, KeyboardInterrupt):
                     retry = False
                     await self._flush_stdin()
-            if event.normal_input.request:
+            if event.request_normal_input:
                 agent = await self._find_agent(adapter_io)
                 while True:
                     try:

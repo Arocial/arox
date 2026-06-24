@@ -18,45 +18,22 @@ class StepDoneEvent:
 
 
 @dataclass
-class _DeferredToolQuestion:
-    question: str
-
-
-@dataclass
-class _NormalInputRequest:
-    request: bool = True
-
-
-@dataclass
-class _ExceptionInputRequest:
-    exception: BaseException | None = None
-
-
-@dataclass
-class ChatInputEvent(RequestEvent):
-    DeferredToolInput = _DeferredToolQuestion
-    NormalInput = _NormalInputRequest
-    ExceptionInput = _ExceptionInputRequest
-
-    deferred_tools: OrderedDict[str, _DeferredToolQuestion] = field(
-        default_factory=OrderedDict
-    )
-    normal_input: _NormalInputRequest = field(default_factory=_NormalInputRequest)
-    exception_input: _ExceptionInputRequest = field(
-        default_factory=_ExceptionInputRequest
-    )
+class ChatInputRequest(RequestEvent):
+    deferred_tools: OrderedDict[str, str] = field(default_factory=OrderedDict)
+    request_normal_input: bool = True
+    pending_exception: BaseException | None = None
 
     def add_deferred_tool(self, question: str, key: str) -> None:
-        self.deferred_tools[key] = _DeferredToolQuestion(question)
+        self.deferred_tools[key] = question
 
     def generate_request(self) -> dict:
         return {
             "req_id": self.req_id,
-            "deferred_tools": {k: t.question for k, t in self.deferred_tools.items()},
-            "normal_input": {"request": self.normal_input.request},
+            "deferred_tools": dict(self.deferred_tools),
+            "normal_input": {"request": self.request_normal_input},
             "exception_input": {
-                "exception": f"{type(self.exception_input.exception).__name__}: {self.exception_input.exception}"
-                if self.exception_input.exception
+                "exception": f"{type(self.pending_exception).__name__}: {self.pending_exception}"
+                if self.pending_exception
                 else None
             },
         }
@@ -67,13 +44,13 @@ class ChatInputReply(UserInput, ReplyEvent):
     deferred_answers: dict[str, str | None] = field(default_factory=dict)
     retry: bool = False
 
-    def is_abort(self, request: ChatInputEvent) -> bool:
+    def is_abort(self, request: ChatInputRequest) -> bool:
         if self.user_input is not None:
             return False
-        for key, tool in request.deferred_tools.items():
-            if tool.question and self.deferred_answers.get(key) is None:
+        for key, question in request.deferred_tools.items():
+            if question and self.deferred_answers.get(key) is None:
                 return True
-        return bool(request.normal_input.request and self.user_input is None)
+        return bool(request.request_normal_input and self.user_input is None)
 
 
 class ChatAgent(MainAgent, DelegatableAgent):
@@ -101,17 +78,16 @@ class ChatAgent(MainAgent, DelegatableAgent):
 
         while True:
             # 1. Prepare the event for this round
-            event = ChatInputEvent()
-            event.normal_input.request = True
+            input_request = ChatInputRequest()
 
             if pending_exception:
-                event.exception_input.exception = pending_exception
+                input_request.pending_exception = pending_exception
                 pending_exception = None
 
             # 2. Send the request and wait for the matching reply
-            reply: ChatInputReply = await self.agent_io.send(event)
+            reply: ChatInputReply = await self.agent_io.send(input_request)
 
-            if reply.is_abort(event):
+            if reply.is_abort(input_request):
                 break
 
             # 5. Execute the step
