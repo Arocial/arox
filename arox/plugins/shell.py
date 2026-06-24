@@ -256,7 +256,7 @@ class ShellPlugin(Plugin):
         - Shell: {{ shell_type }}
 
         Rules
-            1. For searching code, use `rg` or `ast-grep`.
+            1. Prefer `rg` for code search. Use `--no-ignore-*` flags to override default ignore rules.
             2. If a command requires stdin input (interactive commands), you MUST set `run_in_background=True`. Foreground commands have stdin attached to /dev/null and will fail if they try to read input. For background tasks, use `shell_state` to see the prompt and `shell_input` to provide the required input.
             3. The command runs via `{{ shell_type }} -c`, so quoting matters:
                - Wrap literal text in single quotes to disable $ expansion:
