@@ -45,7 +45,6 @@ class HeadlessIOAdapter(AbstractIOAdapter):
                 ChatInputReply(
                     req_id=event.req_id,
                     user_input=user_input,
-                    retry=False,
                 )
             )
             return

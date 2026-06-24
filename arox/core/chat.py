@@ -1,7 +1,6 @@
 import asyncio
 import logging
-from dataclasses import dataclass, field
-
+from dataclasses import dataclass
 
 from arox.core.io import ReplyEvent, RequestEvent
 from arox.core.llm_base import DelegatableAgent, MainAgent, UserInput
@@ -33,11 +32,7 @@ class ChatInputRequest(RequestEvent):
 
 @dataclass
 class ChatInputReply(UserInput, ReplyEvent):
-    retry: bool = False
-
     def is_abort(self, request: ChatInputRequest) -> bool:
-        if self.user_input is not None:
-            return False
         return bool(request.request_normal_input and self.user_input is None)
 
 
@@ -79,9 +74,7 @@ class ChatAgent(MainAgent, DelegatableAgent):
 
             # 5. Execute the step
             try:
-                step_task = asyncio.create_task(
-                    self.step(reply)
-                )
+                step_task = asyncio.create_task(self.step(reply))
                 self.foreground_task = step_task
 
                 result = await step_task

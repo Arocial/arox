@@ -494,9 +494,6 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 user_input=list(input_content)
                 if not isinstance(input_content, str)
                 else input_content,
-                retry=bool(
-                    (reply_dict.get("exception_input") or {}).get("retry", False)
-                ),
                 client_message_id=reply_dict.get("client_message_id"),
             )
 

@@ -210,17 +210,8 @@ class TextIOAdapter(AbstractIOAdapter):
             )
         elif isinstance(event, ChatInputRequest):
             user_input: str | None = None
-            retry = False
             if event.pending_exception is not None:
-                print(
-                    f"An error occurred: {event.pending_exception}\nDo you want to continue? (y/n)"
-                )
-                try:
-                    line = await self.user_input()
-                    retry = line.strip().lower() == "y"
-                except (EOFError, KeyboardInterrupt):
-                    retry = False
-                    await self._flush_stdin()
+                print(f"⚠️ An error occurred: {event.pending_exception}")
             if event.request_normal_input:
                 agent = await self._find_agent(adapter_io)
                 while True:
@@ -250,7 +241,6 @@ class TextIOAdapter(AbstractIOAdapter):
                 ChatInputReply(
                     req_id=event.req_id,
                     user_input=user_input,
-                    retry=retry,
                 )
             )
         else:

@@ -79,13 +79,10 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
                 logger.error("input_queue is not initialized")
                 return
             user_input: str | None = None
-            retry = False
             if event.pending_exception is not None:
                 await self.send_message(
-                    f"⚠️ An error occurred: {event.pending_exception}\nDo you want to continue? (y/n)"
+                    f"⚠️ An error occurred: {event.pending_exception}"
                 )
-                line = await self.input_queue.get()
-                retry = line.strip().lower() == "y"
             if event.request_normal_input:
                 agent = await self._find_agent(adapter_io)
                 while True:
@@ -106,6 +103,5 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
                 ChatInputReply(
                     req_id=event.req_id,
                     user_input=user_input,
-                    retry=retry,
                 )
             )
