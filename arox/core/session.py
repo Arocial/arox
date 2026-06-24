@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Protocol, Union
 
 from pydantic import BaseModel, Field, model_validator
+from pydantic_ai import UserContent
 from pydantic_ai.messages import (
     ModelMessage,
 )
@@ -59,7 +60,7 @@ class CommandEvent(SessionEvent):
 
 class UserInputEvent(SessionEvent):
     event_type: Literal["user_input"] = "user_input"
-    text: str = ""
+    content: str | list[UserContent] = ""
 
 
 class ErrorEvent(SessionEvent):
@@ -208,11 +209,17 @@ class AgentSession(Session):
             CommandEvent(command=command, arg=arg, agent_name=self.agent_name)
         )
 
-    def record_user_input(self, text: str, input_id: str) -> None:
+    def record_user_input(
+        self, content: str | list[UserContent], input_id: str
+    ) -> None:
         self.add_event(
-            UserInputEvent(id=input_id, text=text, agent_name=self.agent_name)
+            UserInputEvent(id=input_id, content=content, agent_name=self.agent_name)
         )
         last_user_messages = self.metadata.get("last_user_messages", [])
+        if isinstance(content, str):
+            text = content
+        else:
+            text = content[0] if isinstance(content[0], str) else ""
         last_user_messages.append(text)
         self.metadata["last_user_messages"] = last_user_messages[-2:]
 

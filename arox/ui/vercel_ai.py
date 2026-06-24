@@ -1,11 +1,12 @@
-from __future__ import annotations
-
 import asyncio
 import logging
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, override
+
+from pydantic_ai.ui.vercel_ai import VercelAIAdapter
+from pydantic_ai.ui.vercel_ai.request_types import UIMessage
 
 if TYPE_CHECKING:
     from arox.core.session import SessionManager
@@ -393,7 +394,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 "type": "cmd-user-turn",
                 "payload": {
                     "eventId": event.event_id,
-                    "messageId": event.client_id,
+                    "client_message_id": event.client_id,
                 },
             }
             messages.append(frame)
@@ -445,19 +446,42 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
         reply = payload.get("reply")
         if reply is not None:
-            req_id = reply.get("req_id")
-            if not req_id:
-                return {"status": "no_req_id"}
-            deferred = reply.get("deferred_tools") or {}
-            exception_input = reply.get("exception_input") or {}
-            normal_input = reply.get("normal_input") or {}
-            user_input = normal_input.get("user_input")
+            reply_message = UIMessage.model_validate(reply)
+            if reply_message.metadata:
+                custom_metadata = reply_message.metadata.get("custom", {})
+            else:
+                custom_metadata = {}
+            reply_dict = custom_metadata.get("chatInputEventResult")
+            if not isinstance(reply_dict, dict):
+                return {"status": "error", "message": "no chatInputEventResult"}
+
+            user_msg = VercelAIAdapter.load_messages([reply_message])
+            parts = user_msg[0].parts
+            assert len(parts) == 1
+            from pydantic_ai.messages import UserPromptPart
+
+            part = parts[0]
+            assert isinstance(part, UserPromptPart)
+            input_content = part.content
+            reply_dict["user_input"] = input_content
+
+            if isinstance(input_content, str):
+                text_input: str | None = input_content
+            elif isinstance(input_content, list) and len(input_content) > 0:
+                first = input_content[0]
+                text_input = (
+                    first
+                    if isinstance(first, str)
+                    else getattr(first, "text", getattr(first, "content", None))
+                )
+            else:
+                text_input = None
 
             # Intercept slash commands typed into the app so they don't
             # round-trip through the LLM. Mirrors the structured "command"
             # branch above and TextIOAdapter's slash handling.
-            if isinstance(user_input, str) and user_input.startswith("/"):
-                cmd_reply = await target.command_manager.try_handle_slash(user_input)
+            if isinstance(text_input, str) and text_input.startswith("/"):
+                cmd_reply = await target.command_manager.try_handle_slash(text_input)
                 if cmd_reply is not None:
                     await self._render_command_output(target, cmd_reply.output)
                     # The agent is still blocked on its current ChatInputEvent;
@@ -465,16 +489,19 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     await self._reissue_pending_input(target)
                     return {"status": "ok", "output": cmd_reply.output}
 
-            client_message_id = reply.get("client_message_id")
-            await target.adapter_io.send(
-                ChatInputReply(
-                    req_id=req_id,
-                    deferred_answers=dict(deferred),
-                    user_input=user_input,
-                    retry=bool(exception_input.get("retry", False)),
-                    client_message_id=client_message_id,
-                )
+            chat_input_reply = ChatInputReply(
+                req_id=reply_dict["req_id"],
+                deferred_answers=reply_dict.get("deferred_tools") or {},
+                user_input=list(input_content)
+                if not isinstance(input_content, str)
+                else input_content,
+                retry=bool(
+                    (reply_dict.get("exception_input") or {}).get("retry", False)
+                ),
+                client_message_id=reply_dict.get("client_message_id"),
             )
+
+            await target.adapter_io.send(chat_input_reply)
             self.pending_inputs.pop(target.adapter_io, None)
             return {"status": "ok"}
 

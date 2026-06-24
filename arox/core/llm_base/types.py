@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from pydantic_ai import UserContent
+
 
 @dataclass
 class UserInput:
@@ -10,7 +12,7 @@ class UserInput:
     can map its own messages to backend session-event ids.
     """
 
-    user_input: str | None = None
+    user_input: str | list[UserContent] | None
     client_message_id: str | None = None
 
 

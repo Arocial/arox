@@ -512,26 +512,28 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         deferred_tool_results: DeferredToolResults | None = None,
     ) -> AgentRunResult[DeferredToolRequests | str]:
         if isinstance(user_input, UserInput):
-            text = user_input.user_input
+            input_content = user_input.user_input
             client_message_id = user_input.client_message_id
         else:
-            text = user_input
+            input_content = user_input
             client_message_id = None
 
-        user_prompt: list[UserContent] | None = None
-        if text is not None:
+        if input_content is not None:
             input_id = str(uuid.uuid4())
-            self.session.record_user_input(text, input_id)
+            self.session.record_user_input(input_content, input_id)
             if client_message_id:
                 await self.agent_io.send(
                     ServerIdMapping(event_id=input_id, client_id=client_message_id)
                 )
-            user_prompt = [
-                TextContent(content=text + "\n", metadata={USER_INPUT_ID_KEY: input_id})
+        if isinstance(input_content, str):
+            input_content: list[UserContent] = [
+                TextContent(
+                    content=input_content + "\n", metadata={USER_INPUT_ID_KEY: input_id}
+                )
             ]
 
         result = await self._run_inference(
-            user_prompt,
+            input_content,
             message_history=self.message_history,
             deferred_tool_results=deferred_tool_results,
         )

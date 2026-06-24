@@ -56,7 +56,14 @@ def user_turns_from_session(session: AgentSession) -> list[tuple[str, str]]:
     turns: list[tuple[str, str]] = []
     for event in session.events:
         if isinstance(event, UserInputEvent):
-            turns.append((event.id, event.text))
+            if isinstance(event.content, str):
+                text = event.content
+            else:
+                text = " ".join(
+                    p if isinstance(p, str) else getattr(p, "content", "")
+                    for p in event.content
+                )
+            turns.append((event.id, text))
     return turns
 
 

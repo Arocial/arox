@@ -24,7 +24,7 @@ from arox.core.session import (
 class TestAgentSession:
     def test_add_event(self):
         agent_session = AgentSession(agent_name="main")
-        event = agent_session.add_event(UserInputEvent(text="hello"))
+        event = agent_session.add_event(UserInputEvent(content="hello"))
         assert event.event_type == "user_input"
         assert len(agent_session.events) == 1
 
@@ -125,7 +125,7 @@ class TestAgentSession:
     @pytest.mark.asyncio
     async def test_fork_at_event(self):
         agent_session = AgentSession(agent_name="main", path=["parent", "main"])
-        agent_session.add_event(UserInputEvent(text="first"))
+        agent_session.add_event(UserInputEvent(content="first"))
         agent_session.add_event(
             StepEvent(
                 new_messages=[
@@ -134,7 +134,7 @@ class TestAgentSession:
                 ]
             )
         )
-        anchor = agent_session.add_event(UserInputEvent(text="second"))
+        anchor = agent_session.add_event(UserInputEvent(content="second"))
 
         agent_session.owner = AgentSession(agent_name="parent", path=["parent"])
         forked = await agent_session.fork_at(anchor.id)
@@ -158,7 +158,7 @@ class TestAgentSession:
     async def test_fork_at_none_creates_empty(self):
         agent_session = AgentSession(agent_name="main", path=["parent", "main"])
         agent_session.owner = AgentSession(agent_name="newowner", path=["newowner"])
-        agent_session.add_event(UserInputEvent(text="first"))
+        agent_session.add_event(UserInputEvent(content="first"))
 
         forked = await agent_session.fork_at(None)
         assert forked.events == []
@@ -170,7 +170,7 @@ class TestAgentSession:
     @pytest.mark.asyncio
     async def test_fork_at_missing_event_raises(self):
         agent_session = AgentSession(agent_name="main")
-        agent_session.add_event(UserInputEvent(text="first"))
+        agent_session.add_event(UserInputEvent(content="first"))
         with pytest.raises(ValueError):
             agent_session.owner = AgentSession(agent_name="owner", path=["owner"])
             await agent_session.fork_at("does-not-exist")
@@ -180,8 +180,8 @@ class TestAgentSession:
         owner = AgentSession(agent_name="parent", path=["parent"])
         agent_session = AgentSession(agent_name="main", path=["parent", "main"])
         agent_session.owner = owner
-        agent_session.add_event(UserInputEvent(text="first"))
-        anchor = agent_session.add_event(UserInputEvent(text="second"))
+        agent_session.add_event(UserInputEvent(content="first"))
+        anchor = agent_session.add_event(UserInputEvent(content="second"))
 
         forked = await agent_session.fork_at(anchor.id)
         assert forked.owner is owner
@@ -190,7 +190,7 @@ class TestAgentSession:
 
     def test_non_step_events_ignored_in_rebuild(self):
         agent_session = AgentSession(agent_name="main")
-        agent_session.add_event(UserInputEvent(text="hello"))
+        agent_session.add_event(UserInputEvent(content="hello"))
         agent_session.add_event(CommandEvent(command="/reset"))
         agent_session.add_event(ErrorEvent(error="something"))
         history = agent_session.rebuild_message_history()
@@ -227,7 +227,7 @@ class TestFileSessionStore:
         # A top-level main-agent session with a subagent session nested under it.
         session = AgentSession(agent_name="coder", path=["coder"])
         agent_session = AgentSession(agent_name="sub", path=["coder", "sub"])
-        agent_session.add_event(UserInputEvent(text="hello"))
+        agent_session.add_event(UserInputEvent(content="hello"))
         agent_session.add_event(
             StepEvent(
                 new_messages=[
@@ -349,10 +349,10 @@ class TestFileSessionStore:
     @pytest.mark.asyncio
     async def test_save_overwrites(self, store):
         agent_s = AgentSession(agent_name="main", path=["coder", "main"])
-        agent_s.add_event(UserInputEvent(text="first"))
+        agent_s.add_event(UserInputEvent(content="first"))
         await store.save_session(agent_s)
 
-        agent_s.add_event(UserInputEvent(text="second"))
+        agent_s.add_event(UserInputEvent(content="second"))
         await store.save_session(agent_s)
 
         loaded = await store.load_session(agent_s.path)
