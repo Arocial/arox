@@ -418,13 +418,19 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 for msg in await self._event_messages(
                     adapter_io, event, target_run, agent
                 ):
-                    logger.info(f"WS OUT: {msg}")
+                    msg_str = str(msg)
+                    if len(msg_str) > 1024:
+                        msg_str = msg_str[:1024] + "... (truncated)"
+                    logger.info(f"WS OUT: {msg_str}")
                     await websocket.send_json(msg)
 
         async def pump_in():
             while True:
                 payload = await websocket.receive_json()
-                logger.info(f"WS IN: {payload}")
+                payload_str = str(payload)
+                if len(payload_str) > 1024:
+                    payload_str = payload_str[:1024] + "... (truncated)"
+                logger.info(f"WS IN: {payload_str}")
 
                 if payload.get("resume"):
                     event = self.pending_inputs.get(adapter_io)
