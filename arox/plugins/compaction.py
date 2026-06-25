@@ -10,9 +10,9 @@ from pydantic_ai import (
     UserPromptPart,
 )
 
-from arox.core.llm_base import LLMBaseAgent, create_agent
+from arox.core.llm_base import DelegatableAgent, LLMBaseAgent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin
-from arox.plugins.slots import PERSISTENT_CONTEXT
+from arox.plugins.slots import DELEGATE_TO_SUBAGENT, PERSISTENT_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +33,11 @@ class CompactEvent(CommandEvent):
         return cls(extra_instructions=(arg or "").strip())
 
 
-class CompactionAgent(LLMBaseAgent):
-    """LLMBaseAgent specialized for summarizing conversation history."""
+class CompactionAgent(DelegatableAgent):
+    """DelegatableAgent specialized for summarizing conversation history."""
+
+    async def run_task(self, task: str) -> str | None:
+        return await self.summarize(self.message_history, extra_instructions=task)
 
     async def summarize(
         self, messages: list[ModelMessage], extra_instructions: str = ""
@@ -181,36 +184,23 @@ class CompactionPlugin(Plugin):
             )
             return messages
 
-        from typing import cast
-
-        # Dynamically create compaction agent session
-        compaction_agent = cast(
-            CompactionAgent,
-            create_agent(
-                name=COMPACTION_AGENT_NAME,
-                parsed_config=agent.parsed_config,
-                io_adapter=agent.io_adapter,
-                parent_session=agent.session,
-                agent_config=agent_config,
-                workspace=agent.workspace,
-                agent_cls=CompactionAgent,
-            ),
-        )
-
         await agent.agent_io.send(
             "Context size is large. Compacting conversation history..."
         )
 
-        try:
-            async with compaction_agent:
-                summary = await compaction_agent.summarize(
-                    messages, extra_instructions=extra_instructions
-                )
-        finally:
-            sub_session = compaction_agent.session
-            sub_session.status = "closed"
-            if sub_session.manager:
-                await sub_session.manager.save_session(sub_session)
+        def setup_compaction_subagent(subagent: Any) -> None:
+            subagent.message_history = messages.copy()
+
+        summary = await agent.invoke_slot(
+            DELEGATE_TO_SUBAGENT,
+            COMPACTION_AGENT_NAME,
+            extra_instructions,
+            on_subagent_created=setup_compaction_subagent,
+        )
+
+        if not summary:
+            logger.warning("Compaction returned no summary. Skipping.")
+            return messages
 
         new_request = ModelRequest(
             parts=[UserPromptPart(content=f"Previous conversation summary:\n{summary}")]

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
@@ -8,9 +9,10 @@ from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
 from arox.core.config import AgentConfig
-from arox.core.llm_base import AgentInfoUpdate, create_agent
+from arox.core.llm_base import create_agent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, ToolDef
 from arox.plugins.slots import (
+    DELEGATE_TO_SUBAGENT,
     SUBAGENTS,
     SYSTEM_PROMPT,
 )
@@ -89,6 +91,7 @@ class SubagentPlugin(Plugin):
 
         self.agent.provide_slot(SUBAGENTS, get_subagents)
         self.agent.provide_slot(SYSTEM_PROMPT, get_subagent_instructions)
+        self.agent.provide_slot(DELEGATE_TO_SUBAGENT, self._internal_delegate)
 
     async def _create_subagent(
         self,
@@ -96,7 +99,7 @@ class SubagentPlugin(Plugin):
         agent_config: AgentConfig,
         agent_source: Literal["static", "dynamic"],
     ):
-        return create_agent(
+        subagent = create_agent(
             name=name,
             parsed_config=self.agent.parsed_config,
             io_adapter=self.agent.io_adapter,
@@ -105,6 +108,9 @@ class SubagentPlugin(Plugin):
             agent_source=agent_source,
             workspace=self.agent.workspace,
         )
+        self.active_subagents[subagent.uuid] = subagent
+        await self.agent.broadcast_agent_info()
+        return subagent
 
     async def _destroy_subagent(self, subagent: Any):
         self.active_subagents.pop(subagent.uuid, None)
@@ -120,7 +126,7 @@ class SubagentPlugin(Plugin):
         )
         if self.agent.session.manager:
             await self.agent.session.manager.save_session(sub_session)
-        await self._broadcast_agent_info()
+        await self.agent.broadcast_agent_info()
 
     async def on_start(self):
         main_session = self.agent.session
@@ -134,10 +140,6 @@ class SubagentPlugin(Plugin):
             if child_session and child_session.status != "closed":
                 child_session.status = "closed"
                 await session_manager.save_session(child_session)
-
-    async def _broadcast_agent_info(self):
-        info = AgentInfoUpdate(agent_uuid=self.agent.uuid)
-        await self.agent.agent_io.send(info)
 
     def commands(self):
         return [
@@ -184,9 +186,6 @@ class SubagentPlugin(Plugin):
         Use this for parallel or time-consuming tasks across different domains, then use `check_task_status` later.
         ALWAYS provide comprehensive context in your `task` description so the subagent doesn't lack necessary background.
         """
-        if subagent_name not in self.agent.agent_config.subagents:
-            return f"Error: Subagent '{subagent_name}' not found."
-
         agent_config = self.agent.parsed_config.agent.get(subagent_name)
         if not agent_config:
             return f"Error: Config for '{subagent_name}' not found."
@@ -200,8 +199,6 @@ class SubagentPlugin(Plugin):
                 agent_config=agent_config,
                 agent_source="static",
             )
-            self.active_subagents[subagent.uuid] = subagent
-            await self._broadcast_agent_info()
 
             try:
                 async with subagent:
@@ -221,6 +218,35 @@ class SubagentPlugin(Plugin):
 
         return f"Task dispatched to {subagent_name}. Task ID: {task_id}. Use check_task_status to get results later."
 
+    async def _internal_delegate(
+        self,
+        subagent_name: str,
+        task: str,
+        on_subagent_created: Callable[[Any], Awaitable[None] | None] | None = None,
+    ) -> str:
+        agent_config = self.agent.parsed_config.agent.get(subagent_name)
+        if not agent_config:
+            return f"Error: Config for '{subagent_name}' not found."
+
+        subagent = await self._create_subagent(
+            name=subagent_name,
+            agent_config=agent_config,
+            agent_source="static",
+        )
+
+        if on_subagent_created:
+            res = on_subagent_created(subagent)
+            if asyncio.iscoroutine(res):
+                await res
+
+        try:
+            async with subagent:
+                self.agent.session.record_subagent_call(subagent.name, task)
+                result = await subagent.run_task(task)
+                return result or "Task completed with no output."
+        finally:
+            await self._destroy_subagent(subagent)
+
     async def delegate_to_subagent(self, subagent_name: str, task: str) -> str:
         """Delegate a task to a specific subagent.
 
@@ -228,30 +254,7 @@ class SubagentPlugin(Plugin):
         Use this for sequential tasks.
         ALWAYS provide comprehensive context in your `task` description so the subagent doesn't lack necessary background.
         """
-        if subagent_name not in self.agent.agent_config.subagents:
-            return f"Error: Subagent '{subagent_name}' not found."
-
-        agent_config = self.agent.parsed_config.agent.get(subagent_name)
-        if not agent_config:
-            return f"Error: Config for '{subagent_name}' not found."
-
-        full_task = task
-
-        subagent = await self._create_subagent(
-            name=subagent_name,
-            agent_config=agent_config,
-            agent_source="static",
-        )
-        self.active_subagents[subagent.uuid] = subagent
-        await self._broadcast_agent_info()
-
-        try:
-            async with subagent:
-                self.agent.session.record_subagent_call(subagent.name, full_task)
-                result = await subagent.run_task(full_task)
-                return result or "Task completed with no output."
-        finally:
-            await self._destroy_subagent(subagent)
+        return await self._internal_delegate(subagent_name, task)
 
     async def list_subagents(self) -> str:
         """List currently available subagents."""

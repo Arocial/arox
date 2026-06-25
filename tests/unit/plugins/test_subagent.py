@@ -53,6 +53,9 @@ class _FakeDynamicAgent(DelegatableAgent):
 
 
 class _MainAgent:
+    async def broadcast_agent_info(self):
+        pass
+
     def __init__(self, session: AgentSession, store: FileSessionStore):
         from arox.core.session import SessionManager
 

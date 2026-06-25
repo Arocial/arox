@@ -79,11 +79,21 @@ class _MockAgent:
     async def _send(self, _msg):
         return None
 
+    async def broadcast_agent_info(self):
+        pass
+
     async def invoke_slot(self, slot, *args, **kwargs):
         if slot is SUBAGENTS:
             return [self._compaction_agent]
         if slot is PERSISTENT_CONTEXT:
             return [self._persistent] if self._persistent else []
+        from arox.plugins.slots import DELEGATE_TO_SUBAGENT
+
+        if slot is DELEGATE_TO_SUBAGENT:
+            self._compaction_agent.message_history = kwargs.get("message_history", [])
+            return await self._compaction_agent.run_task(
+                args[1] if len(args) > 1 else ""
+            )
         return None
 
 

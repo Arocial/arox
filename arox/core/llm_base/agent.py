@@ -56,7 +56,7 @@ from arox.core.slot import (
 from arox.core.slot import (
     Provider as SlotProvider,
 )
-from arox.core.types import ServerIdMapping, UserInput
+from arox.core.types import AgentInfoUpdate, ServerIdMapping, UserInput
 from arox.plugins.slots import (
     AGENT_RESET,
     SYSTEM_PROMPT,
@@ -119,6 +119,10 @@ class LLMBaseAgent(IOHost):
             output_type=str,
         )
         self.session.initialized = True
+
+    async def broadcast_agent_info(self):
+        info = AgentInfoUpdate(agent_uuid=self.uuid)
+        await self.agent_io.send(info)
 
     def cancel_foreground_task(self) -> None:
         """Cancel any long-running foreground task. Subclasses can override this."""
