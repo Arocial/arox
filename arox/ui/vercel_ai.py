@@ -22,12 +22,6 @@ from pydantic_ai import (
     PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
-    TextPart,
-    TextPartDelta,
-    ThinkingPart,
-    ThinkingPartDelta,
-    ToolCallPart,
-    ToolCallPartDelta,
 )
 from starlette.types import ASGIApp, Receive, Scope, Send
 
@@ -233,11 +227,11 @@ class AgentRun:
 class VercelStreamIOAdapter(AbstractIOAdapter):
     def __init__(self):
         super().__init__()
-        self.tool_ids = {}
         self.read_lock = asyncio.Lock()
         self.event_queues = {}
         self.pending_inputs: dict[IOEndpoint, ChatInputRequest] = {}
         self.run_instances: dict[str, AgentRun] = {}
+        self.event_streams = {}
 
     @override
     async def handle_event(self, adapter_io: IOEndpoint, event):
@@ -265,115 +259,25 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     ) -> list[dict]:
         messages: list[dict] = []
 
-        if isinstance(event, PartStartEvent):
-            part = event.part
-            index = event.index
+        if isinstance(
+            event,
+            (
+                PartStartEvent,
+                PartDeltaEvent,
+                PartEndEvent,
+                FunctionToolCallEvent,
+                FunctionToolResultEvent,
+            ),
+        ):
+            from pydantic_ai.ui.vercel_ai import VercelAIEventStream
+            from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage
 
-            if isinstance(part, TextPart):
-                messages.append({"type": "text-start", "id": f"text_{index}"})
-                if part.content:
-                    messages.append(
-                        {
-                            "type": "text-delta",
-                            "id": f"text_{index}",
-                            "delta": part.content,
-                        }
-                    )
-
-            elif isinstance(part, ThinkingPart):
-                messages.append({"type": "reasoning-start", "id": f"reasoning_{index}"})
-                if part.content:
-                    messages.append(
-                        {
-                            "type": "reasoning-delta",
-                            "id": f"reasoning_{index}",
-                            "delta": part.content,
-                        }
-                    )
-
-            elif isinstance(part, ToolCallPart):
-                tool_ids = self.tool_ids.setdefault(adapter_io, {})
-                tool_ids[index] = part.tool_call_id
-                messages.append(
-                    {
-                        "type": "tool-input-start",
-                        "toolCallId": part.tool_call_id,
-                        "toolName": part.tool_name,
-                    }
-                )
-                if part.args and isinstance(part.args, str):
-                    messages.append(
-                        {
-                            "type": "tool-input-delta",
-                            "toolCallId": part.tool_call_id,
-                            "inputTextDelta": part.args,
-                        }
-                    )
-
-        elif isinstance(event, PartDeltaEvent):
-            delta = event.delta
-            index = event.index
-
-            if isinstance(delta, TextPartDelta):
-                if delta.content_delta:
-                    messages.append(
-                        {
-                            "type": "text-delta",
-                            "id": f"text_{index}",
-                            "delta": delta.content_delta,
-                        }
-                    )
-
-            elif isinstance(delta, ThinkingPartDelta):
-                if delta.content_delta:
-                    messages.append(
-                        {
-                            "type": "reasoning-delta",
-                            "id": f"reasoning_{index}",
-                            "delta": delta.content_delta,
-                        }
-                    )
-
-            elif isinstance(event.delta, ToolCallPartDelta):
-                tool_ids = self.tool_ids.get(adapter_io, {})
-                tool_id = tool_ids.get(index)
-                if tool_id:
-                    messages.append(
-                        {
-                            "type": "tool-input-delta",
-                            "toolCallId": tool_id,
-                            "inputTextDelta": delta.args_delta,
-                        }
-                    )
-
-        elif isinstance(event, PartEndEvent):
-            part = event.part
-            index = event.index
-
-            if isinstance(part, TextPart):
-                messages.append({"type": "text-end", "id": f"text_{index}"})
-            elif isinstance(part, ThinkingPart):
-                messages.append({"type": "reasoning-end", "id": f"reasoning_{index}"})
-
-        elif isinstance(event, FunctionToolCallEvent):
-            part = event.part
-            messages.append(
-                {
-                    "type": "tool-input-available",
-                    "toolCallId": part.tool_call_id,
-                    "toolName": part.tool_name,
-                    "input": part.args,
-                }
+            stream = self.event_streams.setdefault(
+                adapter_io,
+                VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
             )
-
-        elif isinstance(event, FunctionToolResultEvent):
-            messages.append(
-                {
-                    "type": "tool-output-available",
-                    "toolCallId": event.tool_call_id,
-                    "output": event.result.content,
-                }
-            )
+            async for chunk in stream.handle_event(event):
+                messages.append(chunk.model_dump(by_alias=True, exclude_none=True))
 
         elif isinstance(event, FinalResultEvent):
             messages.append({"type": "finish"})
