@@ -307,8 +307,8 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         elif isinstance(event, ServerIdMapping):
             frame = {
                 "type": "cmd-user-turn",
-                "eventId": event.event_id,
-                "client_message_id": event.client_id,
+                "server_message_id": event.server_message_id,
+                "client_message_id": event.client_message_id,
             }
             messages.append(frame)
 

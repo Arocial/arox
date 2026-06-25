@@ -30,7 +30,6 @@ from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import (
     ModelMessage,
     ModelResponse,
-    TextContent,
     UserContent,
 )
 from pydantic_ai.models import infer_model
@@ -44,7 +43,6 @@ from arox.core.io import (
 )
 from arox.core.plugin import CommandManager, load_plugins
 from arox.core.session import (
-    USER_INPUT_ID_KEY,
     AgentRunInfo,
     AgentSession,
 )
@@ -507,26 +505,22 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         self,
         user_input: UserInput | str | None = None,
     ) -> AgentRunResult[str]:
-        if isinstance(user_input, UserInput):
-            input_content = user_input.user_input
-            client_message_id = user_input.client_message_id
-        else:
-            input_content = user_input
-            client_message_id = None
+        if not isinstance(user_input, UserInput):
+            user_input = UserInput(user_input=user_input)
 
-        if input_content is not None:
-            input_id = str(uuid.uuid4())
-            self.session.record_user_input(input_content, input_id)
-            if client_message_id:
+        input_content = user_input.to_user_content()
+
+        if user_input.user_input is not None:
+            self.session.record_user_input(
+                user_input.user_input, user_input.server_message_id
+            )
+            if user_input.client_message_id:
                 await self.agent_io.send(
-                    ServerIdMapping(event_id=input_id, client_id=client_message_id)
+                    ServerIdMapping(
+                        server_message_id=user_input.server_message_id,
+                        client_message_id=user_input.client_message_id,
+                    )
                 )
-        if isinstance(input_content, str):
-            input_content: list[UserContent] = [
-                TextContent(
-                    content=input_content + "\n", metadata={USER_INPUT_ID_KEY: input_id}
-                )
-            ]
 
         result = await self._run_inference(
             input_content,
