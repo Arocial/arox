@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, Literal, Protocol, Union
+from typing import Annotated, Any, Literal, Protocol, Union, TYPE_CHECKING
 
 from pydantic import BaseModel, Field, model_validator
 from pydantic_ai import UserContent
@@ -16,6 +16,9 @@ from pydantic_ai.messages import (
 )
 
 from arox.core.config import AgentConfig
+
+if TYPE_CHECKING:
+    from arox.core.llm_base.types import UserInput
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +63,7 @@ class CommandEvent(SessionEvent):
 
 class UserInputEvent(SessionEvent):
     event_type: Literal["user_input"] = "user_input"
-    content: str | list[UserContent] = ""
+    content: str | Sequence[UserContent] | None = ""
 
 
 class ErrorEvent(SessionEvent):
@@ -209,18 +212,17 @@ class AgentSession(Session):
             CommandEvent(command=command, arg=arg, agent_name=self.agent_name)
         )
 
-    def record_user_input(
-        self, content: str | list[UserContent], input_id: str
-    ) -> None:
+    def record_user_input(self, user_input: UserInput) -> None:
+        input_id = user_input.server_message_id
+        content = user_input.input_content
+
         self.add_event(
             UserInputEvent(id=input_id, content=content, agent_name=self.agent_name)
         )
         last_user_messages = self.metadata.get("last_user_messages", [])
-        if isinstance(content, str):
-            text = content
-        else:
-            text = content[0] if isinstance(content[0], str) else ""
-        last_user_messages.append(text)
+        text = user_input.text_content
+        if text:
+            last_user_messages.append(text)
         self.metadata["last_user_messages"] = last_user_messages[-2:]
 
     def record_error(self, error: Exception) -> None:

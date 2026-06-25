@@ -3,7 +3,7 @@ import logging
 import re
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, overload
@@ -458,7 +458,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 
     async def _run_inference(
         self,
-        user_prompt: str | list[UserContent] | None,
+        user_prompt: str | Sequence[UserContent] | None,
         *,
         message_history: list[ModelMessage],
     ) -> AgentRunResult[str]:
@@ -506,14 +506,12 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         user_input: UserInput | str | None = None,
     ) -> AgentRunResult[str]:
         if not isinstance(user_input, UserInput):
-            user_input = UserInput(user_input=user_input)
+            user_input = UserInput(input_content=user_input)
 
-        input_content = user_input.to_user_content()
+        input_content = user_input.input_content
 
-        if user_input.user_input is not None:
-            self.session.record_user_input(
-                user_input.user_input, user_input.server_message_id
-            )
+        if user_input.input_content is not None:
+            self.session.record_user_input(user_input)
             if user_input.client_message_id:
                 await self.agent_io.send(
                     ServerIdMapping(

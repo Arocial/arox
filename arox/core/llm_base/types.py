@@ -1,3 +1,4 @@
+from typing import Sequence
 import uuid
 from dataclasses import dataclass, field
 
@@ -16,21 +17,26 @@ class UserInput:
     can map its own messages to backend session-event ids.
     """
 
-    user_input: str | list[UserContent] | None = None
+    input_content: Sequence[UserContent] | str | None = None
     client_message_id: str | None = None
     server_message_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
-    def to_user_content(self) -> list[UserContent] | None:
-        if self.user_input is None:
-            return None
-        if isinstance(self.user_input, str):
-            return [
+    def __post_init__(self):
+        if isinstance(self.input_content, str):
+            self.input_content = [
                 TextContent(
-                    content=self.user_input + "\n",
+                    content=self.input_content,
                     metadata={USER_INPUT_ID_KEY: self.server_message_id},
                 )
             ]
-        return self.user_input
+
+    @property
+    def text_content(self) -> str | None:
+        if self.input_content is None:
+            return None
+        for c in self.input_content:
+            if isinstance(c, TextContent):
+                return c.content
 
 
 @dataclass

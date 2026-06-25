@@ -9,6 +9,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
+from arox.core.llm_base.types import UserInput
 from arox.core.session import (
     AgentSession,
     CommandEvent,
@@ -198,13 +199,13 @@ class TestAgentSession:
 
     def test_last_user_messages_update(self):
         agent_session = AgentSession(agent_name="main")
-        agent_session.record_user_input("hello", "id1")
+        agent_session.record_user_input(UserInput(input_content="hello", server_message_id="id1"))
         assert agent_session.metadata["last_user_messages"] == ["hello"]
 
-        agent_session.record_user_input("world", "id2")
+        agent_session.record_user_input(UserInput(input_content="world", server_message_id="id2"))
         assert agent_session.metadata["last_user_messages"] == ["hello", "world"]
 
-        agent_session.record_user_input("third", "id3")
+        agent_session.record_user_input(UserInput(input_content="third", server_message_id="id3"))
         assert agent_session.metadata["last_user_messages"] == ["world", "third"]
 
         agent_session.record_reset("ctx1")

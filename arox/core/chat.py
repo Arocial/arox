@@ -22,7 +22,7 @@ class ChatInputRequest(RequestEvent):
 @dataclass
 class ChatInputReply(UserInput, ReplyEvent):
     def is_abort(self, request: ChatInputRequest) -> bool:
-        return bool(request.request_normal_input and self.user_input is None)
+        return bool(request.request_normal_input and self.input_content is None)
 
 
 class ChatAgent(MainAgent, DelegatableAgent):

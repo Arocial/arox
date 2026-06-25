@@ -240,7 +240,7 @@ class TextIOAdapter(AbstractIOAdapter):
             await adapter_io.send(
                 ChatInputReply(
                     req_id=event.req_id,
-                    user_input=user_input,
+                    input_content=user_input,
                 )
             )
         else:

@@ -364,8 +364,8 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 custom_metadata = reply_message.metadata.get("custom", {})
             else:
                 custom_metadata = {}
-            reply_dict = custom_metadata.get("chatInputEventResult")
-            if not isinstance(reply_dict, dict):
+            reply_metadata = custom_metadata.get("chatInputEventResult")
+            if not isinstance(reply_metadata, dict):
                 return {"status": "error", "message": "no chatInputEventResult"}
 
             user_msg = VercelAIAdapter.load_messages([reply_message])
@@ -376,24 +376,18 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             part = parts[0]
             assert isinstance(part, UserPromptPart)
             input_content = part.content
-            reply_dict["user_input"] = input_content
+            chat_input_reply = ChatInputReply(
+                req_id=reply_metadata["req_id"],
+                input_content=input_content,
+                client_message_id=reply_metadata.get("client_message_id"),
+            )
 
-            if isinstance(input_content, str):
-                text_input: str | None = input_content
-            elif isinstance(input_content, list) and len(input_content) > 0:
-                first = input_content[0]
-                text_input = (
-                    first
-                    if isinstance(first, str)
-                    else getattr(first, "text", getattr(first, "content", None))
-                )
-            else:
-                text_input = None
+            text_input = chat_input_reply.text_content
 
             # Intercept slash commands typed into the app so they don't
             # round-trip through the LLM. Mirrors the structured "command"
             # branch above and TextIOAdapter's slash handling.
-            if isinstance(text_input, str) and text_input.startswith("/"):
+            if text_input and text_input.startswith("/"):
                 cmd_reply = await target.command_manager.try_handle_slash(text_input)
                 if cmd_reply is not None:
                     await self._render_command_output(target, cmd_reply.output)
@@ -401,14 +395,6 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     # re-emit it so the client can submit again.
                     await self._reissue_pending_input(target)
                     return {"status": "ok", "output": cmd_reply.output}
-
-            chat_input_reply = ChatInputReply(
-                req_id=reply_dict["req_id"],
-                user_input=list(input_content)
-                if not isinstance(input_content, str)
-                else input_content,
-                client_message_id=reply_dict.get("client_message_id"),
-            )
 
             await target.adapter_io.send(chat_input_reply)
             self.pending_inputs.pop(target.adapter_io, None)
