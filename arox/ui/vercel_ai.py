@@ -674,8 +674,11 @@ class VercelStreamServer:
             )
         ]
         ui_messages = VercelAIAdapter.dump_messages(messages)
+        # `by_alias` to serialize keys as camel case, which assistant-ui
+        # recognizes. See `pydantic_ai/ui/vercel_ai/_models.py:CamelBaseModel`
         history = [
-            msg.model_dump(mode="json", exclude_none=True) for msg in ui_messages
+            msg.model_dump(mode="json", exclude_none=True, by_alias=True)
+            for msg in ui_messages
         ]
 
         # Each user message carries its USER_INPUT_ID_KEY on the dumped
