@@ -56,13 +56,13 @@ from arox.core.slot import (
 from arox.core.slot import (
     Provider as SlotProvider,
 )
+from arox.core.types import ServerIdMapping, UserInput
 from arox.plugins.slots import (
     AGENT_RESET,
     SYSTEM_PROMPT,
 )
 
 from ._pydantic_ai_hack import infer_provider
-from .types import ServerIdMapping, UserInput
 
 logger = logging.getLogger(__name__)
 

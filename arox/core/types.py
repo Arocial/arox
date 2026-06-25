@@ -1,11 +1,11 @@
-from typing import Sequence
 import uuid
 from dataclasses import dataclass, field
+from typing import Sequence
 
 from pydantic_ai import UserContent
 from pydantic_ai.messages import TextContent
 
-from arox.core.session import USER_INPUT_ID_KEY
+USER_INPUT_ID_KEY = "user_input_id"
 
 
 @dataclass

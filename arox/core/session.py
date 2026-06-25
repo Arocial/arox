@@ -7,26 +7,17 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, Literal, Protocol, Union, TYPE_CHECKING
+from typing import Annotated, Any, Literal, Protocol, Union
 
 from pydantic import BaseModel, Field, model_validator
-from pydantic_ai import UserContent
 from pydantic_ai.messages import (
     ModelMessage,
 )
 
 from arox.core.config import AgentConfig
-
-if TYPE_CHECKING:
-    from arox.core.llm_base.types import UserInput
+from arox.core.types import UserInput
 
 logger = logging.getLogger(__name__)
-
-
-# Metadata key under which a user-turn's session-event id is stored on the
-# corresponding ``ModelRequest``. Set in-memory during a step and re-derived
-# from ``user_input`` events when a session is restored.
-USER_INPUT_ID_KEY = "user_input_id"
 
 
 class SessionEvent(BaseModel):
@@ -63,7 +54,7 @@ class CommandEvent(SessionEvent):
 
 class UserInputEvent(SessionEvent):
     event_type: Literal["user_input"] = "user_input"
-    content: str | Sequence[UserContent] | None = ""
+    user_input: UserInput
 
 
 class ErrorEvent(SessionEvent):
@@ -214,10 +205,11 @@ class AgentSession(Session):
 
     def record_user_input(self, user_input: UserInput) -> None:
         input_id = user_input.server_message_id
-        content = user_input.input_content
 
         self.add_event(
-            UserInputEvent(id=input_id, content=content, agent_name=self.agent_name)
+            UserInputEvent(
+                id=input_id, user_input=user_input, agent_name=self.agent_name
+            )
         )
         last_user_messages = self.metadata.get("last_user_messages", [])
         text = user_input.text_content

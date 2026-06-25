@@ -4,7 +4,7 @@ from pydantic_ai.ui.vercel_ai._adapter import VercelAIAdapter
 from pydantic_ai.ui.vercel_ai.request_types import TextUIPart
 
 import arox.ui.vercel_ai  # noqa: F401 -- import applies the dump_messages patch
-from arox.core.session import USER_INPUT_ID_KEY
+from arox.core.types import USER_INPUT_ID_KEY
 
 
 def test_dump_messages_carries_user_input_id():

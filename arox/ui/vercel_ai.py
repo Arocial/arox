@@ -114,7 +114,7 @@ def _patch_vercel_user_prompt_metadata() -> None:
     from pydantic_ai.ui.vercel_ai import _adapter
     from pydantic_ai.ui.vercel_ai.request_types import TextUIPart, UIMessagePart
 
-    from arox.core.session import USER_INPUT_ID_KEY
+    from arox.core.types import USER_INPUT_ID_KEY
 
     original = _adapter._convert_user_prompt_part
 
@@ -681,7 +681,7 @@ class VercelStreamServer:
         # travels with its own part, so no positional re-pairing is needed.
         # Strip the internal wrapper afterward to leave the wire payload as it
         # was before the patch.
-        from arox.core.session import USER_INPUT_ID_KEY
+        from arox.core.types import USER_INPUT_ID_KEY
 
         for msg in history:
             if msg.get("role") != "user":
