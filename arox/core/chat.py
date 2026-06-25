@@ -18,17 +18,6 @@ class ChatInputRequest(RequestEvent):
     request_normal_input: bool = True
     pending_exception: BaseException | None = None
 
-    def generate_request(self) -> dict:
-        return {
-            "req_id": self.req_id,
-            "normal_input": {"request": self.request_normal_input},
-            "exception_input": {
-                "exception": f"{type(self.pending_exception).__name__}: {self.pending_exception}"
-                if self.pending_exception
-                else None
-            },
-        }
-
 
 @dataclass
 class ChatInputReply(UserInput, ReplyEvent):

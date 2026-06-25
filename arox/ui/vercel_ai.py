@@ -379,8 +379,19 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             messages.append({"type": "finish"})
 
         elif isinstance(event, ChatInputRequest):
+            if event.pending_exception:
+                messages.append(
+                    {
+                        "type": "error",
+                        "errorText": f"{type(event.pending_exception).__name__}: {event.pending_exception}",
+                    }
+                )
             messages.append(
-                {"type": "cmd-input-request", "payload": event.generate_request()}
+                {
+                    "type": "cmd-input-request",
+                    "req_id": event.req_id,
+                    "normal_input": event.request_normal_input,
+                }
             )
             # Emit an explicit stream close signal to let the frontend decouple
             # stream management from business logic.
@@ -392,10 +403,8 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         elif isinstance(event, ServerIdMapping):
             frame = {
                 "type": "cmd-user-turn",
-                "payload": {
-                    "eventId": event.event_id,
-                    "client_message_id": event.client_id,
-                },
+                "eventId": event.event_id,
+                "client_message_id": event.client_id,
             }
             messages.append(frame)
 
@@ -405,7 +414,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     messages.append(
                         {
                             "type": "cmd-agent-info",
-                            "payload": (await target_run.get_agent_info()).model_dump(),
+                            **((await target_run.get_agent_info()).model_dump()),
                         }
                     )
 
