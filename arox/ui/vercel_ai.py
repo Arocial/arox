@@ -491,7 +491,7 @@ class VercelStreamServer:
         app_name: str | None = None,
         profile: str | Path | None = None,
         cli_args: list[str] | None = None,
-        host: str = "0.0.0.0",
+        host: str = "127.0.0.1",
         port: int = 8000,
     ):
         from contextlib import asynccontextmanager
