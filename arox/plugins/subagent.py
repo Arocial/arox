@@ -61,12 +61,14 @@ class SubagentPlugin(Plugin):
 
     def __init__(self, agent):
         super().__init__(agent)
-        self.active_subagents: dict[str, Any] = {}
+        self.subagents: dict[str, Any] = {}
         self.background_tasks: dict[str, asyncio.Task] = {}
         self.task_results: dict[str, str] = {}
 
-        def get_subagents():
-            return list(self.active_subagents.values())
+        def get_subagents(status: str | None = None):
+            if status is None:
+                return list(self.subagents.values())
+            return [s for s in self.subagents.values() if s.status == status]
 
         def get_subagent_instructions() -> str:
             subagent_names = self.agent.agent_config.subagents
@@ -108,24 +110,22 @@ class SubagentPlugin(Plugin):
             agent_source=agent_source,
             workspace=self.agent.workspace,
         )
-        self.active_subagents[subagent.uuid] = subagent
+        self.subagents[subagent.uuid] = subagent
         await self.agent.broadcast_agent_info()
         return subagent
 
     async def _destroy_subagent(self, subagent: Any):
-        self.active_subagents.pop(subagent.uuid, None)
         if hasattr(self.agent.io_adapter, "hosts"):
             self.agent.io_adapter.hosts.pop(subagent.uuid, None)
 
-        sub_session = subagent.session
-        sub_session.status = "closed"
+        subagent.close_session()
 
         self.agent.session.record_subagent_deleted(
             subagent.name,
-            sub_session.path,
+            subagent.session.path,
         )
         if self.agent.session.manager:
-            await self.agent.session.manager.save_session(sub_session)
+            await self.agent.session.manager.save_session(subagent.session)
         await self.agent.broadcast_agent_info()
 
     async def on_start(self):
@@ -134,12 +134,16 @@ class SubagentPlugin(Plugin):
         if main_session is None or session_manager is None:
             return
 
-        # Mark any leftover child sessions from previous abrupt terminations as closed
         for child_id in list(main_session.children):
             child_session = await session_manager.load_session(child_id, main_session)
-            if child_session and child_session.status != "closed":
-                child_session.status = "closed"
-                await session_manager.save_session(child_session)
+            if child_session:
+                subagent = create_agent(
+                    name=child_session.agent_name,
+                    parsed_config=self.agent.parsed_config,
+                    io_adapter=self.agent.io_adapter,
+                    session=child_session,
+                )
+                self.subagents[subagent.uuid] = subagent
 
     def commands(self):
         return [

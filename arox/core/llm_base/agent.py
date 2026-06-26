@@ -157,6 +157,13 @@ class LLMBaseAgent(IOHost):
         return self.session.agent_source
 
     @property
+    def status(self) -> Literal["active", "closed"]:
+        return self.session.status
+
+    def close_session(self) -> None:
+        self.session.status = "closed"
+
+    @property
     def run_info(self) -> AgentRunInfo:
         return self.session.run_info
 

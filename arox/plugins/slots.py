@@ -13,7 +13,7 @@ PROJECT_FILES = ListSlot[Callable[[], list[str]], list[str]](
     "project_files", "Provides a list of tracked project files"
 )
 
-SUBAGENTS = FirstSlot[Callable[[], list["LLMBaseAgent"]], list["LLMBaseAgent"]](
+SUBAGENTS = FirstSlot[Callable[..., list["LLMBaseAgent"]], list["LLMBaseAgent"]](
     "subagents",
     "Provides the list of subagents managed by the agent",
 )

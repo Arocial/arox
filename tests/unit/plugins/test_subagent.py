@@ -136,7 +136,7 @@ async def test_delegate_to_subagent_creates_and_destroys(tmp_path, monkeypatch):
     assert child_session is not None
     assert child_session.status == "closed"
 
-    assert not plugin.active_subagents
+    assert all(s.status == "closed" for s in plugin.subagents.values())
 
 
 @pytest.mark.asyncio
@@ -178,7 +178,7 @@ async def test_dispatch_background_task_creates_and_destroys(tmp_path, monkeypat
         assert child_session is not None
         assert child_session.status == "closed"
 
-        assert not plugin.active_subagents
+        assert all(s.status == "closed" for s in plugin.subagents.values())
 
 
 @pytest.mark.asyncio

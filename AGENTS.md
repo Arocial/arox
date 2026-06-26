@@ -18,7 +18,7 @@ uv run mkdocs serve  # Serve docs at http://127.0.0.1:3420
 
 ### Hierarchy: App → MainAgent (with Plugins)
 
-An **App** is a runnable process that owns one `IOAdapter` and hosts a **MainAgent**. The `MainAgent` runs the user-facing loop and is driven by `AppConfig` and `AgentConfig`. Subagents are managed by the `SubagentPlugin`, which instantiates them and exposes them to the main agent as callable tools (and via the `SUBAGENTS` and `DELEGATE_TO_SUBAGENT` slots) so it can delegate tasks directly. Subagents are defined statically in the configuration and are instantiated ephemerally (automatically created and destroyed) when tasks are delegated to them.
+An **App** is a runnable process that owns one `IOAdapter` and hosts a **MainAgent**. The `MainAgent` runs the user-facing loop and is driven by `AppConfig` and `AgentConfig`. Subagents are managed by the `SubagentPlugin`, which instantiates them and exposes them to the main agent as callable tools (and via the `SUBAGENTS` and `DELEGATE_TO_SUBAGENT` slots) so it can delegate tasks directly. Subagents are defined statically in the configuration and are instantiated when tasks are delegated to them. The plugin records all instantiated subagents (filtering by `active` status for currently running ones) and automatically closes their sessions when the task completes.
 
 Agent types and which agent to instantiate come from config (`arox/core/config.py`): `AppConfig` / `AgentConfig` are resolved by `load_config` from layered YAML plus CLI overrides.
 

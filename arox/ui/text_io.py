@@ -148,10 +148,9 @@ class TextIOAdapter(AbstractIOAdapter):
                 if isinstance(host, LLMBaseAgent):
                     from arox.plugins.slots import SUBAGENTS
 
-                    for get_agents in host._slots.get(SUBAGENTS, []):
-                        for agent in get_agents() or []:
-                            if isinstance(agent, ChatAgent):
-                                agent.cancel_foreground_task()
+                    for agent in host.invoke_slot(SUBAGENTS, status="active") or []:
+                        if isinstance(agent, ChatAgent):
+                            agent.cancel_foreground_task()
 
         self.original_sigint_handler = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, sigint_handler)
