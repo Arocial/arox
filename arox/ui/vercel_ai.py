@@ -93,64 +93,84 @@ class TokenAuthASGIMiddleware:
 
 logger = logging.getLogger(__name__)
 
-_user_prompt_metadata_patched = False
 
+def build_state_history(messages: list) -> list[dict]:
+    import dataclasses
+    import json
 
-def _patch_vercel_user_prompt_metadata() -> None:
-    """Carry a user turn's ``USER_INPUT_ID_KEY`` through ``dump_messages``.
-
-    Stock ``_convert_user_prompt_part`` drops ``TextContent.metadata`` when it
-    builds the ``TextUIPart``, so the fork anchor can't ride along. We wrap it
-    and stash the id on the part's ``provider_metadata`` (the only
-    round-trippable slot), under an ``arox`` wrapper key so it can't collide
-    with pydantic_ai's own ``pydantic_ai`` wrapper. ``/state`` then hoists it to
-    message-level ``metadata.custom``.
-    """
-    global _user_prompt_metadata_patched
-    if _user_prompt_metadata_patched:
-        return
-
-    from pydantic_ai.messages import TextContent, UserPromptPart
-    from pydantic_ai.ui.vercel_ai import _adapter
-    from pydantic_ai.ui.vercel_ai.request_types import TextUIPart, UIMessagePart
+    from pydantic_ai.messages import ModelRequest, TextContent, UserPromptPart
+    from pydantic_ai.ui.vercel_ai._adapter import VercelAIAdapter
 
     from arox.core.types import USER_INPUT_ID_KEY
 
-    original = _adapter._convert_user_prompt_part
+    wrapped_messages = []
+    for msg in messages:
+        if isinstance(msg, ModelRequest):
+            new_parts = []
+            for part in msg.parts:
+                if isinstance(part, UserPromptPart):
+                    if isinstance(part.content, str):
+                        new_parts.append(part)
+                        continue
 
-    def _convert_with_metadata(part: UserPromptPart) -> list[UIMessagePart]:
-        ui_parts = original(part)
-        content = (
-            part.content if isinstance(part.content, (list, tuple)) else [part.content]
-        )
-        # Match each dumped TextUIPart back to its source TextContent by text,
-        # not by index: a CachePoint yields zero UI parts, so positions don't
-        # line up. This assumes text -> id is unambiguous within one part, which
-        # holds because arox builds exactly one TextContent per user input. The
-        # assert fails loudly if that ever stops being true.
-        ids_by_text: dict[str, str] = {}
-        for item in content:
-            if isinstance(item, TextContent) and isinstance(item.metadata, dict):
-                input_id = item.metadata.get(USER_INPUT_ID_KEY)
-                if input_id:
-                    existing = ids_by_text.get(item.content)
-                    assert existing is None or existing == str(input_id), (
-                        "ambiguous user_input_id: two TextContents in one "
-                        "UserPromptPart share text but carry different anchors"
+                    content = (
+                        part.content
+                        if isinstance(part.content, (list, tuple))
+                        else [part.content]
                     )
-                    ids_by_text[item.content] = str(input_id)
-        for ui_part in ui_parts:
-            if isinstance(ui_part, TextUIPart) and ui_part.text in ids_by_text:
-                ui_part.provider_metadata = {
-                    "arox": {USER_INPUT_ID_KEY: ids_by_text[ui_part.text]}
-                }
-        return ui_parts
+                    new_content = []
+                    for item in content:
+                        if isinstance(item, TextContent) and isinstance(
+                            item.metadata, dict
+                        ):
+                            input_id = item.metadata.get(USER_INPUT_ID_KEY)
+                            if input_id:
+                                wrapped = json.dumps(
+                                    {"_arox_id": str(input_id), "text": item.content}
+                                )
+                                new_content.append(
+                                    dataclasses.replace(item, content=wrapped)
+                                )
+                                continue
+                        new_content.append(item)
+                    new_parts.append(dataclasses.replace(part, content=new_content))
+                else:
+                    new_parts.append(part)
+            # Ensure we don't drop original ModelRequest metadata or other fields
+            wrapped_messages.append(dataclasses.replace(msg, parts=new_parts))
+        else:
+            wrapped_messages.append(msg)
 
-    _adapter._convert_user_prompt_part = _convert_with_metadata  # ty: ignore[invalid-assignment]
-    _user_prompt_metadata_patched = True
+    ui_messages = VercelAIAdapter.dump_messages(wrapped_messages)
+    # `by_alias` to serialize keys as camel case, which assistant-ui
+    # recognizes. See `pydantic_ai/ui/vercel_ai/_models.py:CamelBaseModel`
+    history = [
+        msg.model_dump(mode="json", exclude_none=True, by_alias=True)
+        for msg in ui_messages
+    ]
 
+    # Hoist it to message-level ``metadata.custom`` — the only slot @assistant-ui
+    # preserves for user messages — so the client reads the fork anchor straight
+    # off the message, the same shape it gets live via ``data-user-turn``.
+    for msg in history:
+        if msg.get("role") != "user":
+            continue
+        for part in msg.get("parts", []):
+            if part.get("type") == "text":
+                text = part.get("text", "")
+                if text.startswith("{") and '"_arox_id"' in text:
+                    try:
+                        data = json.loads(text)
+                        if isinstance(data, dict) and "_arox_id" in data:
+                            part["text"] = data.get("text", "")
+                            custom = msg.setdefault("metadata", {}).setdefault(
+                                "custom", {}
+                            )
+                            custom[USER_INPUT_ID_KEY] = data["_arox_id"]
+                    except json.JSONDecodeError:
+                        pass
 
-_patch_vercel_user_prompt_metadata()
+    return history
 
 
 class SuggestionItem(BaseModel):
@@ -675,7 +695,6 @@ class VercelStreamServer:
         agent = await self._get_agent(main_agent_uuid, subagent_uuid)
 
         from pydantic_ai import ModelRequest
-        from pydantic_ai.ui.vercel_ai._adapter import VercelAIAdapter
 
         messages = [
             msg
@@ -686,44 +705,7 @@ class VercelStreamServer:
                 and msg.metadata.get("arox_internal")
             )
         ]
-        ui_messages = VercelAIAdapter.dump_messages(messages)
-        # `by_alias` to serialize keys as camel case, which assistant-ui
-        # recognizes. See `pydantic_ai/ui/vercel_ai/_models.py:CamelBaseModel`
-        history = [
-            msg.model_dump(mode="json", exclude_none=True, by_alias=True)
-            for msg in ui_messages
-        ]
-
-        # Each user message carries its USER_INPUT_ID_KEY on the dumped
-        # TextUIPart's ``provider_metadata`` (injected by
-        # ``_patch_vercel_user_prompt_metadata``). Hoist it to message-level
-        # ``metadata.custom`` — the only slot @assistant-ui preserves for user
-        # messages — so the client reads the fork anchor straight off the
-        # message, the same shape it gets live via ``data-user-turn``. The id
-        # travels with its own part, so no positional re-pairing is needed.
-        # Strip the internal wrapper afterward to leave the wire payload as it
-        # was before the patch.
-        from arox.core.types import USER_INPUT_ID_KEY
-
-        for msg in history:
-            if msg.get("role") != "user":
-                continue
-            for part in msg.get("parts", []):
-                provider_metadata = part.get("provider_metadata")
-                if not isinstance(provider_metadata, dict):
-                    continue
-                arox_meta = provider_metadata.get("arox")
-                if not isinstance(arox_meta, dict):
-                    continue
-                input_id = arox_meta.get(USER_INPUT_ID_KEY)
-                if not input_id:
-                    continue
-                custom = msg.setdefault("metadata", {}).setdefault("custom", {})
-                custom[USER_INPUT_ID_KEY] = input_id
-                provider_metadata.pop("arox", None)
-                if not provider_metadata:
-                    part.pop("provider_metadata", None)
-                break
+        history = build_state_history(messages)
 
         return {
             "history": history,

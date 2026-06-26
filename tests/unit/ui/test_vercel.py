@@ -1,19 +1,11 @@
-import pytest
 from pydantic_ai.messages import ModelRequest, TextContent, UserPromptPart
-from pydantic_ai.ui.vercel_ai._adapter import VercelAIAdapter
-from pydantic_ai.ui.vercel_ai.request_types import TextUIPart
 
-import arox.ui.vercel_ai  # noqa: F401 -- import applies the dump_messages patch
 from arox.core.types import USER_INPUT_ID_KEY
+from arox.ui.vercel_ai import build_state_history
 
 
-def test_dump_messages_carries_user_input_id():
-    """The monkey patch must thread user_input_id onto the dumped TextUIPart.
-
-    Guards against silent breakage if pydantic_ai renames or reshapes
-    ``_convert_user_prompt_part``: without the patch the anchor is dropped and
-    the assertion fails.
-    """
+def test_build_state_history_carries_user_input_id():
+    """The history builder must thread user_input_id onto the message metadata."""
     request = ModelRequest(
         parts=[
             UserPromptPart(
@@ -24,40 +16,58 @@ def test_dump_messages_carries_user_input_id():
         ]
     )
 
-    [ui_message] = VercelAIAdapter.dump_messages([request])
-    [part] = ui_message.parts
-    assert isinstance(part, TextUIPart)
-    assert part.provider_metadata == {"arox": {USER_INPUT_ID_KEY: "abc123"}}
+    history = build_state_history([request])
+    assert len(history) == 1
+    msg = history[0]
+    assert msg["role"] == "user"
+    assert msg.get("metadata", {}).get("custom", {}).get(USER_INPUT_ID_KEY) == "abc123"
 
 
-def test_dump_messages_untagged_user_message_stays_clean():
-    """An untagged user turn must not gain a provider_metadata wrapper."""
+def test_build_state_history_untagged_user_message_stays_clean():
+    """An untagged user turn must not gain an anchor."""
     request = ModelRequest(
         parts=[UserPromptPart(content=[TextContent(content="hi\n")])]
     )
 
-    [ui_message] = VercelAIAdapter.dump_messages([request])
-    [part] = ui_message.parts
-    assert isinstance(part, TextUIPart)
-    assert part.provider_metadata is None
+    history = build_state_history([request])
+    assert len(history) == 1
+    msg = history[0]
+    assert msg["role"] == "user"
+    assert msg.get("metadata") is None or USER_INPUT_ID_KEY not in msg.get(
+        "metadata", {}
+    ).get("custom", {})
 
 
-def test_dump_messages_rejects_ambiguous_anchors_in_one_part():
-    """Two same-text TextContents with different anchors must assert, not guess.
-
-    Text-keyed matching only works while text -> id is unambiguous within a
-    part; this documents and enforces that precondition.
-    """
-    request = ModelRequest(
+def test_build_state_history_identical_text_different_anchors():
+    """Identical text in different parts or messages must keep their unique anchors."""
+    request1 = ModelRequest(
         parts=[
             UserPromptPart(
                 content=[
-                    TextContent(content="hi\n", metadata={USER_INPUT_ID_KEY: "a"}),
-                    TextContent(content="hi\n", metadata={USER_INPUT_ID_KEY: "b"}),
+                    TextContent(
+                        content="same text\n", metadata={USER_INPUT_ID_KEY: "a"}
+                    )
+                ]
+            )
+        ]
+    )
+    request2 = ModelRequest(
+        parts=[
+            UserPromptPart(
+                content=[
+                    TextContent(
+                        content="same text\n", metadata={USER_INPUT_ID_KEY: "b"}
+                    )
                 ]
             )
         ]
     )
 
-    with pytest.raises(AssertionError):
-        VercelAIAdapter.dump_messages([request])
+    history = build_state_history([request1, request2])
+    assert len(history) == 2
+    assert (
+        history[0].get("metadata", {}).get("custom", {}).get(USER_INPUT_ID_KEY) == "a"
+    )
+    assert (
+        history[1].get("metadata", {}).get("custom", {}).get(USER_INPUT_ID_KEY) == "b"
+    )
