@@ -50,10 +50,8 @@ class CompactionAgent(DelegatableAgent):
             )
         if extra_instructions:
             prompt = f"{prompt}\n\nAdditional instructions: {extra_instructions}"
-        result = await self._run_inference(
-            prompt,
-            message_history=messages,
-        )
+        self.message_history = messages
+        result = await self.step(prompt)
         logger.info("Context compaction completed.")
         return str(result.output)
 
