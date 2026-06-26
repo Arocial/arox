@@ -187,9 +187,10 @@ class AgentTaskStatus(str, Enum):
 
 class AgentInfo(BaseModel):
     id: str
-    workspace: str
-    main_agent: str
-    subagents: list[str]
+    name: str
+    status: str
+    workspace: str | None = None
+    subagents: list["AgentInfo"] = []
 
 
 @dataclass
@@ -199,28 +200,40 @@ class AgentRun:
     status: AgentTaskStatus = AgentTaskStatus.RUNNING
     error: Exception | None = None
 
-    async def get_agent(self, name: str) -> LLMBaseAgent | None:
-        if self.main_agent.name == name:
+    async def get_agent(self, uuid: str) -> LLMBaseAgent | None:
+        if self.main_agent.uuid == uuid:
             return self.main_agent
         subagents = await self.main_agent.invoke_slot(SUBAGENTS)
         if subagents:
             for sa in subagents:
-                if sa.name == name:
+                if sa.uuid == uuid:
                     return sa
         return None
 
-    async def _get_subagent_names(self) -> list[str]:
+    async def _get_subagents(self) -> list["AgentInfo"]:
         subagents = await self.main_agent.invoke_slot(SUBAGENTS)
         if subagents:
-            return [sa.name for sa in subagents]
+            return [
+                AgentInfo(
+                    id=sa.uuid,
+                    name=sa.name,
+                    status=sa.status,
+                    workspace=str(sa.workspace) if sa.workspace else None,
+                    subagents=[],
+                )
+                for sa in subagents
+            ]
         return []
 
     async def get_agent_info(self) -> AgentInfo:
         return AgentInfo(
             id=self.main_agent.uuid,
-            workspace=str(self.main_agent.workspace),
-            main_agent=self.main_agent.name,
-            subagents=await self._get_subagent_names(),
+            name=self.main_agent.name,
+            status=self.main_agent.status,
+            workspace=str(self.main_agent.workspace)
+            if self.main_agent.workspace
+            else None,
+            subagents=await self._get_subagents(),
         )
 
 
@@ -536,12 +549,12 @@ class VercelStreamServer:
         self.app.get("/api/agents", response_model=list[AgentInfo])(self.list_agents)
         self.app.post("/api/agents", response_model=AgentInfo)(self.create_agent)
         self.app.delete("/api/agents/{main_agent_uuid}")(self.delete_agent)
-        self.app.websocket("/api/agents/{main_agent_uuid}/{agent_name}/ws")(self.ws)
+        self.app.websocket("/api/agents/{main_agent_uuid}/{subagent_uuid}/ws")(self.ws)
         self.app.get(
-            "/api/agents/{main_agent_uuid}/{agent_name}/suggestions",
+            "/api/agents/{main_agent_uuid}/{subagent_uuid}/suggestions",
             response_model=SuggestionResponse,
         )(self.suggestions)
-        self.app.get("/api/agents/{main_agent_uuid}/{agent_name}/state")(self.state)
+        self.app.get("/api/agents/{main_agent_uuid}/{subagent_uuid}/state")(self.state)
         self.app.get("/api/sessions", response_model=list[SessionInfo])(
             self.list_sessions
         )
@@ -551,16 +564,16 @@ class VercelStreamServer:
     async def health(self):
         return {"status": "ok"}
 
-    async def _get_agent(self, main_agent_uuid: str, agent_name: str):
+    async def _get_agent(self, main_agent_uuid: str, subagent_uuid: str):
         run_instance = self.io_adapter.run_instances.get(main_agent_uuid)
         if not run_instance:
             raise HTTPException(
                 status_code=404, detail=f"Agent {main_agent_uuid} not found."
             )
-        agent = await run_instance.get_agent(agent_name)
+        agent = await run_instance.get_agent(subagent_uuid)
         if not agent:
             raise HTTPException(
-                status_code=404, detail=f"Agent {agent_name} not found."
+                status_code=404, detail=f"Agent {subagent_uuid} not found."
             )
         return agent
 
@@ -637,12 +650,12 @@ class VercelStreamServer:
             run_instance.task.cancel()
         return {"status": "deleted"}
 
-    async def ws(self, websocket: WebSocket, main_agent_uuid: str, agent_name: str):
+    async def ws(self, websocket: WebSocket, main_agent_uuid: str, subagent_uuid: str):
         run_instance = self.io_adapter.run_instances.get(main_agent_uuid)
         if not run_instance:
             await websocket.close(code=4004, reason="agent not found")
             return
-        agent = await run_instance.get_agent(agent_name)
+        agent = await run_instance.get_agent(subagent_uuid)
         if not agent:
             await websocket.close(code=4004, reason="agent not found")
             return
@@ -651,15 +664,15 @@ class VercelStreamServer:
     async def suggestions(
         self,
         main_agent_uuid: str,
-        agent_name: str,
+        subagent_uuid: str,
         command: str | None = None,
         q: str | None = None,
     ):
-        agent = await self._get_agent(main_agent_uuid, agent_name)
+        agent = await self._get_agent(main_agent_uuid, subagent_uuid)
         return await self.io_adapter.suggestions(agent, command, q)
 
-    async def state(self, main_agent_uuid: str, agent_name: str):
-        agent = await self._get_agent(main_agent_uuid, agent_name)
+    async def state(self, main_agent_uuid: str, subagent_uuid: str):
+        agent = await self._get_agent(main_agent_uuid, subagent_uuid)
 
         from pydantic_ai import ModelRequest
         from pydantic_ai.ui.vercel_ai._adapter import VercelAIAdapter

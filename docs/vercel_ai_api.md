@@ -14,9 +14,25 @@ List all currently active agent instances.
 [
   {
     "id": "agent-uuid",
+    "name": "main",
+    "status": "active",
     "workspace": "/path/to/workspace",
-    "main_agent": "main",
-    "subagents": ["coder", "planner"]
+    "subagents": [
+      {
+        "id": "subagent-uuid-1",
+        "name": "coder",
+        "status": "active",
+        "workspace": "/path/to/workspace",
+        "subagents": []
+      },
+      {
+        "id": "subagent-uuid-2",
+        "name": "planner",
+        "status": "closed",
+        "workspace": "/path/to/workspace",
+        "subagents": []
+      }
+    ]
   }
 ]
 ```
@@ -36,9 +52,10 @@ Create a new agent instance.
 ```json
 {
   "id": "agent-uuid",
+  "name": "main",
+  "status": "active",
   "workspace": "/path/to/workspace",
-  "main_agent": "main",
-  "subagents": ["coder", "planner"]
+  "subagents": []
 }
 ```
 
@@ -47,9 +64,9 @@ Stop and delete an agent instance.
 
 ### Agent Interactions
 
-The following endpoints are per-agent, meaning you must specify both the `main_agent_uuid` and the `agent_name` (which can be the `main_agent` or one of the `subagents` from the `AgentInfo` response).
+The following endpoints are per-agent, meaning you must specify both the `main_agent_uuid` and the `subagent_uuid` (which can be the `id` of the main agent or one of the `id` values from the `subagents` list in the `AgentInfo` response).
 
-#### `WS /api/agents/{main_agent_uuid}/{agent_name}/ws`
+#### `WS /api/agents/{main_agent_uuid}/{subagent_uuid}/ws`
 Full-duplex WebSocket for async interaction with an agent. This connection is long-lived across multiple steps — sending input and receiving events are decoupled.
 
 **Server → Client messages** (JSON, one object per frame)
@@ -62,7 +79,7 @@ Arox adds a few non-standard frames on the same channel:
 |---|---|---|
 | `cmd-input-request` | `req_id`, `normal_input` | agent is waiting for user input |
 | `cmd-user-turn` | `eventId`, `client_message_id` | a user-turn anchor was just recorded in the agent session |
-| `cmd-agent-info` | `id`, `workspace`, `main_agent`, `subagents` | broadcasts the current list of subagents for the session |
+| `cmd-agent-info` | `id`, `name`, `status`, `workspace`, `subagents` | broadcasts the current list of subagents for the session |
 | `step-done` | — | current step fully drained; next step may follow on the same connection |
 | `stream-close` | — | explicit signal to close the current UI message stream |
 | `ack` | `status` | acknowledgment of a client-sent message (see below) |
@@ -91,7 +108,7 @@ The server responds to every client message with `{"type": "ack", "status": "ok"
 
 The connection stays open until either side closes it. Closing the client disconnects the stream but does **not** cancel any in-flight step — send `{"cancel": true}` first if needed.
 
-#### `GET /api/agents/{main_agent_uuid}/{agent_name}/suggestions`
+#### `GET /api/agents/{main_agent_uuid}/{subagent_uuid}/suggestions`
 Get command suggestions or auto-completions for a specific agent.
 
 **Query Parameters:**
@@ -100,7 +117,7 @@ Get command suggestions or auto-completions for a specific agent.
 
 **Response:** `{"items": [{"id", "value", "label", "description"}, ...]}`. When listing slash commands, `description` is taken from the `CommandEvent` subclass's `description` ClassVar.
 
-#### `GET /api/agents/{main_agent_uuid}/{agent_name}/state`
+#### `GET /api/agents/{main_agent_uuid}/{subagent_uuid}/state`
 Get the current state for a specific agent: message history plus any pending input request.
 
 **Response:**
