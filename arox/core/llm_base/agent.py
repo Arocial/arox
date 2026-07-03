@@ -309,6 +309,24 @@ class LLMBaseAgent(IOHost):
         self.additional_prompt = additional_prompt
         self.model = model
 
+    def build_skill_prompts(self, skill_names: list[str]) -> list[str]:
+        """Build XML prompt blocks for the specified skills."""
+        prompts = []
+        for skill_name in skill_names:
+            skill = self.parsed_config.skills.get(skill_name)
+            if skill:
+                try:
+                    with open(skill["location"], "r", encoding="utf-8") as f:
+                        content = f.read()
+                        prompts.append(
+                            f'<skill name="{skill["name"]}" location="{skill["location"]}">\n{content}\n</skill>'
+                        )
+                except Exception as e:
+                    logger.warning(f"Failed to read skill {skill_name}: {e}")
+            else:
+                logger.warning(f"Skill {skill_name} not found in available skills")
+        return prompts
+
     @staticmethod
     def _build_skill_catalog(skills: dict) -> str:
         """Build the skill catalog XML string."""
@@ -379,19 +397,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         else:
             default_skills = []
 
-        self.default_skill_prompts = []
-        for skill_name in default_skills:
-            skill = self.parsed_config.skills.get(skill_name)
-            if skill:
-                try:
-                    with open(skill["location"], "r", encoding="utf-8") as f:
-                        self.default_skill_prompts.append(f.read())
-                except Exception as e:
-                    logger.warning(f"Failed to read default skill {skill_name}: {e}")
-            else:
-                logger.warning(
-                    f"Default skill {skill_name} not found in available skills"
-                )
+        self.default_skills = default_skills
 
         # Tools and mcp servers
         self.toolsets: list[AbstractToolset[AgentDeps]] = [self.local_toolset]
@@ -416,8 +422,10 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
             if self.additional_prompt:
                 prompt += f"\n{self.additional_prompt}"
 
-            if hasattr(self, "default_skill_prompts") and self.default_skill_prompts:
-                prompt += "\n\n" + "\n\n".join(self.default_skill_prompts)
+            default_skill_prompts = self.build_skill_prompts(getattr(self, "default_skills", []))
+
+            if default_skill_prompts:
+                prompt += "\n\n" + "\n\n".join(default_skill_prompts)
 
             if self.skill_catalog:
                 prompt += f"\n\n{self.skill_catalog}"
