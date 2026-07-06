@@ -135,22 +135,27 @@ class TextIOAdapter(AbstractIOAdapter):
         )
 
     async def __aenter__(self):
+        loop = asyncio.get_running_loop()
+
         def sigint_handler(signum, frame):
             logger.info("Received SIGINT, cancelling current step...")
             for host in self.hosts.values():
                 if isinstance(host, ChatAgent):
                     host.cancel_foreground_task()
-                # MainAgent has _slots dictionary, IOHost base doesn't, but we only register MainAgents.
-                # However, for safety in duck typing, we can keep hasattr, but user wants direct access.
-                # Let's change it to check if it's an LLMBaseAgent since that's what has _slots.
+
+            async def _cancel_all_subagents():
                 from arox.core.llm_base import LLMBaseAgent
+                from arox.plugins.slots import SUBAGENTS
 
-                if isinstance(host, LLMBaseAgent):
-                    from arox.plugins.slots import SUBAGENTS
+                for h in self.hosts.values():
+                    if isinstance(h, LLMBaseAgent):
+                        for agent in (
+                            await h.invoke_slot(SUBAGENTS, status="active") or []
+                        ):
+                            if isinstance(agent, ChatAgent):
+                                agent.cancel_foreground_task()
 
-                    for agent in host.invoke_slot(SUBAGENTS, status="active") or []:
-                        if isinstance(agent, ChatAgent):
-                            agent.cancel_foreground_task()
+            loop.create_task(_cancel_all_subagents())
 
         self.original_sigint_handler = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, sigint_handler)
