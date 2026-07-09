@@ -16,7 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
-    "pydantic_ai==1.100.0",
+    "pydantic_ai>=2.4.0",
     "prompt-toolkit>=3.0",
     "pyyaml>=6.0",
     "asyncio",

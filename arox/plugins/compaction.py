@@ -159,7 +159,10 @@ class CompactionPlugin(Plugin):
 
         if ctx.run_id:
             self.agent.new_message_index = _first_new_message_index(
-                messages, ctx.run_id, resumed_request=None
+                messages,
+                ctx.run_id,
+                resumed_request=None,
+                resumed_request_index=None,
             )
         return compacted
 
