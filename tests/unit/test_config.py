@@ -2,7 +2,14 @@ from pathlib import Path
 
 import pytest
 
-from arox.core.config import load_config, parse_dot_config
+from arox.core.config import ProviderConfig, load_config, parse_dot_config
+
+
+def test_provider_header_defaults():
+    provider = ProviderConfig()
+
+    assert provider.session_header == "X-Session-Id"
+    assert provider.turn_header == "X-Turn-Id"
 
 
 def test_config_basic_parsing(tmp_path):

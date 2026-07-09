@@ -1,5 +1,4 @@
 import logging
-from collections.abc import Callable
 from typing import Any
 
 from httpx import AsyncClient, HTTPStatusError, Timeout, TransportError
@@ -17,6 +16,8 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
+
+from arox.core.session import AgentRunInfo
 
 logger = logging.getLogger(__name__)
 
@@ -60,20 +61,24 @@ def create_retrying_client(extra_request_hooks=None, **client_args):
 # Copyied from pydantic_ai.providers.infer_provider and add http_client parameter.
 def infer_provider(
     provider: str,
+    run_info: AgentRunInfo,
     base_url: str = "",
-    session_id_fn: Callable[[], str] | None = None,
-    session_header: str = "",
+    session_header: str = "X-Session-Id",
+    turn_header: str = "X-Turn-Id",
 ) -> Provider[Any]:
     """Infer the provider from the provider name."""
 
-    async def _add_session_header(request):
-        session_id = session_id_fn() if session_id_fn else ""
+    async def _add_context_headers(request):
+        session_id = run_info.llm_context_id
+        turn_id = run_info.run_id
         if session_id and session_header:
             request.headers[session_header] = session_id
+        if turn_id and turn_header:
+            request.headers[turn_header] = turn_id
 
     client = create_retrying_client(
         timeout=Timeout(timeout=80),
-        extra_request_hooks=[_add_session_header],
+        extra_request_hooks=[_add_context_headers],
     )
 
     kwargs: dict[str, Any] = {"http_client": client}
@@ -99,7 +104,7 @@ def infer_provider(
 
         client = create_retrying_client(
             timeout=80,
-            extra_request_hooks=[_remove_server_timeout, _add_session_header],
+            extra_request_hooks=[_remove_server_timeout, _add_context_headers],
         )
         kwargs["http_client"] = client
         if provider == "google-vertex":

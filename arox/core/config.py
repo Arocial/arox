@@ -74,7 +74,8 @@ class ObservabilityConfig(BaseModel):
 
 class ProviderConfig(BaseModel):
     base_url: str = ""
-    session_header: str = ""
+    session_header: str = "X-Session-Id"
+    turn_header: str = "X-Turn-Id"
 
 
 class ModelConfig(BaseModel):

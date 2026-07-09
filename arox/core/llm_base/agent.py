@@ -283,10 +283,13 @@ class LLMBaseAgent(IOHost):
                 base_url=self.parsed_config.provider[p].base_url
                 if p in self.parsed_config.provider
                 else "",
-                session_id_fn=lambda: self.run_info.llm_context_id or "",
+                run_info=self.run_info,
                 session_header=self.parsed_config.provider[p].session_header
                 if p in self.parsed_config.provider
-                else "",
+                else "X-Session-Id",
+                turn_header=self.parsed_config.provider[p].turn_header
+                if p in self.parsed_config.provider
+                else "X-Turn-Id",
             ),
         )
         return model, model_config, provider_model
@@ -422,7 +425,9 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
             if self.additional_prompt:
                 prompt += f"\n{self.additional_prompt}"
 
-            default_skill_prompts = self.build_skill_prompts(getattr(self, "default_skills", []))
+            default_skill_prompts = self.build_skill_prompts(
+                getattr(self, "default_skills", [])
+            )
 
             if default_skill_prompts:
                 prompt += "\n\n" + "\n\n".join(default_skill_prompts)
@@ -497,6 +502,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                         f"Primary model failed, falling back to {self.provider_model}"
                     )
 
+                self.run_info.run_id = str(uuid.uuid4())
                 result = await self.pydantic_agent.run(
                     user_prompt,
                     model=self.model,

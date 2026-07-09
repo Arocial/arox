@@ -149,6 +149,7 @@ class AgentRunInfo(BaseModel):
     context_tokens: int = 0
     total_tokens: int = 0
     llm_context_id: str | None = None
+    run_id: str | None = None
 
 
 class AgentSession(Session):
