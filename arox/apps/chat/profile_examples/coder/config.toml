@@ -38,8 +38,8 @@ plugins = [
     "shell",
     "file",
     "repo",
-    "compaction",
     "subagent",
+    "compaction",
 ]
 
 [agent.coder.model_prompt]
@@ -47,5 +47,3 @@ gemini = '**Remove** your tmp files (e.g. for tesing) before finish task.'
 gemini_pattern = ".*gemini.*"
 
 [agent.coder.model_params]
-temperature = 0
-

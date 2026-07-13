@@ -22,10 +22,8 @@ plugins = [
     "core",
     "shell",
     "file",
-    "compaction",
     "subagent",
+    "compaction",
 ]
 
 [agent.general.model_params]
-temperature = 0.7
-
