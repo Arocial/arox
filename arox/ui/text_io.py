@@ -164,12 +164,6 @@ class TextIOAdapter(AbstractIOAdapter):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         signal.signal(signal.SIGINT, self.original_sigint_handler)
 
-    def _find_shell(self, agent):
-        for host in self.hosts.values():
-            if host is agent:
-                return host
-        return None
-
     async def _flush_stdin(self):
         import sys
 
@@ -181,17 +175,11 @@ class TextIOAdapter(AbstractIOAdapter):
         except (ImportError, Exception):
             pass
 
-    def _is_shell_io(self, adapter_io: IOEndpoint) -> bool:
-        for host in self.hosts.values():
-            if host.adapter_io is adapter_io:
-                return True
-        return False
-
     async def _handle_output(self, adapter_io: IOEndpoint, event):
         if isinstance(event, PartStartEvent):
             part = event.part
             if isinstance(part, (TextPart, ThinkingPart)):
-                prefix = "shell" if self._is_shell_io(adapter_io) else part.part_kind
+                prefix = part.part_kind
                 print(f"{prefix}: ", end="")
                 print(f"{part.content}", end="")
         elif isinstance(event, PartDeltaEvent):
@@ -226,16 +214,7 @@ class TextIOAdapter(AbstractIOAdapter):
                         await self._flush_stdin()
                         break
                     if line.startswith("/") and agent is not None:
-                        shell = self._find_shell(agent)
-                        cmd_reply = None
-                        if shell is not None:
-                            cmd_reply = await shell.command_manager.try_handle_slash(
-                                line
-                            )
-                        if cmd_reply is None:
-                            cmd_reply = await agent.command_manager.try_handle_slash(
-                                line
-                            )
+                        cmd_reply = await agent.command_manager.try_handle_slash(line)
                         if cmd_reply is not None and cmd_reply.output:
                             print(cmd_reply.output)
                         continue
