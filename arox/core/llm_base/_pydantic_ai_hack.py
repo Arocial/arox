@@ -88,7 +88,7 @@ def infer_provider(
     if provider.startswith("gateway/"):
         upstream_provider = provider.removeprefix("gateway/")
         return gateway.gateway_provider(upstream_provider, **kwargs)
-    elif provider in ("google-vertex", "google-gla"):
+    elif provider in ("google", "google-cloud"):
         # Google GenAI SDK uses HttpOptions.timeout for both the httpx
         # per-request timeout AND the X-Server-Timeout header sent to the
         # server. pydantic_ai reads the httpx client's timeout and forwards
@@ -107,7 +107,7 @@ def infer_provider(
             extra_request_hooks=[_remove_server_timeout, _add_context_headers],
         )
         kwargs["http_client"] = client
-        if provider == "google-vertex":
+        if provider == "google-cloud":
             return google_cloud.GoogleCloudProvider(**kwargs)
         return google.GoogleProvider(**kwargs)
     else:
