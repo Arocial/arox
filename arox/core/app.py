@@ -5,7 +5,7 @@ from typing import Any
 
 import logfire
 
-from arox.core.config import Config, ObservabilityConfig, load_config
+from arox.core.config import ConfigLoader, ObservabilityConfig
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +22,10 @@ def app_setup(
     app_name: str | None = None,
     profile: str | Path | None = None,
     cli_args: list[str] | dict[str, Any] | None = None,
-) -> Config:
-    config = load_config(app_name, profile, cli_args)
+    workspace: Path | None = None,
+) -> ConfigLoader:
+    config_loader = ConfigLoader(app_name, profile, cli_args, workspace)
+    config = config_loader.current_config
 
     for var_name, value in config.app.env_vars.items():
         os.environ[var_name] = value
@@ -34,7 +36,7 @@ def app_setup(
 
     setup_llm_observability(config.app.observability)
 
-    return config
+    return config_loader
 
 
 # Observability & Logging

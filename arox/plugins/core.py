@@ -101,7 +101,7 @@ class CorePlugin(Plugin):
 
     async def complete_model_ref(self, req: CompletionRequest):
         typed = req.current_token.lower()
-        for ref in self.agent.parsed_config.available_models:
+        for ref in self.agent.config.available_models:
             if typed and typed not in ref.lower():
                 continue
             score = 2.0 if ref.lower().startswith(typed) else 1.0 if typed else 0.0
@@ -113,6 +113,7 @@ class CorePlugin(Plugin):
             )
 
     async def handle_info(self, event: InfoEvent) -> str:
+        self.agent.reload_config()
         lines = [
             f"Current model: {self.agent.provider_model or 'Unknown'}",
             f"Usage: total: {self.agent.run_info.total_tokens}, context: {self.agent.run_info.context_tokens}",
@@ -176,7 +177,7 @@ class CorePlugin(Plugin):
         loaded = []
         not_found = []
         for skill_name in event.skills:
-            if skill_name in self.agent.parsed_config.skills:
+            if skill_name in self.agent.config.skills:
                 self._pending_skills.append(skill_name)
                 loaded.append(skill_name)
             else:
@@ -191,7 +192,7 @@ class CorePlugin(Plugin):
 
     async def complete_skill(self, req: CompletionRequest):
         typed = req.current_token.lower()
-        for skill_name in self.agent.parsed_config.skills:
+        for skill_name in self.agent.config.skills:
             if typed and typed not in skill_name.lower():
                 continue
             yield CompletionItem(

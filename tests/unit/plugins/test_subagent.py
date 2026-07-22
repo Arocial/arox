@@ -23,12 +23,12 @@ def mock_env(monkeypatch):
 class _FakeDynamicAgent(DelegatableAgent):
     def __init__(
         self,
-        parsed_config,
+        parent_config_loader,
         io_adapter,
         session,
     ):
         super().__init__(
-            parsed_config,
+            parent_config_loader,
             io_adapter,
             session,
         )
@@ -75,7 +75,7 @@ class _MainAgent:
         self.workspace = None
         self._stack = contextlib.AsyncExitStack()
         self._slots = {}
-        self.parsed_config = Config(
+        self.config = Config(
             agent={
                 "main": AgentConfig(
                     type="chat", plugins=[], subagents=["planner", "reviewer"]
@@ -84,7 +84,16 @@ class _MainAgent:
                 "reviewer": AgentConfig(type="chat", description="Reviews code"),
             }
         )
-        self.agent_config = self.parsed_config.agent["main"]
+
+        def make_config_loader(workspace=None):
+            return SimpleNamespace(
+                current_config=self.config,
+                for_workspace=make_config_loader,
+                workspace=workspace,
+            )
+
+        self.config_loader = make_config_loader()
+        self.agent_config = self.config.agent["main"]
 
     @property
     def session(self) -> AgentSession | None:

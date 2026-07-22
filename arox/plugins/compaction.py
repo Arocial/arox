@@ -79,7 +79,7 @@ class CompactionPlugin(Plugin):
         if model_cfg is not None and model_cfg.compaction_threshold is not None:
             threshold = model_cfg.compaction_threshold
         else:
-            threshold = agent.parsed_config.compaction_threshold
+            threshold = agent.config.compaction_threshold
 
         resolved_val = None
         if threshold is not None:
@@ -174,7 +174,7 @@ class CompactionPlugin(Plugin):
         if not messages:
             return messages
 
-        agent_config = agent.parsed_config.agent.get(COMPACTION_AGENT_NAME)
+        agent_config = agent.config.agent.get(COMPACTION_AGENT_NAME)
         if not agent_config:
             await agent.agent_io.send(
                 "Compaction agent not configured; skipping compaction."

@@ -31,6 +31,25 @@ class TestAgentSession:
         assert event.event_type == "user_input"
         assert len(agent_session.events) == 1
 
+    def test_persists_only_agent_type(self):
+        agent_session = AgentSession(agent_name="main", agent_type="custom")
+
+        data = agent_session.model_dump(mode="json")
+
+        assert data["agent_type"] == "custom"
+        assert "agent_config" not in data
+
+    def test_migrates_agent_type_from_legacy_agent_config(self):
+        agent_session = AgentSession.model_validate(
+            {
+                "agent_name": "main",
+                "agent_config": {"type": "custom", "system_prompt": "legacy"},
+            }
+        )
+
+        assert agent_session.agent_type == "custom"
+        assert "agent_config" not in agent_session.model_dump(mode="json")
+
     def test_rebuild_empty(self):
         agent_session = AgentSession(agent_name="main")
         history = agent_session.rebuild_message_history()

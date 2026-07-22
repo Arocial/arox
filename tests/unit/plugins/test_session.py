@@ -17,9 +17,7 @@ def _make_plugin(main_agent_session: AgentSession):
         def __init__(self):
             self.name = main_agent_session.agent_name
             self.agent_config = AgentConfig(type="chat")
-            self.parsed_config = SimpleNamespace(
-                app=SimpleNamespace(session_max_age_days=30)
-            )
+            self.config = SimpleNamespace(app=SimpleNamespace(session_max_age_days=30))
             self.plugins = []
             self.session_manager = None
 

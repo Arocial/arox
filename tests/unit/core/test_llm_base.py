@@ -46,22 +46,21 @@ system_prompt = "Hi there."
 skills = ["skill1"]
 """)
 
-    # Monkeypatch Path.cwd to return tmp_path so load_config finds the skills
+    # Monkeypatch Path.cwd to return tmp_path so ConfigLoader finds the skills
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
-    parsed_config = app_setup(
+    config_loader = app_setup(
         cli_args={"workspace": str(tmp_path)},
     )
 
     io_adapter = _StubIOAdapter()
 
     agent = LLMBaseAgent(
-        parsed_config,
+        config_loader,
         io_adapter=io_adapter,
         session=AgentSession(
             path=["dummy"],
             agent_name="test_agent",
-            agent_config=parsed_config.agent["test_agent"],
         ),
     )
 
@@ -105,19 +104,18 @@ skills = "skill2"
     # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
-    parsed_config = app_setup(
+    config_loader = app_setup(
         cli_args={"workspace": str(tmp_path)},
     )
 
     io_adapter = _StubIOAdapter()
 
     agent = LLMBaseAgent(
-        parsed_config,
+        config_loader,
         io_adapter=io_adapter,
         session=AgentSession(
             path=["dummy"],
             agent_name="test_agent",
-            agent_config=parsed_config.agent["test_agent"],
         ),
     )
 
@@ -160,19 +158,18 @@ system_prompt = "Hi there."
     # Monkeypatch Path.cwd to return tmp_path so discover_skills finds the skills
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
 
-    parsed_config = app_setup(
+    config_loader = app_setup(
         cli_args={"workspace": str(tmp_path)},
     )
 
     io_adapter = _StubIOAdapter()
 
     agent = LLMBaseAgent(
-        parsed_config,
+        config_loader,
         io_adapter=io_adapter,
         session=AgentSession(
             path=["dummy"],
             agent_name="test_agent",
-            agent_config=parsed_config.agent["test_agent"],
         ),
     )
 
@@ -191,7 +188,7 @@ model_ref = "test"
 [agent.test_agent]
 system_prompt = "Hi."
 """)
-    parsed_config = app_setup(
+    config_loader = app_setup(
         cli_args={"workspace": str(tmp_path)},
     )
 
@@ -201,7 +198,7 @@ system_prompt = "Hi."
     received: list[RequestEvent] = []
 
     agent = LLMBaseAgent(
-        parsed_config,
+        config_loader,
         io_adapter=_StubIOAdapter(),
         session=AgentSession(path=["dummy"], agent_name="test_agent"),
     )
@@ -228,12 +225,12 @@ model_ref = "test"
 [agent.test_agent]
 system_prompt = "Hi."
 """)
-    parsed_config = app_setup(
+    config_loader = app_setup(
         cli_args={"workspace": str(tmp_path)},
     )
 
     agent = LLMBaseAgent(
-        parsed_config,
+        config_loader,
         io_adapter=_StubIOAdapter(),
         session=AgentSession(path=["dummy"], agent_name="test_agent"),
     )

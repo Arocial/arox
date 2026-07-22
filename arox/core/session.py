@@ -14,7 +14,6 @@ from pydantic_ai.messages import (
     ModelMessage,
 )
 
-from arox.core.config import AgentConfig
 from arox.core.types import UserInput
 
 logger = logging.getLogger(__name__)
@@ -155,11 +154,23 @@ class AgentRunInfo(BaseModel):
 class AgentSession(Session):
     session_type: str = "agent"
     agent_name: str
-    agent_config: AgentConfig = Field(default_factory=AgentConfig)
+    agent_type: str = "chat"
     agent_source: Literal["static", "dynamic"] = "dynamic"
     workspace: str | None = None
     run_info: AgentRunInfo = Field(default_factory=AgentRunInfo)
     extra: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_agent_config(cls, data: Any) -> Any:
+        if not isinstance(data, dict) or "agent_config" not in data:
+            return data
+
+        data = dict(data)
+        legacy_config = data.pop("agent_config")
+        if "agent_type" not in data and isinstance(legacy_config, dict):
+            data["agent_type"] = legacy_config.get("type", "chat")
+        return data
 
     def rebuild_message_history(self) -> list[ModelMessage]:
         history: list[ModelMessage] = []

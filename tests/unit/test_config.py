@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from arox.core.config import ProviderConfig, load_config, parse_dot_config
+from arox.core.config import ConfigLoader, ProviderConfig, parse_dot_config
 
 
 def test_provider_header_defaults():
@@ -22,7 +22,7 @@ def test_config_basic_parsing(tmp_path):
     type = "chat"
     """)
 
-    config = load_config(workspace=tmp_path)
+    config = ConfigLoader(workspace=tmp_path).reload()
 
     assert config.model_ref == "test-model"
     assert config.agent["test_agent"].type == "chat"
@@ -36,7 +36,7 @@ def test_config_override_order(tmp_path):
     ws1_arox.mkdir(exist_ok=True)
     (ws1_arox / "config.toml").write_text("model_ref = 'second'")
 
-    config = load_config(workspace=ws1)
+    config = ConfigLoader(workspace=ws1).reload()
     assert config.model_ref == "second"
 
 
@@ -74,7 +74,7 @@ def test_cli_overrides(tmp_path):
     cli_overrides = parse_dot_config(
         ["model_ref=cli-model", "agent.test_agent.type=custom"]
     )
-    config = load_config(workspace=tmp_path, cli_args=cli_overrides)
+    config = ConfigLoader(workspace=tmp_path, cli_args=cli_overrides).reload()
 
     assert config.model_ref == "cli-model"
     assert config.agent["test_agent"].type == "custom"
@@ -99,7 +99,7 @@ def test_config_include_merges_and_overrides(tmp_path):
     system_prompt = "host-override"
     """)
 
-    config = load_config(workspace=tmp_path)
+    config = ConfigLoader(workspace=tmp_path).reload()
     assert config.model_ref == "shared-model"
     comp = config.agent["compaction"]
     assert comp.type == "compaction"
@@ -115,7 +115,7 @@ def test_config_include_circular_raises(tmp_path):
     b.write_text('include = [".arox/config.toml"]\n')
 
     with pytest.raises(ValueError, match="Circular config include"):
-        load_config(workspace=tmp_path)
+        ConfigLoader(workspace=tmp_path).reload()
 
 
 def test_config_include_missing_raises(tmp_path):
@@ -123,7 +123,7 @@ def test_config_include_missing_raises(tmp_path):
     host.parent.mkdir(parents=True, exist_ok=True)
     host.write_text('include = ["does_not_exist.toml"]\n')
     with pytest.raises(FileNotFoundError):
-        load_config(workspace=tmp_path)
+        ConfigLoader(workspace=tmp_path).reload()
 
 
 def test_config_search_paths_precedence(tmp_path, monkeypatch):
@@ -151,17 +151,17 @@ def test_config_search_paths_precedence(tmp_path, monkeypatch):
     explicit_file.write_text("model_ref = 'explicit'")
 
     # Load with only XDG
-    config1 = load_config(workspace=workspace)
+    config1 = ConfigLoader(workspace=workspace).reload()
     assert config1.model_ref == "workspace"
 
     # Load without workspace config
     (workspace / ".arox" / "config.toml").unlink()
-    config2 = load_config(workspace=workspace)
+    config2 = ConfigLoader(workspace=workspace).reload()
     assert config2.model_ref == "xdg"
 
     # Load with CLI args
     (workspace / ".arox" / "config.toml").write_text("model_ref = 'workspace'")
-    config3 = load_config(cli_args=["model_ref=cli"], workspace=workspace)
+    config3 = ConfigLoader(cli_args=["model_ref=cli"], workspace=workspace).reload()
     assert config3.model_ref == "cli"
 
 
@@ -186,7 +186,7 @@ def test_config_interleaved_scope_precedence(tmp_path, monkeypatch):
     )
 
     # Test 1: Global Agents < Global Config
-    config1 = load_config(workspace=workspace)
+    config1 = ConfigLoader(workspace=workspace).reload()
     assert config1.agent["myagent"].system_prompt == "global-config"
 
     # Test 2: Global Config < Workspace Agents
@@ -195,7 +195,7 @@ def test_config_interleaved_scope_precedence(tmp_path, monkeypatch):
     (workspace / ".agents" / "agents" / "myagent.md").write_text(
         "---\nsystem_prompt: workspace-agent\n---\n"
     )
-    config2 = load_config(workspace=workspace)
+    config2 = ConfigLoader(workspace=workspace).reload()
     assert config2.agent["myagent"].system_prompt == "workspace-agent"
 
     # Test 3: Workspace Agents < Workspace Config
@@ -203,7 +203,7 @@ def test_config_interleaved_scope_precedence(tmp_path, monkeypatch):
     (workspace / ".arox" / "config.toml").write_text(
         '[agent.myagent]\nsystem_prompt = "workspace-config"'
     )
-    config3 = load_config(workspace=workspace)
+    config3 = ConfigLoader(workspace=workspace).reload()
     assert config3.agent["myagent"].system_prompt == "workspace-config"
 
 
@@ -216,7 +216,7 @@ def test_discover_skills_empty(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
 
-    config = load_config(workspace=workspace)
+    config = ConfigLoader(workspace=workspace).reload()
     assert config.skills == {}
 
 
@@ -237,7 +237,7 @@ def test_discover_skills_valid(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    config = load_config(workspace=workspace)
+    config = ConfigLoader(workspace=workspace).reload()
     assert "test_skill" in config.skills
     assert config.skills["test_skill"]["name"] == "test_skill"
     assert config.skills["test_skill"]["description"] == "A test skill"
@@ -265,7 +265,7 @@ def test_discover_skills_malformed_yaml_fixed(tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    config = load_config(workspace=workspace)
+    config = ConfigLoader(workspace=workspace).reload()
     assert "malformed_skill" in config.skills
     assert (
         config.skills["malformed_skill"]["description"]
@@ -287,5 +287,92 @@ def test_discover_skills_missing_metadata(tmp_path, monkeypatch):
     skill_file = skill_dir / "SKILL.md"
     skill_file.write_text("---\nname: missing_meta\n---\nContent", encoding="utf-8")
 
-    config = load_config(workspace=workspace)
+    config = ConfigLoader(workspace=workspace).reload()
     assert "missing_meta" not in config.skills
+
+
+def test_loader_returns_cached_snapshot_when_sources_are_unchanged(tmp_path):
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('model_ref = "cached"\n')
+    loader = ConfigLoader(workspace=tmp_path)
+
+    first = loader.reload()
+    second = loader.reload()
+    forced = loader.reload(force=True)
+
+    assert second is first
+    assert forced is not first
+    assert forced == first
+
+
+def test_loader_reloads_modified_config(tmp_path):
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('model_ref = "before"\n')
+    loader = ConfigLoader(workspace=tmp_path)
+    before = loader.reload()
+
+    config_file.write_text('model_ref = "after-change"\n')
+    result = loader.reload()
+
+    assert result is loader.current_config
+    assert result.model_ref == "after-change"
+    assert result is not before
+
+
+def test_loader_tracks_added_and_removed_agent_files(tmp_path):
+    agent_dir = tmp_path / ".agents" / "agents"
+    agent_dir.mkdir(parents=True)
+    loader = ConfigLoader(workspace=tmp_path)
+    initial = loader.reload()
+    agent_file = agent_dir / "dynamic.md"
+
+    agent_file.write_text("---\ntype: chat\n---\nDynamic prompt\n")
+    added = loader.reload()
+
+    assert added.agent["dynamic"].system_prompt == "Dynamic prompt"
+    assert initial is not added
+
+    agent_file.unlink()
+    removed = loader.reload()
+
+    assert "dynamic" not in removed.agent
+    assert removed is not added
+
+
+def test_loader_reloads_changed_include(tmp_path):
+    shared = tmp_path / "shared.toml"
+    shared.write_text('model_ref = "shared-before"\n')
+    host = tmp_path / ".arox" / "config.toml"
+    host.parent.mkdir(parents=True)
+    host.write_text('include = ["../shared.toml"]\n')
+    loader = ConfigLoader(workspace=tmp_path)
+    loader.reload()
+
+    shared.write_text('model_ref = "shared-after-change"\n')
+    result = loader.reload()
+
+    assert result.model_ref == "shared-after-change"
+
+
+def test_loader_keeps_last_valid_snapshot_after_reload_error(tmp_path):
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('model_ref = "valid"\n')
+    loader = ConfigLoader(workspace=tmp_path)
+    valid = loader.reload()
+
+    config_file.write_text('model_ref = ["invalid"\n')
+    failed = loader.reload()
+
+    assert failed is valid
+    assert loader.last_error is not None
+    assert loader.current_config is valid
+
+    config_file.write_text('model_ref = "recovered-value"\n')
+    recovered = loader.reload()
+
+    assert loader.last_error is None
+    assert recovered.model_ref == "recovered-value"
+    assert recovered is not valid

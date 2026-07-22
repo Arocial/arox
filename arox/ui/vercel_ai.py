@@ -2,11 +2,12 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from enum import Enum
-from pathlib import Path
 from typing import TYPE_CHECKING, override
 
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 from pydantic_ai.ui.vercel_ai.request_types import UIMessage
+
+from arox.core.config import ConfigLoader
 
 if TYPE_CHECKING:
     from arox.core.session import SessionManager
@@ -25,7 +26,6 @@ from pydantic_ai import (
 )
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from arox.core.app import app_setup
 from arox.core.chat import (
     ChatInputReply,
     ChatInputRequest,
@@ -521,22 +521,15 @@ class VercelStreamServer:
     def __init__(
         self,
         session_manager: "SessionManager",
-        app_name: str | None = None,
-        profile: str | Path | None = None,
-        cli_args: list[str] | None = None,
+        config_loader: ConfigLoader,
         host: str = "127.0.0.1",
         port: int = 8000,
     ):
         from contextlib import asynccontextmanager
 
-        self.app_name = app_name
-        self.profile = profile
-        self.cli_args = cli_args or []
+        self.config_loader = config_loader
         self.host = host
         self.port = port
-        self.parsed_config = app_setup(
-            app_name=self.app_name, profile=self.profile, cli_args=self.cli_args
-        )
         self.io_adapter = VercelStreamIOAdapter()
         self.session_manager = session_manager
         self.session_store = session_manager.session_store
@@ -606,8 +599,6 @@ class VercelStreamServer:
     async def create_agent(self, request: CreateAgentRequest):
         from arox.core.session import AgentSession
 
-        parsed_config = self.parsed_config.model_copy(deep=True)
-
         session = None
         if request.session_id:
             session = await self.session_store.load_session([request.session_id])
@@ -615,20 +606,22 @@ class VercelStreamServer:
                 raise HTTPException(
                     status_code=404, detail="Session not found or invalid"
                 )
-            parsed_config.app.main_agent = session.agent_name
-            parsed_config.agent[session.agent_name] = session.agent_config
 
+        config_loader = self.config_loader
+        main_agent_name = (
+            session.agent_name
+            if session
+            else config_loader.current_config.app.main_agent
+        )
         main_agent = create_agent(
-            name=parsed_config.app.main_agent,
-            parsed_config=parsed_config,
+            name=main_agent_name,
+            config_loader=config_loader,
             io_adapter=self.io_adapter,
             session=session,
             workspace=request.workspace,
         )
         if not isinstance(main_agent, MainAgent):
-            raise TypeError(
-                f"Main agent '{parsed_config.app.main_agent}' must be a MainAgent"
-            )
+            raise TypeError(f"Main agent '{main_agent_name}' must be a MainAgent")
         main_agent.session.manager = self.session_manager
 
         run_instance = AgentRun(main_agent=main_agent)
@@ -717,7 +710,7 @@ class VercelStreamServer:
 
         # The top-level session is the main agent's own AgentSession; filter to
         # the configured main agent so subagent sessions don't leak in.
-        main_agent = self.parsed_config.app.main_agent
+        main_agent = self.config_loader.current_config.app.main_agent
 
         sessions = await self.session_store.list_sessions()
         return [

@@ -69,15 +69,16 @@ def main(profile: str | None = None):
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
 
-    parsed_config = app_setup(
+    config_loader = app_setup(
         app_name="chat", profile=profile_name, cli_args=unknown_args
     )
+    config = config_loader.current_config
 
     from arox.core.session import AgentSession, FileSessionStore, SessionManager
 
     session_store = FileSessionStore(
         namespace=f"chat/{profile_name}",
-        max_age_days=parsed_config.app.session_max_age_days,
+        max_age_days=config.app.session_max_age_days,
     )
     session_manager = SessionManager(session_store)
     session_manager.register_session_type(AgentSession)
@@ -87,9 +88,7 @@ def main(profile: str | None = None):
 
         server = VercelStreamServer(
             session_manager=session_manager,
-            app_name="chat",
-            profile=profile_name,
-            cli_args=unknown_args,
+            config_loader=config_loader,
             host=args.host,
             port=args.port,
         )
@@ -131,19 +130,15 @@ def main(profile: str | None = None):
                         f"Session {args.session} not found or invalid.", file=sys.stderr
                     )
                     sys.exit(1)
-                parsed_config.app.main_agent = session.agent_name
-                parsed_config.agent[session.agent_name] = session.agent_config
-
+            main_agent_name = session.agent_name if session else config.app.main_agent
             main_agent = create_agent(
-                name=parsed_config.app.main_agent,
-                parsed_config=parsed_config,
+                name=main_agent_name,
+                config_loader=config_loader,
                 io_adapter=io_adapter,
                 session=session,
             )
             if not isinstance(main_agent, MainAgent):
-                raise TypeError(
-                    f"Main agent '{parsed_config.app.main_agent}' must be a MainAgent"
-                )
+                raise TypeError(f"Main agent '{main_agent_name}' must be a MainAgent")
             main_agent.session.manager = session_manager
 
             async with session_manager, io_adapter:

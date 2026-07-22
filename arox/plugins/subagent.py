@@ -8,7 +8,6 @@ from typing import Any, ClassVar, Literal
 from pydantic_ai import RunContext
 from pydantic_ai.tools import ToolDefinition
 
-from arox.core.config import AgentConfig
 from arox.core.llm_base import create_agent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, ToolDef
 from arox.plugins.slots import (
@@ -77,7 +76,7 @@ class SubagentPlugin(Plugin):
 
             descriptions = []
             for name in subagent_names:
-                agent_config = self.agent.parsed_config.agent.get(name)
+                agent_config = self.agent.config.agent.get(name)
                 desc = (
                     agent_config.description
                     if agent_config and agent_config.description
@@ -98,15 +97,13 @@ class SubagentPlugin(Plugin):
     async def _create_subagent(
         self,
         name: str,
-        agent_config: AgentConfig,
         agent_source: Literal["static", "dynamic"],
     ):
         subagent = create_agent(
             name=name,
-            parsed_config=self.agent.parsed_config,
+            config_loader=self.agent.config_loader,
             io_adapter=self.agent.io_adapter,
             parent_session=self.agent.session,
-            agent_config=agent_config,
             agent_source=agent_source,
             workspace=self.agent.workspace,
         )
@@ -139,7 +136,7 @@ class SubagentPlugin(Plugin):
             if child_session:
                 subagent = create_agent(
                     name=child_session.agent_name,
-                    parsed_config=self.agent.parsed_config,
+                    config_loader=self.agent.config_loader,
                     io_adapter=self.agent.io_adapter,
                     session=child_session,
                 )
@@ -190,17 +187,12 @@ class SubagentPlugin(Plugin):
         Use this for parallel or time-consuming tasks across different domains, then use `check_task_status` later.
         ALWAYS provide comprehensive context in your `task` description so the subagent doesn't lack necessary background.
         """
-        agent_config = self.agent.parsed_config.agent.get(subagent_name)
-        if not agent_config:
-            return f"Error: Config for '{subagent_name}' not found."
-
         full_task = task
         task_id = f"task_{uuid.uuid4().hex[:6]}"
 
         async def _run_and_store():
             subagent = await self._create_subagent(
                 name=subagent_name,
-                agent_config=agent_config,
                 agent_source="static",
             )
 
@@ -228,13 +220,8 @@ class SubagentPlugin(Plugin):
         task: str,
         on_subagent_created: Callable[[Any], Awaitable[None] | None] | None = None,
     ) -> str:
-        agent_config = self.agent.parsed_config.agent.get(subagent_name)
-        if not agent_config:
-            return f"Error: Config for '{subagent_name}' not found."
-
         subagent = await self._create_subagent(
             name=subagent_name,
-            agent_config=agent_config,
             agent_source="static",
         )
 
@@ -267,7 +254,7 @@ class SubagentPlugin(Plugin):
             return "No subagents."
         lines = []
         for name in sorted(subagent_names):
-            agent_config = self.agent.parsed_config.agent.get(name)
+            agent_config = self.agent.config.agent.get(name)
             desc = (
                 agent_config.description
                 if agent_config and agent_config.description

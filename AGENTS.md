@@ -20,10 +20,10 @@ uv run mkdocs serve  # Serve docs at http://127.0.0.1:3420
 
 An **App** is a runnable process that owns one `IOAdapter` and hosts a **MainAgent**. The `MainAgent` runs the user-facing loop and is driven by `AppConfig` and `AgentConfig`. Subagents are managed by the `SubagentPlugin`, which instantiates them and exposes them to the main agent as callable tools (and via the `SUBAGENTS` and `DELEGATE_TO_SUBAGENT` slots) so it can delegate tasks directly. Subagents are defined statically in the configuration and are instantiated when tasks are delegated to them. The plugin records all instantiated subagents (filtering by `active` status for currently running ones) and automatically closes their sessions when the task completes.
 
-Agent types and which agent to instantiate come from config (`arox/core/config.py`): `AppConfig` / `AgentConfig` are resolved by `load_config` from layered YAML plus CLI overrides.
+Agent types and which agent to instantiate come from config (`arox/core/config.py`): `ConfigLoader` resolves `AppConfig` / `AgentConfig` from layered YAML plus CLI overrides, caches unchanged source files, and exposes the active snapshot through `current_config`; callers use `reload()` to pick up changed config/include/agent/skill files. Apps retain the base loader; `create_agent()` derives an independent loader for the agent's workspace while preserving the app, profile, and CLI context. Failed runtime reloads preserve the last valid `Config` snapshot.
 
 **Session management** is integrated directly into `LLMBaseAgent` via `arox/core/session.py`:
-- Every agent is instantiated with an `AgentSession` (tracking message history and metadata). The main agent's `AgentSession` is the top-level session for a run; subagents keep their own `AgentSession`s nested beneath it.
+- Every agent is instantiated with an `AgentSession` (tracking message history and metadata). Agent sessions persist only the agent name/type; the full `AgentConfig` is resolved from the current configuration at runtime. The main agent's `AgentSession` is the top-level session for a run; subagents keep their own `AgentSession`s nested beneath it.
 - `SessionManager` coordinates with `SessionStore` (default `FileSessionStore`) to persist sessions to disk with an age-based cleanup.
 - Sessions are explicitly passed as constructor dependencies. Resuming is done via the `session_id` passed to the App. The `CorePlugin` now primarily provides the `/fork` command.
 

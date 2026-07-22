@@ -35,7 +35,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import infer_model
 
 from arox import utils
-from arox.core.config import AgentConfig, Config
+from arox.core.config import AgentConfig, Config, ConfigLoader
 from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
@@ -76,15 +76,15 @@ class AgentDeps:
 class LLMBaseAgent(IOHost):
     def __init__(
         self,
-        parsed_config: Config,
+        parent_config_loader: ConfigLoader,
         io_adapter: AbstractIOAdapter,
         session: AgentSession,
     ):
         super().__init__(io_adapter)
         self.uuid = str(uuid.uuid4())
         self._slots: dict[Any, Any] = {}
-        self.parsed_config = parsed_config
         self.session = session
+        self.config_loader = parent_config_loader.for_workspace(self.workspace)
 
         self.local_toolset = FunctionToolset[AgentDeps]()
         self.mcp_client = None
@@ -128,6 +128,15 @@ class LLMBaseAgent(IOHost):
         """Cancel any long-running foreground task. Subclasses can override this."""
         pass
 
+    def reload_config(self) -> Config:
+        config = self.config_loader.reload()
+        self.parse_configs()
+        return config
+
+    @property
+    def config(self) -> Config:
+        return self.config_loader.current_config
+
     @property
     def name(self) -> str:
         return self.session.agent_name
@@ -146,11 +155,14 @@ class LLMBaseAgent(IOHost):
 
     @property
     def agent_config(self) -> AgentConfig:
-        return self.session.agent_config
+        agent_config = self.config.agent.get(self.name)
+        if not agent_config:
+            raise ValueError(f"Agent config for '{self.name}' not found")
+        return agent_config
 
-    @agent_config.setter
-    def agent_config(self, value: AgentConfig):
-        self.session.agent_config = value
+    @property
+    def agent_type(self) -> str:
+        return self.session.agent_type
 
     @property
     def agent_source(self) -> Literal["static", "dynamic"]:
@@ -269,26 +281,27 @@ class LLMBaseAgent(IOHost):
     def _resolve_model(self, model_ref: str):
         from arox.core.config import ModelConfig
 
-        model_config = self.parsed_config.model.get(model_ref)
+        config = self.config
+        model_config = config.model.get(model_ref)
         if not model_config:
             model_config = ModelConfig(provider_model=model_ref)
-        elif not model_config.provider_model:
-            model_config.provider_model = model_ref
+        else:
+            model_config = model_config.model_copy(deep=True)
+            if not model_config.provider_model:
+                model_config.provider_model = model_ref
 
         provider_model = model_config.provider_model
         model = infer_model(
             provider_model,
             provider_factory=lambda p: infer_provider(
                 p,
-                base_url=self.parsed_config.provider[p].base_url
-                if p in self.parsed_config.provider
-                else "",
+                base_url=config.provider[p].base_url if p in config.provider else "",
                 run_info=self.run_info,
-                session_header=self.parsed_config.provider[p].session_header
-                if p in self.parsed_config.provider
+                session_header=config.provider[p].session_header
+                if p in config.provider
                 else "X-Session-Id",
-                turn_header=self.parsed_config.provider[p].turn_header
-                if p in self.parsed_config.provider
+                turn_header=config.provider[p].turn_header
+                if p in config.provider
                 else "X-Turn-Id",
             ),
         )
@@ -316,7 +329,7 @@ class LLMBaseAgent(IOHost):
         """Build XML prompt blocks for the specified skills."""
         prompts = []
         for skill_name in skill_names:
-            skill = self.parsed_config.skills.get(skill_name)
+            skill = self.config.skills.get(skill_name)
             if skill:
                 try:
                     with open(skill["location"], "r", encoding="utf-8") as f:
@@ -356,10 +369,9 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 
     def parse_configs(self):
         # model configs
-        self.model_ref = self.agent_config.model_ref or self.parsed_config.model_ref
+        self.model_ref = self.agent_config.model_ref or self.config.model_ref
         fallback = (
-            self.agent_config.fallback_model_ref
-            or self.parsed_config.fallback_model_ref
+            self.agent_config.fallback_model_ref or self.config.fallback_model_ref
         )
         if isinstance(fallback, str):
             fallback = [fallback] if fallback else []
@@ -382,7 +394,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         self.raw_system_prompt = self.agent_config.system_prompt
 
         # skills
-        skills = self.parsed_config.skills
+        skills = self.config.skills
         allowed_skills = self.agent_config.skills
         if allowed_skills is not None:
             if isinstance(allowed_skills, str):
@@ -404,7 +416,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 
         # Tools and mcp servers
         self.toolsets: list[AbstractToolset[AgentDeps]] = [self.local_toolset]
-        mcp_server_configs = self.parsed_config.mcp_servers
+        mcp_server_configs = self.config.mcp_servers
         allowed_mcp_servers = self.agent_config.mcp_servers
         if allowed_mcp_servers is not None:
             if isinstance(allowed_mcp_servers, str):
@@ -420,6 +432,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 
     @property
     def system_prompt(self):
+
         async def _wrapper() -> str:
             prompt = self.raw_system_prompt
             if self.additional_prompt:
@@ -545,6 +558,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                     )
                 )
 
+        self.reload_config()
         result = await self._run_inference(
             input_content,
             message_history=self.message_history,
@@ -592,26 +606,22 @@ class DelegatableAgent(LLMBaseAgent, ABC):
 
 def create_agent(
     name: str,
-    parsed_config: Config,
+    config_loader: ConfigLoader,
     io_adapter: Any,
     session: AgentSession | None = None,
     parent_session: AgentSession | None = None,
-    agent_config: AgentConfig | None = None,
     agent_source: Literal["static", "dynamic"] = "static",
     workspace: Path | str | None = None,
-    agent_cls: type | None = None,
 ) -> LLMBaseAgent:
+    agent_config = config_loader.current_config.agent.get(name)
     if not agent_config:
-        agent_config = parsed_config.agent.get(name)
-        if not agent_config:
-            raise ValueError(f"Agent config for '{name}' not found")
+        raise ValueError(f"Agent config for '{name}' not found")
 
-    if not agent_cls:
-        agent_type = agent_config.type
-        try:
-            agent_cls = utils.import_class(agent_type, group="arox.agents")
-        except ValueError:
-            raise ValueError(f"Unknown agent type: {agent_type} for agent {name}")
+    agent_type = session.agent_type if session is not None else agent_config.type
+    try:
+        agent_cls = utils.import_class(agent_type, group="arox.agents")
+    except ValueError:
+        raise ValueError(f"Unknown agent type: {agent_type} for agent {name}")
 
     if session is None:
         session = AgentSession(
@@ -619,7 +629,7 @@ def create_agent(
             if parent_session
             else [str(uuid.uuid4())],
             agent_name=name,
-            agent_config=agent_config.model_copy(deep=True),
+            agent_type=agent_type,
             agent_source=agent_source,
             workspace=str(Path(workspace).absolute()) if workspace else None,
             run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
@@ -630,7 +640,7 @@ def create_agent(
             parent_session.children.append(session.id)
 
     agent = agent_cls(
-        parsed_config=parsed_config,
+        parent_config_loader=config_loader,
         io_adapter=io_adapter,
         session=session,
     )

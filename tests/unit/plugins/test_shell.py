@@ -34,7 +34,7 @@ class MockAgent:
         self._slots: dict = {}
         from arox.core.config import Config
 
-        self.parsed_config = Config()
+        self.config = Config()
 
     def provide_slot(self, slot, provider):
         self._slots.setdefault(slot, []).append(provider)
@@ -428,8 +428,8 @@ async def test_background_kills_child_process_tree(plugin):
 @pytest.mark.asyncio
 async def test_env_vars_restoration(plugin, monkeypatch):
     # Setup: mock app config with some env vars
-    plugin.agent.parsed_config.app.env_vars = {"TEST_VAR": "arox_value"}
-    plugin.agent.parsed_config.app.api_keys = {"test_provider": "arox_key"}
+    plugin.agent.config.app.env_vars = {"TEST_VAR": "arox_value"}
+    plugin.agent.config.app.api_keys = {"test_provider": "arox_key"}
 
     # Mock os.environ and original env
     monkeypatch.setenv("TEST_VAR", "arox_value")

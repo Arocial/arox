@@ -28,13 +28,13 @@ class ChatInputReply(UserInput, ReplyEvent):
 class ChatAgent(MainAgent, DelegatableAgent):
     def __init__(
         self,
-        parsed_config,
+        parent_config_loader,
         io_adapter,
         session: AgentSession,
     ):
         self.foreground_task: asyncio.Task | None = None
         super().__init__(
-            parsed_config,
+            parent_config_loader,
             io_adapter,
             session,
         )

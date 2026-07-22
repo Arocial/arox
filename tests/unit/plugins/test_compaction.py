@@ -51,13 +51,13 @@ class _MockAgent:
         self.run_info = SimpleNamespace(context_tokens=0, llm_context_id="ctx-original")
         self.model_config = None
 
-        self.parsed_config = Config(
+        self.config = Config(
             compaction_threshold=threshold if threshold is not None else 0.7,
             agent={"compaction": AgentConfig(type="compaction", task_prompt="summary")},
         )
         if threshold is None:
             # Overwrite after instantiation if None is needed
-            self.parsed_config.compaction_threshold = None  # type: ignore
+            self.config.compaction_threshold = None  # type: ignore
 
         self.model_params = {}
         self.agent_io = SimpleNamespace(send=self._send)

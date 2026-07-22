@@ -28,7 +28,7 @@ model_ref = "test"
 [agent.dummy_chat]
 system_prompt = "Hi there."
 """)
-    parsed_config = app_setup(
+    config_loader = app_setup(
         cli_args={"workspace": str(tmp_path)},
     )
 
@@ -41,7 +41,7 @@ system_prompt = "Hi there."
 
         io_adapter = TextIOAdapter()
         agent = ChatAgent(
-            parsed_config,
+            config_loader,
             io_adapter=io_adapter,
             session=AgentSession(path=["dummy"], agent_name="dummy_chat"),
         )
