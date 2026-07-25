@@ -96,7 +96,7 @@ class CorePlugin(Plugin):
     async def handle_set_model(self, event: SetModelEvent) -> str:
         if not event.model_ref:
             return "Please specify a model name"
-        self.agent.set_model(event.model_ref)
+        self.agent.override_model(event.model_ref)
         return f"Model switched to {event.model_ref}"
 
     async def complete_model_ref(self, req: CompletionRequest):

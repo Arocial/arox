@@ -307,6 +307,11 @@ class LLMBaseAgent(IOHost):
         )
         return model, model_config, provider_model
 
+    def override_model(self, model_ref: str):
+        """Manually override the model. Takes precedence over config."""
+        self.session.extra["model_override"] = model_ref
+        self.set_model(model_ref)
+
     def set_model(self, model_ref: str):
         model, model_config, provider_model = self._resolve_model(model_ref)
         merged_model_params = utils.deep_merge(
@@ -369,7 +374,8 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 
     def parse_configs(self):
         # model configs
-        self.model_ref = self.agent_config.model_ref or self.config.model_ref
+        override = self.session.extra.get("model_override")
+        self.model_ref = override or self.agent_config.model_ref or self.config.model_ref
         fallback = (
             self.agent_config.fallback_model_ref or self.config.fallback_model_ref
         )
