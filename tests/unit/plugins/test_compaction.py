@@ -25,8 +25,10 @@ class _FakeCompactionAgent(CompactionAgent):
     def __init__(self, summary: str = "SUMMARY"):
         self.session = type("DummySession", (), {"agent_name": "compaction"})()
         self._summary = summary
+        self.last_extra_instructions = ""
 
     async def summarize(self, messages, extra_instructions: str = "") -> str:
+        self.last_extra_instructions = extra_instructions
         return self._summary
 
 
@@ -224,6 +226,33 @@ async def test_auto_compaction_records_event_and_stays_consistent():
     agent.session.add_event(StepEvent(new_messages=[*out, response]))
     rebuilt = agent.session.rebuild_message_history()
     assert rebuilt == [*out, response]
+
+
+@pytest.mark.asyncio
+async def test_compact_tool_defers_compaction_until_history_processing():
+    agent = _MockAgent(threshold=None)
+    plugin = _plugin(agent)
+    messages = [_user("old"), _reply("reply")]
+
+    result = plugin.compact(" Preserve implementation details. ")
+
+    assert result == "Conversation history compaction requested."
+    assert agent.session.events == []
+    assert agent.message_history == []
+
+    out = await plugin.history_processor(_ctx(0), messages)
+
+    assert isinstance(out[0], ModelRequest)
+    assert "SUMMARY" in _first_text(out[0])
+    assert agent._compaction_agent.last_extra_instructions == (
+        "Preserve implementation details."
+    )
+    assert [e.event_type for e in agent.session.events] == ["compaction"]
+
+    second_out = await plugin.history_processor(_ctx(0), out)
+
+    assert second_out is out
+    assert [e.event_type for e in agent.session.events] == ["compaction"]
 
 
 @pytest.mark.asyncio

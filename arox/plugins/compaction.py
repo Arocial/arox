@@ -11,7 +11,7 @@ from pydantic_ai import (
 )
 
 from arox.core.llm_base import DelegatableAgent, LLMBaseAgent
-from arox.core.plugin import CommandEvent, CommandSpec, Plugin
+from arox.core.plugin import CommandEvent, CommandSpec, Plugin, tool
 from arox.plugins.slots import DELEGATE_TO_SUBAGENT, PERSISTENT_CONTEXT
 
 logger = logging.getLogger(__name__)
@@ -62,6 +62,8 @@ class CompactionPlugin(Plugin):
         self._last_total_tokens = 0
         self._cached_threshold_resolved = False
         self._cached_threshold_value = None
+        self._compaction_requested = False
+        self._compaction_instructions = ""
 
     def _resolve_token_threshold(self) -> int | None:
         """Resolve effective token threshold for the agent's current model.
@@ -98,6 +100,17 @@ class CompactionPlugin(Plugin):
 
     def commands(self):
         return [CommandSpec(CompactEvent, self.handle_compact)]
+
+    @tool(sequential=True)
+    def compact(self, instruction: str = "") -> str:
+        """Request conversation history compaction before the next model request.
+
+        Args:
+            instruction: Optional instructions for how to summarize the history.
+        """
+        self._compaction_requested = True
+        self._compaction_instructions = instruction.strip()
+        return "Conversation history compaction requested."
 
     async def handle_compact(self, event: CompactEvent):
         agent = self.agent
@@ -137,20 +150,26 @@ class CompactionPlugin(Plugin):
         ctx: RunContext[Any],
         messages: list[ModelMessage],
     ) -> list[ModelMessage]:
-        threshold = self._resolve_token_threshold()
-        if threshold is None:
-            return messages
+        extra_instructions = ""
+        if self._compaction_requested:
+            self._compaction_requested = False
+            extra_instructions = self._compaction_instructions
+            self._compaction_instructions = ""
+        else:
+            threshold = self._resolve_token_threshold()
+            if threshold is None:
+                return messages
 
-        context_tokens = self.agent.run_info.context_tokens
+            context_tokens = self.agent.run_info.context_tokens
+            if context_tokens <= threshold:
+                return messages
 
-        if context_tokens <= threshold:
-            return messages
+            logger.info(
+                f"Last request size ({context_tokens} tokens) exceeds threshold ({threshold}). "
+                "Triggering automatic compaction."
+            )
 
-        logger.info(
-            f"Last request size ({context_tokens} tokens) exceeds threshold ({threshold}). "
-            "Triggering automatic compaction."
-        )
-        compacted = await self._compact(messages)
+        compacted = await self._compact(messages, extra_instructions=extra_instructions)
         if compacted is messages:
             return messages
 
