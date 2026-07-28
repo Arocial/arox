@@ -1,6 +1,13 @@
 from pathlib import Path
 
 import pytest
+from pydantic_ai.messages import (
+    TextContent,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
+from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter, RequestEvent
@@ -271,3 +278,61 @@ def test_build_skill_catalog():
     assert "<name>test_skill</name>" in catalog
     assert "<description>A test skill</description>" in catalog
     assert "<location>/path/to/SKILL.md</location>" in catalog
+
+
+@pytest.mark.asyncio
+async def test_request_limit_prompt_continues_with_native_usage_limit(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text("""
+model_ref = "test"
+[agent.test_agent]
+system_prompt = "Hi."
+request_limit = 1
+request_limit_prompt = "Check your progress and continue."
+""")
+    config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
+    agent = LLMBaseAgent(
+        config_loader,
+        io_adapter=_StubIOAdapter(),
+        session=AgentSession(path=["dummy"], agent_name="test_agent"),
+    )
+    tool_executions = 0
+
+    def ping():
+        nonlocal tool_executions
+        tool_executions += 1
+        return "pong"
+
+    agent.add_local_tool(ping)
+    requests = []
+
+    async def stream_function(messages, info):
+        requests.append(messages)
+        if len(requests) == 1:
+            yield {0: DeltaToolCall(name="ping", json_args="{}")}
+        else:
+            yield "done"
+
+    async with agent:
+        with agent.pydantic_agent.override(
+            model=FunctionModel(stream_function=stream_function)
+        ):
+            result = await agent.step("start")
+
+    assert result.output == "done"
+    assert len(requests) == 2
+    assert tool_executions == 1
+    parts = [part for message in result.all_messages() for part in message.parts]
+    assert any(isinstance(part, ToolCallPart) for part in parts)
+    assert any(
+        isinstance(part, ToolReturnPart) and part.content == "pong" for part in parts
+    )
+    user_prompts = [part.content for part in parts if isinstance(part, UserPromptPart)]
+    assert not isinstance(user_prompts[0], str)
+    assert isinstance(user_prompts[0][0], TextContent)
+    assert user_prompts[0][0].content == "start"
+    assert user_prompts[1] == "Check your progress and continue."

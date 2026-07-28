@@ -19,13 +19,14 @@ from pydantic_ai import (
     ModelRequestContext,
     ModelSettings,
     RunContext,
+    UsageLimits,
 )
 from pydantic_ai.capabilities import (
     AbstractCapability,
     Hooks,
     WrapModelRequestHandler,
 )
-from pydantic_ai.exceptions import ModelAPIError
+from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import (
     ModelMessage,
@@ -101,6 +102,7 @@ class LLMBaseAgent(IOHost):
         self.result = None
         self.builtin_hooks = Hooks[AgentDeps]()
         self.builtin_hooks.on.before_run(self._before_run)
+        self.builtin_hooks.on.before_model_request(self._before_model_request)
         self.builtin_hooks.on.run_error(self._on_run_error)
         self.builtin_hooks.on.model_request(self._wrap_model_request)
         capabilities: list[AbstractCapability[AgentDeps]] = []
@@ -375,13 +377,17 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
     def parse_configs(self):
         # model configs
         override = self.session.extra.get("model_override")
-        self.model_ref = override or self.agent_config.model_ref or self.config.model_ref
+        self.model_ref = (
+            override or self.agent_config.model_ref or self.config.model_ref
+        )
         fallback = (
             self.agent_config.fallback_model_ref or self.config.fallback_model_ref
         )
         if isinstance(fallback, str):
             fallback = [fallback] if fallback else []
         self.fallback_model_refs: list[str] = list(fallback)
+        self.request_limit = self.agent_config.request_limit
+        self.request_limit_prompt = self.agent_config.request_limit_prompt
         self.agent_model_params = self.agent_config.model_params
         self.model_aware_prompts = []
         mp = self.agent_config.model_prompt
@@ -462,6 +468,14 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 
         return _wrapper
 
+    async def _before_model_request(
+        self,
+        ctx: RunContext[AgentDeps],
+        request_context: ModelRequestContext,
+    ) -> ModelRequestContext:
+        self.message_history_fallback = list(request_context.messages)
+        return request_context
+
     async def _wrap_model_request(
         self,
         ctx: RunContext[AgentDeps],
@@ -469,7 +483,6 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         request_context: ModelRequestContext,
         handler: WrapModelRequestHandler,
     ) -> ModelResponse:
-        self.message_history_fallback = list(ctx.messages)
         response = await handler(request_context)
         self.run_info.context_tokens = response.usage.total_tokens
         self.run_info.total_tokens += response.usage.total_tokens
@@ -528,6 +541,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                     event_stream_handler=self.handle_event,
                     model_settings=ModelSettings(**self.model_params),
                     message_history=message_history,
+                    usage_limits=UsageLimits(request_limit=self.request_limit),
                     deps=AgentDeps(agent_io=self.agent_io, agent=self),
                 )
 
@@ -565,16 +579,23 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                 )
 
         self.reload_config()
-        result = await self._run_inference(
-            input_content,
-            message_history=self.message_history,
-        )
-        self.result = result
-        self.message_history = result.all_messages()
+        while True:
+            result = await self._run_inference(
+                input_content,
+                message_history=self.message_history,
+            )
+            self.message_history = result.all_messages()
+            self.session.record_step(result.new_messages())
 
-        self.session.record_step(
-            result.new_messages(),
-        )
+            if not (
+                isinstance(result.output, UsageLimitExceeded)
+                and self.request_limit_prompt
+            ):
+                break
+            logger.info("Continuing agent run after soft usage limit.")
+            input_content = self.request_limit_prompt
+
+        self.result = result
         await self.agent_io.send(AgentRunResultEvent(result))
         return result
 

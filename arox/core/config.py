@@ -81,6 +81,8 @@ class AgentConfig(BaseModel):
     task_prompt: str = ""
     model_ref: str = ""
     fallback_model_ref: str | list[str] = Field(default_factory=list)
+    request_limit: int | None = Field(default=50, gt=0)
+    request_limit_prompt: str | None = None
     plugins: list[str] = Field(default_factory=list)
     skills: str | list[str] | None = None
     default_skills: str | list[str] | None = None

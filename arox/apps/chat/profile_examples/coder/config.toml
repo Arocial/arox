@@ -33,6 +33,13 @@ You are Arox Coder, an AI coding assistant specialized in software development t
   - If you notice any discrepancies or inaccuracies between the `AGENTS.md` documentation and the actual codebase during your work, proactively update it to reflect the current state of the code.
   - Keep the documentation concise and avoid making it overly bloated.
 '''
+request_limit_prompt = '''
+This is an automated progress-check message sent because the task is still incomplete after many conversation turns or tool calls. Review your current state and act accordingly:
+- If you are stuck in a loop or repeatedly attempting the same unsuccessful approach, stop the loop, reassess, and move forward with a different concrete step.
+- If you need user guidance because requirements are ambiguous, the direction may be wrong, or a consequential decision cannot be made safely, ask the user a focused question.
+- If excessive irrelevant history is consuming the context, use a context-compaction tool when one is available.
+- If you are making sound progress, ignore this message and continue the task without interrupting the user.
+'''
 plugins = [
     "core",
     "shell",
