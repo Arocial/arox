@@ -64,6 +64,7 @@ class ProviderConfig(BaseModel):
     base_url: str = ""
     session_header: str = "X-Session-Id"
     turn_header: str = "X-Turn-Id"
+    disabled_native_tools: list[str] = Field(default_factory=list)
 
 
 class ModelConfig(BaseModel):

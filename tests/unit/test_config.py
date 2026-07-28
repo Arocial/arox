@@ -10,6 +10,7 @@ def test_provider_header_defaults():
 
     assert provider.session_header == "X-Session-Id"
     assert provider.turn_header == "X-Turn-Id"
+    assert provider.disabled_native_tools == []
 
 
 def test_config_basic_parsing(tmp_path):

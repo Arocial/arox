@@ -329,6 +329,7 @@ class LLMBaseAgent(IOHost):
         self.model_config = model_config
         self.model_params = merged_model_params
         self.provider_model = provider_model
+        self.provider_name = provider_model.partition(":")[0]
         self.additional_prompt = additional_prompt
         self.model = model
 

@@ -16,7 +16,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
 ]
 dependencies = [
-    "pydantic_ai>=2.4.0",
+    "pydantic_ai[duckduckgo,web-fetch]>=2.4.0",
     "prompt-toolkit>=3.0",
     "pyyaml>=6.0",
     "asyncio",
@@ -56,6 +56,7 @@ repo = "arox.plugins.repo:RepoPlugin"
 shell = "arox.plugins.shell:ShellPlugin"
 compaction = "arox.plugins.compaction:CompactionPlugin"
 subagent = "arox.plugins.subagent:SubagentPlugin"
+websearch = "arox.plugins.websearch:WebSearchPlugin"
 
 [tool.setuptools.packages.find]
 where = ["."]
