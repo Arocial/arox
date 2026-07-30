@@ -33,8 +33,14 @@ class MockAgent:
         self.agent_io = CaptureIO()
         self._slots: dict = {}
         from arox.core.config import Config
+        from arox.core.session import AgentSession, FileSessionStore, SessionManager
 
         self.config = Config()
+        store = FileSessionStore()
+        store.base_dir = workspace / "sessions"
+        manager = SessionManager(store)
+        self.session = AgentSession(agent_name="test", path=["test-session"])
+        self.session.manager = manager
 
     def provide_slot(self, slot, provider):
         self._slots.setdefault(slot, []).append(provider)
@@ -84,16 +90,29 @@ def _task_id_from(start_msg: str) -> str:
     return next(tok.strip("`") for tok in start_msg.split() if tok.startswith("`task_"))
 
 
+def _output_path(result: str) -> Path:
+    prefixes = ("Full output saved to: ", "Full output is being saved to: ")
+    for line in result.splitlines():
+        for prefix in prefixes:
+            if line.startswith(prefix):
+                return Path(line.removeprefix(prefix))
+        if line.startswith("Captured output: "):
+            return Path(line.removeprefix("Captured output: "))
+    raise AssertionError("output path missing from shell result")
+
+
 @pytest.mark.asyncio
-async def test_foreground_returns_output_and_streams(plugin):
+async def test_foreground_returns_output_and_removes_complete_log(plugin):
     result = await plugin.shell(
         command="echo hello && echo world",
         description="Print greeting",
     )
     assert "hello" in result
     assert "world" in result
-    # Registry should be cleaned up for normal foreground completion.
-    assert plugin._background == {}
+    assert "Full output" not in result
+    assert "Captured output" not in result
+    assert list(plugin._session_output_dir().iterdir()) == []
+    assert plugin._tasks == {}
 
 
 @pytest.mark.asyncio
@@ -138,7 +157,7 @@ async def test_kill_drains_pending_output(plugin):
         run_in_background=True,
     )
     task_id = _task_id_from(start)
-    bg = plugin._background[task_id]
+    bg = plugin._tasks[task_id]
     for _ in range(50):
         await asyncio.sleep(0.01)
         if any("BEFORE_KILL" in line for line in bg.captured_lines()):
@@ -163,7 +182,82 @@ async def test_head_tail_truncation_marker(plugin, monkeypatch):
     assert "line1" in result and "line2" in result and "line3" in result  # head
     assert "line8" in result and "line9" in result and "line10" in result  # tail
     assert "truncated" in result
-    assert "line5" not in result  # middle dropped
+    assert "line5" not in result  # middle omitted from the response
+
+    output_path = _output_path(result)
+    assert output_path.read_text().splitlines() == [f"line{i}" for i in range(1, 11)]
+
+
+@pytest.mark.asyncio
+async def test_render_limit_only_applies_to_output_data(plugin, monkeypatch):
+    monkeypatch.setattr("arox.plugins.shell.MAX_RENDER_BYTES", 40)
+    result = await plugin.shell(
+        command="printf 'abcdefghij\\n%.0s' 1 2 3 4 5 6 7 8",
+        description="Produce wide output",
+    )
+
+    output_section = result.split("\nFull output saved to:", 1)[0]
+    output_lines = [
+        line for line in output_section.splitlines() if "output truncated:" not in line
+    ]
+    assert sum(len(line.encode()) + 1 for line in output_lines) <= 40
+    assert "output data limited to 10 KiB" in result
+    assert "Full output saved to:" in result
+
+
+@pytest.mark.asyncio
+async def test_background_poll_summarizes_but_file_keeps_all_output(
+    plugin, monkeypatch
+):
+    monkeypatch.setattr("arox.plugins.shell.HEAD_BUFFER_LINES", 2)
+    monkeypatch.setattr("arox.plugins.shell.TAIL_BUFFER_LINES", 2)
+    start = await plugin.shell(
+        command="for i in 1 2 3 4 5 6 7 8; do echo line$i; done",
+        description="Produce background output",
+        run_in_background=True,
+    )
+    task_id = _task_id_from(start)
+    task = plugin._tasks[task_id]
+    await asyncio.wait_for(task.drain_task, timeout=5)
+
+    result = await plugin.shell_state(task_id=task_id, description="poll")
+    assert "line1" in result and "line2" in result
+    assert "line7" in result and "line8" in result
+    assert "line4" not in result
+    assert "output truncated" in result
+    assert _output_path(result).read_text().splitlines() == [
+        f"line{i}" for i in range(1, 9)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_output_file_limit_does_not_stop_drain(plugin, monkeypatch):
+    monkeypatch.setattr("arox.plugins.shell.MAX_OUTPUT_FILE_BYTES", 20)
+    monkeypatch.setattr("arox.plugins.shell.MAX_RENDER_BYTES", 20)
+    result = await plugin.shell(
+        command="printf '1234567890\\n1234567890\\nAFTER_LIMIT\\n'",
+        description="Exceed output file limit",
+    )
+
+    output_path = _output_path(result)
+    assert output_path.stat().st_size <= 20
+    assert "1 lines omitted" in result
+    assert "reached the 10 MiB limit" in result
+
+
+@pytest.mark.asyncio
+async def test_session_delete_removes_shell_output(plugin, monkeypatch):
+    monkeypatch.setattr("arox.plugins.shell.HEAD_BUFFER_LINES", 1)
+    monkeypatch.setattr("arox.plugins.shell.TAIL_BUFFER_LINES", 1)
+    result = await plugin.shell(
+        command="printf 'first\\nmiddle\\nlast\\n'", description="Save output"
+    )
+    output_path = _output_path(result)
+    assert output_path.exists()
+
+    session = plugin.agent.session
+    await session.manager.session_store.delete_session(session.path)
+    assert not output_path.exists()
 
 
 @pytest.mark.asyncio
@@ -176,7 +270,7 @@ async def test_foreground_timeout_promotes_to_background(plugin):
     assert "promoted to background" in result
     assert "early" in result  # partial output included
     task_id = _task_id_from(result)
-    bg = plugin._background[task_id]
+    bg = plugin._tasks[task_id]
     # Process should still be alive (not killed).
     assert bg.process.returncode is None
     # Finish notification flag flipped on.
@@ -193,7 +287,7 @@ async def test_background_returns_id_and_polls_output(plugin):
     assert "Started background task" in start
     task_id = _task_id_from(start)
 
-    bg = plugin._background[task_id]
+    bg = plugin._tasks[task_id]
     assert bg.drain_task is not None
     await asyncio.wait_for(bg.drain_task, timeout=5)
 
@@ -219,7 +313,7 @@ async def test_shell_state_backoff_grows_per_shell(plugin, monkeypatch):
         run_in_background=True,
     )
     task_id = _task_id_from(start)
-    bg = plugin._background[task_id]
+    bg = plugin._tasks[task_id]
 
     loop = asyncio.get_event_loop()
 
@@ -253,7 +347,7 @@ async def test_shell_state_returns_early_when_process_exits(plugin, monkeypatch)
         run_in_background=True,
     )
     task_id = _task_id_from(start)
-    bg = plugin._background[task_id]
+    bg = plugin._tasks[task_id]
     assert POLL_BASE_DELAY  # imported but value patched at module level
 
     loop = asyncio.get_event_loop()
@@ -273,7 +367,7 @@ async def test_kill_shell_terminates_running_background(plugin):
         run_in_background=True,
     )
     task_id = _task_id_from(start)
-    bg = plugin._background[task_id]
+    bg = plugin._tasks[task_id]
     assert bg.process.returncode is None
 
     killed = await plugin.kill_shell(task_id=task_id, description="stop it")
@@ -294,7 +388,7 @@ async def test_shell_input(plugin):
         run_in_background=True,
     )
     task_id = _task_id_from(start)
-    bg = plugin._background[task_id]
+    bg = plugin._tasks[task_id]
 
     # Send input
     res = await plugin.shell_input(
@@ -327,12 +421,12 @@ async def test_shell_state_unknown_shell(plugin):
 async def test_reset_kills_all_backgrounds(plugin):
     await plugin.shell(command="sleep 30", description="long", run_in_background=True)
     await plugin.shell(command="sleep 30", description="long2", run_in_background=True)
-    assert len(plugin._background) == 2
+    assert len(plugin._tasks) == 2
 
     from arox.plugins.slots import AGENT_RESET
 
     await plugin.agent.invoke_slot(AGENT_RESET)
-    assert plugin._background == {}
+    assert plugin._tasks == {}
 
 
 @pytest.mark.asyncio
@@ -350,7 +444,7 @@ async def test_kill_escalates_to_sigkill_when_term_ignored(plugin, monkeypatch):
         run_in_background=True,
     )
     task_id = _task_id_from(start)
-    bg = plugin._background[task_id]
+    bg = plugin._tasks[task_id]
 
     for _ in range(50):
         await asyncio.sleep(0.01)
@@ -377,7 +471,7 @@ async def test_promoted_shell_eventually_finishes(plugin):
         return
 
     task_id = _task_id_from(result)
-    bg = plugin._background[task_id]
+    bg = plugin._tasks[task_id]
     await asyncio.wait_for(bg.drain_task, timeout=5)
 
     final = await plugin.shell_state(task_id=task_id, description="final check")
@@ -388,7 +482,7 @@ async def test_promoted_shell_eventually_finishes(plugin):
 @pytest.mark.asyncio
 async def test_foreground_completion_removes_from_registry(plugin):
     await plugin.shell(command="true", description="noop")
-    assert plugin._background == {}
+    assert plugin._tasks == {}
 
 
 @pytest.mark.asyncio
@@ -400,7 +494,7 @@ async def test_background_kills_child_process_tree(plugin):
         run_in_background=True,
     )
     task_id = _task_id_from(start)
-    bg = plugin._background[task_id]
+    bg = plugin._tasks[task_id]
 
     # Wait for the child pid to be reported.
     for _ in range(50):

@@ -40,8 +40,8 @@ IO is split into two layers: per-agent channels and app-level adapters.
 ### Agents
 
 **Types**
-- **`LLMBaseAgent`** (`arox/core/llm_base.py`): base class for all LLM agents. Owns model inference via `pydantic_ai`, tool registration, MCP clients, message history, and pre/post step hooks.
-- **`MainAgent`** (`arox/core/llm_base.py`): abstract subclass that an App's main agent must extend; hosts the user-driven run loop entry point.
+- **`LLMBaseAgent`** (`arox/core/llm_base/agent.py`): base class for all LLM agents. Owns model inference via `pydantic_ai`, tool registration, MCP clients, message history, and pre/post step hooks.
+- **`MainAgent`** (`arox/core/llm_base/agent.py`): abstract subclass that an App's main agent must extend; hosts the user-driven run loop entry point.
 - **`ChatAgent`** (`arox/core/chat.py`): concrete `MainAgent` adding a conversational loop and `CommandManager` for slash commands (e.g. `/model`, `/reset`). Standard choice for user-facing agents.
 
 **Extension points**

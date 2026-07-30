@@ -424,6 +424,7 @@ class SessionManager:
 
 class SessionStore(Protocol):
     def set_session_types(self, session_types: dict[str, type[Session]]) -> None: ...
+    def session_dir(self, path: list[str]) -> Path: ...
     async def list_sessions(self, session_type: str = "agent") -> list[Session]: ...
     async def load_session(self, path: list[str]) -> Session | None: ...
     async def save_session(self, session: Session) -> None: ...
@@ -442,11 +443,11 @@ class FileSessionStore:
     def set_session_types(self, session_types: dict[str, type[Session]]) -> None:
         self._session_types = session_types
 
-    def _session_dir(self, path: list[str]) -> Path:
+    def session_dir(self, path: list[str]) -> Path:
         return self.base_dir.joinpath(*path)
 
     def _session_meta_path(self, path: list[str]) -> Path:
-        return self._session_dir(path) / "session.json"
+        return self.session_dir(path) / "session.json"
 
     async def list_sessions(self, session_type: str = "agent") -> list[Session]:
         if not self.base_dir.exists():
@@ -482,7 +483,7 @@ class FileSessionStore:
 
     async def save_session(self, session: Session) -> None:
         session.updated_at = datetime.now(UTC)
-        session_dir = self._session_dir(session.path)
+        session_dir = self.session_dir(session.path)
         session_dir.mkdir(parents=True, exist_ok=True)
 
         meta = session.model_dump(mode="json")
@@ -493,7 +494,7 @@ class FileSessionStore:
     async def delete_session(self, path: list[str]) -> None:
         import shutil
 
-        session_dir = self._session_dir(path)
+        session_dir = self.session_dir(path)
         if session_dir.exists():
             shutil.rmtree(session_dir)
 

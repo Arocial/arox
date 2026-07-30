@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import os
 import signal
@@ -9,6 +10,8 @@ from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from itertools import chain
+from pathlib import Path
+from typing import BinaryIO
 
 from arox.core.app import get_original_env_copy
 from arox.core.plugin import Plugin, tool
@@ -16,13 +19,14 @@ from arox.plugins.slots import AGENT_INFO, AGENT_RESET
 
 logger = logging.getLogger(__name__)
 
-HEAD_BUFFER_LINES = 1000
-TAIL_BUFFER_LINES = 4000
+HEAD_BUFFER_LINES = 50
+TAIL_BUFFER_LINES = 150
 KILL_GRACE_SECONDS = 5
 POLL_BASE_DELAY = 5
 POLL_MAX_DELAY = 300
 MAX_TIMEOUT_SECONDS = 600
-MAX_RENDER_BYTES = 100 * 1024
+MAX_RENDER_BYTES = 10 * 1024
+MAX_OUTPUT_FILE_BYTES = 10 * 1024 * 1024
 DRAIN_FLUSH_TIMEOUT = 2.0
 DEFAULT_SHELL_UNIX = "/bin/bash"
 
@@ -51,16 +55,37 @@ def get_shell_context():
 
 
 @dataclass
-class BackgroundShell:
+class RenderedOutput:
+    text: str
+    omitted_lines: int = 0
+    truncated_by_size: bool = False
+
+    @property
+    def truncated(self) -> bool:
+        return self.omitted_lines > 0 or self.truncated_by_size
+
+
+@dataclass
+class ShellTask:
     task_id: str
     command: str
     description: str
     process: asyncio.subprocess.Process
     started_at: float
+    output_path: Path
+    output_file: BinaryIO
     head_lines: list[str] = field(default_factory=list)
-    tail_lines: deque = field(default_factory=lambda: deque(maxlen=TAIL_BUFFER_LINES))
+    tail_lines: deque[str] = field(
+        default_factory=lambda: deque(maxlen=TAIL_BUFFER_LINES)
+    )
+    unread_head_lines: list[str] = field(default_factory=list)
+    unread_tail_lines: deque[str] = field(
+        default_factory=lambda: deque(maxlen=TAIL_BUFFER_LINES)
+    )
     total_lines: int = 0
-    read_total: int = 0
+    unread_lines: int = 0
+    output_file_bytes: int = 0
+    output_file_limited: bool = False
     exit_code: int | None = None
     finished_at: float | None = None
     drain_task: asyncio.Task | None = None
@@ -76,34 +101,49 @@ class BackgroundShell:
         if len(self.head_lines) < HEAD_BUFFER_LINES:
             self.head_lines.append(line)
         self.tail_lines.append(line)
+        if len(self.unread_head_lines) < HEAD_BUFFER_LINES:
+            self.unread_head_lines.append(line)
+        self.unread_tail_lines.append(line)
         self.total_lines += 1
+        self.unread_lines += 1
+        self._write_output(line)
         self.new_output_event.set()
+
+    def _write_output(self, line: str) -> None:
+        if self.output_file_limited:
+            return
+        data = f"{line}\n".encode()
+        remaining = MAX_OUTPUT_FILE_BYTES - self.output_file_bytes
+        if len(data) <= remaining:
+            self.output_file.write(data)
+            self.output_file_bytes += len(data)
+            return
+
+        if remaining > 0:
+            prefix = data[:remaining].decode(errors="ignore").encode()
+            self.output_file.write(prefix)
+            self.output_file_bytes += len(prefix)
+        self.output_file_limited = True
 
     def captured_lines(self) -> Iterable[str]:
         """Iterable view of retained lines (head + tail, may overlap)."""
         return chain(self.head_lines, self.tail_lines)
 
-    def render_full(self) -> list[str]:
-        """Contiguous view of captured output, with a truncation marker
-        if a gap exists between the head and tail buffers."""
-        if self.total_lines <= len(self.tail_lines):
-            return list(self.tail_lines)
-        dropped_from_tail = self.total_lines - len(self.tail_lines)
-        if dropped_from_tail <= len(self.head_lines):
-            return self.head_lines[:dropped_from_tail] + list(self.tail_lines)
-        missing = self.total_lines - len(self.head_lines) - len(self.tail_lines)
-        return [
-            *self.head_lines,
-            f"... ({missing} lines truncated) ...",
-            *self.tail_lines,
-        ]
+    def take_unread(self) -> tuple[list[str], list[str], int]:
+        head = self.unread_head_lines
+        tail = list(self.unread_tail_lines)
+        total = self.unread_lines
+        self.unread_head_lines = []
+        self.unread_tail_lines = deque(maxlen=TAIL_BUFFER_LINES)
+        self.unread_lines = 0
+        return head, tail, total
 
 
 class ShellPlugin(Plugin):
     def __init__(self, agent):
         super().__init__(agent)
         self.workspace = self.agent.workspace.absolute()
-        self._background: dict[str, BackgroundShell] = {}
+        self._tasks: dict[str, ShellTask] = {}
 
     def on_load(self):
         self.agent.provide_slot(AGENT_INFO, self._get_info)
@@ -169,8 +209,8 @@ class ShellPlugin(Plugin):
             self._signal_group(process, signal.SIGKILL)
             await process.wait()
 
-    async def _flush_drain(self, bg: BackgroundShell) -> None:
-        drain = bg.drain_task
+    async def _flush_drain(self, task: ShellTask) -> None:
+        drain = task.drain_task
         if drain is None or drain.done():
             return
         try:
@@ -178,28 +218,41 @@ class ShellPlugin(Plugin):
         except (TimeoutError, asyncio.CancelledError):
             pass
 
-    def _allocate_bg(
+    def _session_output_dir(self) -> Path:
+        session = self.agent.session
+        manager = session.manager
+        if manager is None:
+            raise RuntimeError("Agent session is not attached to a session manager")
+        output_dir = manager.session_store.session_dir(session.path) / "shell"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        return output_dir
+
+    def _register_task(
         self,
         process: asyncio.subprocess.Process,
         command: str,
         description: str,
         *,
         notify_on_finish: bool,
-    ) -> BackgroundShell:
+    ) -> ShellTask:
         task_id = f"task_{uuid.uuid4().hex[:8]}"
-        bg = BackgroundShell(
+        output_path = self._session_output_dir() / f"{task_id}.log"
+        output_file = output_path.open("wb", buffering=0)
+        task = ShellTask(
             task_id=task_id,
             command=command,
             description=description,
             process=process,
             started_at=time.monotonic(),
+            output_path=output_path,
+            output_file=output_file,
             notify_on_finish=notify_on_finish,
         )
-        bg.drain_task = asyncio.create_task(self._drain(bg))
-        self._background[task_id] = bg
-        return bg
+        task.drain_task = asyncio.create_task(self._drain(task))
+        self._tasks[task_id] = task
+        return task
 
-    async def _drain(self, bg: BackgroundShell) -> None:
+    async def _drain(self, task: ShellTask) -> None:
         async def pump(stream, is_err: bool) -> None:
             if stream is None:
                 return
@@ -209,37 +262,160 @@ class ShellPlugin(Plugin):
                     return
                 text = line.decode(errors="replace").rstrip("\r\n")
                 display = f"[stderr] {text}" if is_err else text
-                bg.append_line(display)
-                logger.info("[%s] %s", bg.task_id, display)
+                task.append_line(display)
+                logger.info("[%s] %s", task.task_id, display)
 
         try:
             await asyncio.gather(
-                pump(bg.process.stdout, False),
-                pump(bg.process.stderr, True),
+                pump(task.process.stdout, False),
+                pump(task.process.stderr, True),
             )
-            await bg.process.wait()
+            await task.process.wait()
         except asyncio.CancelledError:
             raise
         except Exception:
-            logger.exception("Task %s drain failed", bg.task_id)
+            logger.exception("Task %s drain failed", task.task_id)
         finally:
-            bg.exit_code = bg.process.returncode
-            bg.finished_at = time.monotonic()
+            task.output_file.close()
+            task.exit_code = task.process.returncode
+            task.finished_at = time.monotonic()
             logger.info(
                 "Task %s finished: %s (exit %s, elapsed %.1fs)",
-                bg.task_id,
-                bg.description,
-                bg.exit_code,
-                bg.elapsed(),
+                task.task_id,
+                task.description,
+                task.exit_code,
+                task.elapsed(),
             )
-            if bg.notify_on_finish:
+            if task.notify_on_finish:
                 try:
                     await self.agent.agent_io.send(
-                        f"[bg {bg.task_id}] task finished "
-                        f"(exit {bg.exit_code}, elapsed {bg.elapsed():.1f}s)"
+                        f"[bg {task.task_id}] task finished "
+                        f"(exit {task.exit_code}, elapsed {task.elapsed():.1f}s)"
                     )
                 except Exception:
                     pass
+
+    @staticmethod
+    def _retained_parts(
+        head_lines: list[str], tail_lines: list[str], total_lines: int
+    ) -> tuple[list[str], list[str]]:
+        if total_lines <= 0:
+            return [], []
+        if total_lines <= len(tail_lines):
+            retained = tail_lines[-total_lines:]
+        else:
+            before_tail = total_lines - len(tail_lines)
+            if before_tail <= len(head_lines):
+                retained = head_lines[:before_tail] + tail_lines
+            else:
+                return head_lines, tail_lines
+        head_count = min(HEAD_BUFFER_LINES, len(retained))
+        return retained[:head_count], retained[head_count:]
+
+    @staticmethod
+    def _data_size(lines: list[str]) -> int:
+        return sum(len(line.encode()) + 1 for line in lines)
+
+    @staticmethod
+    def _fit_lines(
+        lines: list[str], budget: int, *, from_end: bool
+    ) -> tuple[list[str], int, bool]:
+        if not lines or budget <= 0:
+            return [], 0, bool(lines)
+
+        selected: list[str] = []
+        used = 0
+        truncated = False
+        source = reversed(lines) if from_end else iter(lines)
+        for line in source:
+            encoded = line.encode()
+            cost = len(encoded) + 1
+            remaining = budget - used
+            if cost <= remaining:
+                selected.append(line)
+                used += cost
+                continue
+            if remaining > 1:
+                available = remaining - 1
+                if from_end:
+                    fragment = encoded[-available:].decode(errors="ignore")
+                else:
+                    fragment = encoded[:available].decode(errors="ignore")
+                if fragment:
+                    selected.append(fragment)
+                    used += len(fragment.encode()) + 1
+            truncated = True
+            break
+
+        if from_end:
+            selected.reverse()
+        if len(selected) < len(lines):
+            truncated = True
+        return selected, used, truncated
+
+    def _render_output(
+        self, head_lines: list[str], tail_lines: list[str], total_lines: int
+    ) -> RenderedOutput:
+        head, tail = self._retained_parts(head_lines, tail_lines, total_lines)
+        head_size = self._data_size(head)
+        tail_size = self._data_size(tail)
+        if head_size + tail_size <= MAX_RENDER_BYTES:
+            rendered_head = head
+            rendered_tail = tail
+            head_count = len(head)
+            tail_count = len(tail)
+            truncated_by_size = False
+        else:
+            head_budget = min(head_size, MAX_RENDER_BYTES // 4)
+            tail_budget = min(tail_size, MAX_RENDER_BYTES - head_budget)
+            head_budget = min(head_size, MAX_RENDER_BYTES - tail_budget)
+            tail_budget = min(tail_size, MAX_RENDER_BYTES - head_budget)
+            rendered_head, _, head_truncated = self._fit_lines(
+                head, head_budget, from_end=False
+            )
+            rendered_tail, _, tail_truncated = self._fit_lines(
+                tail, tail_budget, from_end=True
+            )
+            head_count = len(rendered_head)
+            tail_count = len(rendered_tail)
+            truncated_by_size = head_truncated or tail_truncated
+
+        omitted_lines = max(total_lines - head_count - tail_count, 0)
+        body = list(rendered_head)
+        if omitted_lines or truncated_by_size:
+            details = []
+            if omitted_lines:
+                details.append(f"{omitted_lines} lines omitted")
+            if truncated_by_size:
+                details.append("output data limited to 10 KiB")
+            body.append(f"... (output truncated: {'; '.join(details)}) ...")
+        body.extend(rendered_tail)
+        return RenderedOutput(
+            text="\n".join(body),
+            omitted_lines=omitted_lines,
+            truncated_by_size=truncated_by_size,
+        )
+
+    @staticmethod
+    def _remove_output_file(task: ShellTask) -> bool:
+        try:
+            task.output_path.unlink(missing_ok=True)
+        except OSError:
+            logger.exception("Failed to remove output file for task %s", task.task_id)
+            return False
+        return True
+
+    @staticmethod
+    def _output_notice(task: ShellTask) -> str:
+        if task.output_file_limited:
+            return (
+                f"Captured output: {task.output_path}\n"
+                "The file reached the 10 MiB limit; later output was consumed "
+                "but not saved."
+            )
+        if task.exit_code is None:
+            return f"Full output is being saved to: {task.output_path}"
+        return f"Full output saved to: {task.output_path}"
 
     @tool(dynamic_context=get_shell_context)
     async def shell(
@@ -273,6 +449,14 @@ class ShellPlugin(Plugin):
             5. Chain with `&&` to stop on the first failure; use `;` only when
                every step should run regardless of previous exit codes.
 
+        Output handling
+            Each response shows at most 50 head lines and 150 tail lines, with
+            command output data limited to 10 KiB. Complete captured output is
+            written to the session's shell directory, capped at 10 MiB per
+            task. A completed foreground task removes this file when its full
+            output fits in the response; truncated and background output files
+            remain available for inspection.
+
         Long-running commands
             If a foreground command does not finish within `timeout` seconds,
             it is NOT killed — it is promoted to a background task and the
@@ -298,12 +482,12 @@ class ShellPlugin(Plugin):
                 immediately.
 
         Returns:
-            Foreground that finished in time: combined stdout/stderr (with a
-            head+tail truncation marker if very large) and an exit-code marker
-            on non-zero exit.
-            Foreground that timed out: promotion notice with task_id and
-            partial output.
-            Background: a task id and usage hint.
+            Foreground that finished in time: combined stdout/stderr summary,
+            exit code when non-zero, and the captured-output path when the
+            response is truncated.
+            Foreground that timed out: promotion notice, output summary, task
+            id, and the captured-output path.
+            Background: a task id, output path, and usage hint.
         """
         if timeout is not None and timeout > MAX_TIMEOUT_SECONDS:
             logger.warning(
@@ -324,31 +508,30 @@ class ShellPlugin(Plugin):
         except Exception as e:
             return f"Error spawning command: {e!s}"
 
-        if run_in_background:
-            bg = self._allocate_bg(
+        try:
+            task = self._register_task(
                 process,
                 command,
                 description,
-                notify_on_finish=True,
+                notify_on_finish=run_in_background,
             )
+        except Exception as e:
+            await self._terminate(process)
+            return f"Error creating command output file: {e!s}"
+
+        if run_in_background:
             await self.agent.agent_io.send(
-                f"[bg {bg.task_id}] task started: {description}  (pid {process.pid})"
+                f"[bg {task.task_id}] task started: {description}  (pid {process.pid})"
             )
             return (
-                f"Started background task `{bg.task_id}` "
+                f"Started background task `{task.task_id}` "
                 f"(pid {process.pid}): {description}\n"
-                f'- Poll output: shell_state(task_id="{bg.task_id}")\n'
-                f'- Terminate:   kill_shell(task_id="{bg.task_id}")'
+                f"{self._output_notice(task)}\n"
+                f'- Poll output: shell_state(task_id="{task.task_id}")\n'
+                f'- Terminate:   kill_shell(task_id="{task.task_id}")'
             )
 
-        # Foreground: wait for completion or promote to background on timeout.
-        bg = self._allocate_bg(
-            process,
-            command,
-            description,
-            notify_on_finish=False,
-        )
-        drain = bg.drain_task
+        drain = task.drain_task
         assert drain is not None
         timed_out = False
         try:
@@ -357,58 +540,58 @@ class ShellPlugin(Plugin):
             timed_out = True
 
         if timed_out:
-            bg.notify_on_finish = True
-            tail_lines = list(bg.tail_lines)[-50:]
-            tail = "\n".join(tail_lines)
+            task.notify_on_finish = True
+            rendered = self._render_output(
+                task.head_lines, list(task.tail_lines), task.total_lines
+            )
             logger.info(
                 "Task %s promoted to background after %ss: %s",
-                bg.task_id,
+                task.task_id,
                 timeout,
-                bg.description,
+                task.description,
             )
-            msg = (
+            parts = [
                 f"Command did not finish within {timeout}s — promoted to "
-                f"background task `{bg.task_id}` (still running, elapsed "
-                f"{bg.elapsed():.1f}s).\n"
-                f'- Poll:      shell_state(task_id="{bg.task_id}")\n'
-                f'- Terminate: kill_shell(task_id="{bg.task_id}")'
+                f"background task `{task.task_id}` (still running, elapsed "
+                f"{task.elapsed():.1f}s)."
+            ]
+            if rendered.text:
+                parts.append(rendered.text)
+            parts.extend(
+                [
+                    self._output_notice(task),
+                    f'- Poll:      shell_state(task_id="{task.task_id}")',
+                    f'- Terminate: kill_shell(task_id="{task.task_id}")',
+                ]
             )
             await self.agent.agent_io.send(
-                f"[{bg.task_id}] promoted to background after {timeout}s"
+                f"[{task.task_id}] promoted to background after {timeout}s"
             )
-            if tail:
-                return f"{msg}\n--- partial output (last 50 lines) ---\n{tail}"
-            return msg
+            return "\n".join(parts)
 
-        output = self._render_completed(bg)
-        self._background.pop(bg.task_id, None)
-        return output
-
-    def _render_completed(self, bg: BackgroundShell) -> str:
-        lines = bg.render_full()
-        text = "\n".join(lines)
-        encoded = text.encode("utf-8")
-        if len(encoded) > MAX_RENDER_BYTES:
-            half = MAX_RENDER_BYTES // 2
-            head_text = encoded[:half].decode("utf-8", errors="replace")
-            tail_text = encoded[-half:].decode("utf-8", errors="replace")
-            text = (
-                f"{head_text}\n"
-                f"... (output truncated by size, {bg.total_lines} total lines) ...\n"
-                f"{tail_text}"
-            )
-        if bg.exit_code != 0:
-            if text:
-                text += "\n"
-            text += f"[Process exited with code {bg.exit_code}]"
-        return text
+        rendered = self._render_output(
+            task.head_lines, list(task.tail_lines), task.total_lines
+        )
+        parts = []
+        if rendered.text:
+            parts.append(rendered.text)
+        if task.exit_code != 0:
+            parts.append(f"[Process exited with code {task.exit_code}]")
+        if rendered.truncated or not self._remove_output_file(task):
+            parts.append(self._output_notice(task))
+        self._tasks.pop(task.task_id, None)
+        return "\n".join(parts)
 
     @tool()
     async def shell_state(self, task_id: str, description: str = "") -> str:
         """Check on a background (or promoted) task. Waits briefly (with
         per-task exponential backoff: 20s, 40s, 80s, ..., capped at 300s)
         so the model doesn't busy-poll, then returns new output, run status,
-        and total elapsed time.
+        total elapsed time, and the full captured-output path.
+
+        New output uses the same 50-head/150-tail and 10 KiB output-data
+        limits as foreground commands. The complete task output, including
+        lines returned by earlier calls, remains in the session output file.
 
         The wait returns early if the process exits in the meantime. The
         backoff resets once the process reaches a terminal state.
@@ -419,74 +602,50 @@ class ShellPlugin(Plugin):
                 (e.g., "Wait for dev server to bind port").
         """
         logger.info("Polling task %s (%s)", task_id, description)
-        bg = self._background.get(task_id)
-        if bg is None:
+        task = self._tasks.get(task_id)
+        if task is None:
             return f"Unknown task_id: {task_id}"
 
-        drain = bg.drain_task
-        new_count = bg.total_lines - bg.read_total
-
-        # Block only if there are no new lines and the process is still running.
-        if new_count == 0 and bg.exit_code is None and drain is not None:
-            delay = min(POLL_BASE_DELAY * (2**bg.poll_count), POLL_MAX_DELAY)
-            bg.poll_count += 1
-            bg.new_output_event.clear()
+        drain = task.drain_task
+        if task.unread_lines == 0 and task.exit_code is None and drain is not None:
+            delay = min(POLL_BASE_DELAY * (2**task.poll_count), POLL_MAX_DELAY)
+            task.poll_count += 1
+            task.new_output_event.clear()
             try:
-                wait_event = asyncio.create_task(bg.new_output_event.wait())
-                done, pending = await asyncio.wait(
+                wait_event = asyncio.create_task(task.new_output_event.wait())
+                _, pending = await asyncio.wait(
                     [asyncio.shield(drain), wait_event],
                     timeout=delay,
                     return_when=asyncio.FIRST_COMPLETED,
                 )
                 if wait_event in pending:
                     wait_event.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await wait_event
             except asyncio.CancelledError:
                 raise
             except Exception:
                 pass
 
-            # Recalculate after the potential wait
-            new_count = bg.total_lines - bg.read_total
-
-        # Reset backoff if we actually received output
+        head, tail, new_count = task.take_unread()
         if new_count > 0:
-            bg.poll_count = 0
+            task.poll_count = 0
 
-        if new_count <= 0:
-            new_lines: list[str] = []
-        elif new_count <= len(bg.tail_lines):
-            new_lines = list(bg.tail_lines)[-new_count:]
-        else:
-            dropped = new_count - len(bg.tail_lines)
-            new_lines = [
-                f"... ({dropped} lines dropped before this slice) ...",
-                *bg.tail_lines,
-            ]
-        bg.read_total = bg.total_lines
-
-        if bg.exit_code is not None:
-            status = f"exit {bg.exit_code}"
-            bg.poll_count = 0
+        if task.exit_code is not None:
+            status = f"exit {task.exit_code}"
+            task.poll_count = 0
         else:
             status = "running"
 
-        header = f"[{task_id}] status: {status} | elapsed: {bg.elapsed():.1f}s"
-
-        if not new_lines:
-            return f"{header}\n(no new output)"
-
-        body = "\n".join(new_lines)
-        encoded = body.encode("utf-8")
-        if len(encoded) > MAX_RENDER_BYTES:
-            half = MAX_RENDER_BYTES // 2
-            head_text = encoded[:half].decode("utf-8", errors="replace")
-            tail_text = encoded[-half:].decode("utf-8", errors="replace")
-            body = (
-                f"{head_text}\n"
-                f"... (poll output truncated by size, {len(new_lines)} new lines) ...\n"
-                f"{tail_text}"
-            )
-        return f"{header}\n{body}"
+        parts = [f"[{task_id}] status: {status} | elapsed: {task.elapsed():.1f}s"]
+        if new_count:
+            rendered = self._render_output(head, tail, new_count)
+            if rendered.text:
+                parts.append(rendered.text)
+        else:
+            parts.append("(no new output)")
+        parts.append(self._output_notice(task))
+        return "\n".join(parts)
 
     @tool()
     async def shell_input(self, task_id: str, text: str, description: str = "") -> str:
@@ -498,13 +657,13 @@ class ShellPlugin(Plugin):
             description: Why you are sending this input.
         """
         logger.info("Sending input to task %s (%s): %r", task_id, description, text)
-        bg = self._background.get(task_id)
-        if bg is None:
+        task = self._tasks.get(task_id)
+        if task is None:
             return f"Unknown task_id: {task_id}"
-        if bg.exit_code is not None:
-            return f"Task {task_id} has already exited with code {bg.exit_code}."
+        if task.exit_code is not None:
+            return f"Task {task_id} has already exited with code {task.exit_code}."
 
-        if bg.process.stdin is None:
+        if task.process.stdin is None:
             return f"Task {task_id} does not support stdin."
 
         try:
@@ -513,8 +672,8 @@ class ShellPlugin(Plugin):
                     "shell_input received text without newline, appending \\n automatically."
                 )
                 text += "\n"
-            bg.process.stdin.write(text.encode())
-            await bg.process.stdin.drain()
+            task.process.stdin.write(text.encode())
+            await task.process.stdin.drain()
             return f"Sent input to task {task_id}."
         except Exception as e:
             logger.exception("Failed to send input to task %s", task_id)
@@ -530,46 +689,50 @@ class ShellPlugin(Plugin):
             description: One short sentence on why (e.g., "Tests finished").
         """
         logger.info("Killing task %s (%s)", task_id, description)
-        bg = self._background.get(task_id)
-        if bg is None:
+        task = self._tasks.get(task_id)
+        if task is None:
             return f"Unknown task_id: {task_id}"
-        if bg.process.returncode is not None:
+        if task.process.returncode is not None:
             return (
                 f"Task {task_id} already exited with code "
-                f"{bg.process.returncode} (elapsed {bg.elapsed():.1f}s)"
+                f"{task.process.returncode} (elapsed {task.elapsed():.1f}s)"
             )
-        await self._terminate(bg.process)
-        await self._flush_drain(bg)
+        await self._terminate(task.process)
+        await self._flush_drain(task)
         logger.info(
             "Task %s killed: %s (exit %s, elapsed %.1fs)",
-            bg.task_id,
-            bg.description,
-            bg.process.returncode,
-            bg.elapsed(),
+            task.task_id,
+            task.description,
+            task.process.returncode,
+            task.elapsed(),
         )
         return (
             f"Killed task {task_id} "
-            f"(exit code {bg.process.returncode}, elapsed {bg.elapsed():.1f}s)"
+            f"(exit code {task.process.returncode}, elapsed {task.elapsed():.1f}s)"
         )
 
     async def _reset(self) -> None:
-        for task_id in list(self._background):
-            bg = self._background.pop(task_id)
-            if bg.process.returncode is None:
-                await self._terminate(bg.process)
-            if bg.drain_task and not bg.drain_task.done():
-                bg.drain_task.cancel()
+        drains = []
+        for task_id in list(self._tasks):
+            task = self._tasks.pop(task_id)
+            if task.process.returncode is None:
+                await self._terminate(task.process)
+            if task.drain_task and not task.drain_task.done():
+                task.drain_task.cancel()
+                drains.append(task.drain_task)
+        if drains:
+            await asyncio.gather(*drains, return_exceptions=True)
 
     async def _get_info(self) -> str:
-        if not self._background:
+        if not self._tasks:
             return ""
-        lines = ["", f"Background tasks ({len(self._background)}):"]
-        for task_id, bg in self._background.items():
-            if bg.exit_code is not None:
-                state = f"exit {bg.exit_code}"
+        lines = ["", f"Background tasks ({len(self._tasks)}):"]
+        for task_id, task in self._tasks.items():
+            if task.exit_code is not None:
+                state = f"exit {task.exit_code}"
             else:
                 state = "running"
             lines.append(
-                f"  - {task_id} [{state} {bg.elapsed():.0f}s] {bg.description}"
+                f"  - {task_id} [{state} {task.elapsed():.0f}s] {task.description}"
             )
         return "\n".join(lines)
