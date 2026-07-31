@@ -1,7 +1,7 @@
 import logging
 from typing import Any
 
-from httpx import AsyncClient, HTTPStatusError, Timeout, TransportError
+from httpx import AsyncClient, HTTPStatusError, TransportError
 from pydantic_ai.providers import (
     Provider,
     gateway,
@@ -77,7 +77,6 @@ def infer_provider(
             request.headers[turn_header] = turn_id
 
     client = create_retrying_client(
-        timeout=Timeout(timeout=80),
         extra_request_hooks=[_add_context_headers],
     )
 
