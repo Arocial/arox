@@ -18,9 +18,9 @@ SUBAGENTS = FirstSlot[Callable[..., list["LLMBaseAgent"]], list["LLMBaseAgent"]]
     "Provides the list of subagents managed by the agent",
 )
 
-DELEGATE_TO_SUBAGENT = FirstSlot[Callable[..., Any], str](
-    "delegate_to_subagent",
-    "Delegates a task to a named subagent and returns its result",
+RUN_SUBAGENT = FirstSlot[Callable[..., Any], str](
+    "run_subagent",
+    "Runs an internal one-shot task with a named subagent and returns its result",
 )
 
 # Slot for getting agent info

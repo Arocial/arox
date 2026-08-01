@@ -85,12 +85,14 @@ class AgentConfig(BaseModel):
     request_limit: int | None = Field(default=50, gt=0)
     request_limit_prompt: str | None = None
     plugins: list[str] = Field(default_factory=list)
+    plugin_config: dict[str, dict[str, Any]] = Field(default_factory=dict)
     skills: str | list[str] | None = None
     default_skills: str | list[str] | None = None
     mcp_servers: str | list[str] | None = None
     model_params: dict[str, Any] = Field(default_factory=dict)
     model_prompt: dict[str, str] = Field(default_factory=dict)
     subagents: list[str] = Field(default_factory=list)
+    max_parallel_subagents: int = Field(default=4, ge=1, le=32)
 
 
 class AppConfig(BaseModel):

@@ -56,9 +56,16 @@ class CommandSpec:
 class _ToolRegistration:
     """Descriptor holding the information needed to register a plugin tool."""
 
-    def __init__(self, func: FunctionType, *, sequential: bool) -> None:
+    def __init__(
+        self,
+        func: FunctionType,
+        *,
+        sequential: bool,
+        enabled: bool | Callable[[Any], bool],
+    ) -> None:
         self.func = func
         self.sequential = sequential
+        self.enabled = enabled
         update_wrapper(self, func)
 
     def __get__(self, instance: Any, owner: type[Any] | None = None) -> Any:
@@ -74,8 +81,13 @@ def tool(
     dynamic_context: Callable[[], dict[str, Any]] | None = None,
     *,
     sequential: bool = False,
+    enabled: bool | Callable[[Any], bool] = True,
 ):
-    """Decorator to prepare a plugin method for toolset registration."""
+    """Prepare a plugin method for toolset registration.
+
+    ``enabled`` can be a fixed boolean or a predicate receiving the plugin
+    instance, allowing exposure to depend on configured plugin state.
+    """
 
     def decorator(func: FunctionType) -> _ToolRegistration:
         if dynamic_context:
@@ -83,7 +95,7 @@ def tool(
 
             context = dynamic_context()
             func.__doc__ = utils.render_template(func.__doc__, **context)
-        return _ToolRegistration(func, sequential=sequential)
+        return _ToolRegistration(func, sequential=sequential, enabled=enabled)
 
     return decorator
 
@@ -216,6 +228,11 @@ class CommandManager:
 class Plugin:
     def __init__(self, agent):
         self.agent = agent
+        self.config: dict[str, Any] = {}
+
+    def configure(self, config: dict[str, Any]) -> None:
+        """Apply the configuration associated with this plugin instance."""
+        self.config = dict(config)
 
     async def on_start(self) -> None:
         """Resource hook called when the agent starts (sets up the context stack)."""
@@ -265,8 +282,11 @@ class Plugin:
             type(self), predicate=lambda member: isinstance(member, _ToolRegistration)
         )
         for _, registration in registrations:
+            enabled = registration.enabled
+            if not (enabled(self) if callable(enabled) else enabled):
+                continue
             toolset.add_function(
-                registration.func.__get__(self, type(self)),
+                registration.__get__(self, type(self)),
                 sequential=registration.sequential,
             )
         return toolset if toolset.tools else None
@@ -295,6 +315,7 @@ def load_plugins(agent) -> list[Plugin]:
     for plugin_path in agent.agent_config.plugins:
         plugin_cls = utils.import_class(plugin_path, group="arox.plugins")
         plugin = plugin_cls(agent)
+        plugin.configure(agent.agent_config.plugin_config.get(plugin_path, {}))
         plugins.append(plugin)
 
         for spec in plugin.commands():

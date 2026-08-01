@@ -21,12 +21,18 @@ def test_config_basic_parsing(tmp_path):
     model_ref = "test-model"
     [agent.test_agent]
     type = "chat"
+    plugins = ["subagent"]
+    [agent.test_agent.plugin_config.subagent]
+    mode = "advanced"
     """)
 
     config = ConfigLoader(workspace=tmp_path).reload()
 
     assert config.model_ref == "test-model"
     assert config.agent["test_agent"].type == "chat"
+    assert config.agent["test_agent"].plugin_config == {
+        "subagent": {"mode": "advanced"}
+    }
 
 
 def test_config_override_order(tmp_path):

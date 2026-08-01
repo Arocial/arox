@@ -102,7 +102,7 @@ Arox adds a few non-standard frames on the same channel:
 
 The `reply` object is a standard Vercel AI SDK `UIMessage`. Its `metadata.custom.chatInputEventResult.req_id` MUST match the `req_id` carried in the `cmd-input-request` it answers. An optional `client_message_id` may be included in `chatInputEventResult` to identify the UI message that produced this reply — when set, the server stores it on the resulting `user_input` session event and echoes it in the subsequent `cmd-user-turn` frame, so the client can map UI messages back to absolute event indices without relying on ordering.
 
-The `command` payload is a structured `CommandEvent`: `type` is the event class name (e.g. `SetModelEvent`, `InfoEvent`, `ResetEvent`, `SubagentEvent`, `FileAddEvent`, `CompactEvent`, `AddFileListEvent`), and the remaining fields populate that event's dataclass. The server runs the command locally and streams any reply text back as ordinary text frames; the ack carries `{"status": "ok" | "unknown_command", "output": "..."}`.
+The `command` payload is a structured `CommandEvent`: `type` is the event class name (e.g. `SetModelEvent`, `InfoEvent`, `ResetEvent`, `FileAddEvent`, `CompactEvent`, `AddFileListEvent`), and the remaining fields populate that event's dataclass. The server runs the command locally and streams any reply text back as ordinary text frames; the ack carries `{"status": "ok" | "unknown_command", "output": "..."}`.
 
 The server responds to every client message with `{"type": "ack", "status": "ok" | "cancelled" | "unknown_command" | "no_req_id" | "noop", ...}`.
 

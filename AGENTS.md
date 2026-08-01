@@ -18,7 +18,12 @@ uv run mkdocs serve  # Serve docs at http://127.0.0.1:3420
 
 ### Hierarchy: App → MainAgent (with Plugins)
 
-An **App** is a runnable process that owns one `IOAdapter` and hosts a **MainAgent**. The `MainAgent` runs the user-facing loop and is driven by `AppConfig` and `AgentConfig`. Subagents are managed by the `SubagentPlugin`, which instantiates them and exposes them to the main agent as callable tools (and via the `SUBAGENTS` and `DELEGATE_TO_SUBAGENT` slots) so it can delegate tasks directly. Subagents are defined statically in the configuration and are instantiated when tasks are delegated to them. The plugin records all instantiated subagents (filtering by `active` status for currently running ones) and automatically closes their sessions when the task completes.
+An **App** is a runnable process that owns one `IOAdapter` and hosts a **MainAgent**. The `MainAgent` runs the user-facing loop and is driven by `AppConfig` and `AgentConfig`. Plugins are loaded in `AgentConfig.plugins` order and receive their per-plugin settings from `AgentConfig.plugin_config`, keyed by the same plugin name used in `plugins`. Subagents are managed by the `SubagentPlugin`: its default `simple` mode exposes only `delegate_task` and waits for each one-shot delegation to complete, while `mode = "advanced"` exposes the resumable task controls (`spawn_agent`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents`) and surfaces instantiated agents through the `SUBAGENTS` slot. Subagent types are defined statically in configuration; advanced-mode tasks own child `AgentSession`s, persist their task metadata, and can be continued after completion or interruption. Running tasks are cancelled and live resources are closed when the parent agent stops.
+
+```toml
+[agent.coder.plugin_config.subagent]
+mode = "advanced"
+```
 
 Agent types and which agent to instantiate come from config (`arox/core/config.py`): `ConfigLoader` resolves `AppConfig` / `AgentConfig` from layered YAML plus CLI overrides, caches unchanged source files, and exposes the active snapshot through `current_config`; callers use `reload()` to pick up changed config/include/agent/skill files. Apps retain the base loader; `create_agent()` derives an independent loader for the agent's workspace while preserving the app, profile, and CLI context. Failed runtime reloads preserve the last valid `Config` snapshot.
 
@@ -46,7 +51,7 @@ IO is split into two layers: per-agent channels and app-level adapters.
 
 **Extension points**
 - **`Plugin`** (`arox/core/plugin.py`): primary extension unit. A plugin declares:
-  - methods decorated with `@tool` — Python functions exposed to the LLM
+  - methods decorated with `@tool` — Python functions exposed to the LLM; the decorator's `enabled` condition can make exposure depend on plugin configuration
   - `commands()` — slash commands for the human (`@command`)
   - `history_processor()` — async hook to modify message history before LLM calls
 - **`Slot`** (`arox/core/slot.py`): typed token for loose coupling between plugins/agents, used for both pull and push patterns. Producers call `agent.provide_slot(slot, impl)`; consumers pull or push notifications with `await agent.invoke_slot(slot, ...)`. Built-in slots are in `arox/plugins/slots.py` (e.g. `SUBAGENT`, `PERSISTENT_CONTEXT`, `AGENT_RESET`).

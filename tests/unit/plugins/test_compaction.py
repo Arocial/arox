@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 from types import SimpleNamespace
 from typing import cast
@@ -89,10 +90,14 @@ class _MockAgent:
             return [self._compaction_agent]
         if slot is PERSISTENT_CONTEXT:
             return [self._persistent] if self._persistent else []
-        from arox.plugins.slots import DELEGATE_TO_SUBAGENT
+        from arox.plugins.slots import RUN_SUBAGENT
 
-        if slot is DELEGATE_TO_SUBAGENT:
-            self._compaction_agent.message_history = kwargs.get("message_history", [])
+        if slot is RUN_SUBAGENT:
+            callback = kwargs.get("on_subagent_created")
+            if callback:
+                result = callback(self._compaction_agent)
+                if asyncio.iscoroutine(result):
+                    await result
             return await self._compaction_agent.run_task(
                 args[1] if len(args) > 1 else ""
             )

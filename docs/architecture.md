@@ -9,7 +9,7 @@ An **App** is a runnable process (e.g. `arox-coder`) that owns a single **IO ada
 A **`MainAgent`** assembles a working agent system against a workspace, augmented by plugins:
 
 - Exactly one **main agent** — the user-facing entry point, must subclass `MainAgent` (typically a `ChatAgent`).
-- Zero or more **subagents** — specialized agents the main agent can delegate to. They are managed by the `SubagentPlugin` and exposed as callable tools (and through the `SUBAGENTS` slot) on the main agent.
+- Zero or more **subagents** — specialized agents run as resumable tasks by the `SubagentPlugin`. The main agent can spawn, wait for, interrupt, inspect, and continue these tasks through callable tools. Live subagent instances are also exposed through the `SUBAGENTS` slot for IO routing and status rendering.
 - A resolved `AppConfig` and `AgentConfig` (from `arox/core/config.py`), which names the main agent, its subagents, and their per-agent configuration.
 
 The App drives lifecycle: it constructs the main agent (looked up by entry-point name from `AgentConfig.type`), attaches pre/post step hooks, enters its async context (which in turn starts plugins), and then runs `main_agent.run()`.

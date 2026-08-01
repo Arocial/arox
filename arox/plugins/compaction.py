@@ -12,7 +12,7 @@ from pydantic_ai import (
 
 from arox.core.llm_base import DelegatableAgent, LLMBaseAgent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, tool
-from arox.plugins.slots import DELEGATE_TO_SUBAGENT, PERSISTENT_CONTEXT
+from arox.plugins.slots import PERSISTENT_CONTEXT, RUN_SUBAGENT
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +212,7 @@ class CompactionPlugin(Plugin):
             subagent.message_history = messages.copy()
 
         summary = await agent.invoke_slot(
-            DELEGATE_TO_SUBAGENT,
+            RUN_SUBAGENT,
             COMPACTION_AGENT_NAME,
             extra_instructions,
             on_subagent_created=setup_compaction_subagent,
