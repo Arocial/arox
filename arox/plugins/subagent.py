@@ -5,11 +5,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal
 
-from pydantic_ai import RunContext
-from pydantic_ai.tools import ToolDefinition
-
 from arox.core.llm_base import create_agent
-from arox.core.plugin import CommandEvent, CommandSpec, Plugin, ToolDef
+from arox.core.plugin import CommandEvent, CommandSpec, Plugin, tool
 from arox.plugins.slots import (
     DELEGATE_TO_SUBAGENT,
     SUBAGENTS,
@@ -147,28 +144,7 @@ class SubagentPlugin(Plugin):
             CommandSpec(SubagentEvent, self.handle_subagent_event),
         ]
 
-    def tools(self):
-        return [
-            ToolDef(
-                func=self.delegate_to_subagent,
-                kwargs={"prepare": self._prepare_delegate},
-            ),
-            ToolDef(
-                func=self.dispatch_background_task,
-                kwargs={"prepare": self._prepare_delegate},
-            ),
-            ToolDef(func=self.check_task_status),
-        ]
-
-    async def _prepare_delegate(
-        self, ctx: RunContext, tool_def: ToolDefinition
-    ) -> ToolDefinition | None:
-        subagent_names = self.agent.agent_config.subagents
-        if not subagent_names:
-            # Hide the tool entirely when there is nothing to delegate to.
-            return None
-        return tool_def
-
+    @tool()
     async def check_task_status(self, task_id: str) -> str:
         """Check the status or get the result of a background subagent task."""
         if task_id in self.task_results:
@@ -181,6 +157,7 @@ class SubagentPlugin(Plugin):
 
         return f"Error: Unknown task ID '{task_id}'."
 
+    @tool()
     async def dispatch_background_task(self, subagent_name: str, task: str) -> str:
         """Dispatch a long-running task to a subagent in the background and return a task_id.
 
@@ -238,6 +215,7 @@ class SubagentPlugin(Plugin):
         finally:
             await self._destroy_subagent(subagent)
 
+    @tool()
     async def delegate_to_subagent(self, subagent_name: str, task: str) -> str:
         """Delegate a task to a specific subagent.
 

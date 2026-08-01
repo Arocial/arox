@@ -2,7 +2,9 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from functools import update_wrapper
+from types import FunctionType
 from typing import Any, ClassVar
 
 from pydantic_ai import FunctionToolset, ModelMessage, RunContext
@@ -43,12 +45,6 @@ class CommandReply(ReplyEvent):
 
 
 @dataclass
-class ToolDef:
-    func: Callable
-    kwargs: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
 class CommandSpec:
     """Binding between a :class:`CommandEvent` subclass and its handler."""
 
@@ -57,18 +53,37 @@ class CommandSpec:
     completer: CompletionProvider | None = None
 
 
-def tool(dynamic_context: Callable[[], dict[str, Any]] | None = None, **kwargs):
-    """Decorator to register a method as a tool."""
+class _ToolRegistration:
+    """Descriptor holding the information needed to register a plugin tool."""
 
-    def decorator(func):
-        func.__is_tool__ = True
-        func.__tool_kwargs__ = kwargs
+    def __init__(self, func: FunctionType, *, sequential: bool) -> None:
+        self.func = func
+        self.sequential = sequential
+        update_wrapper(self, func)
+
+    def __get__(self, instance: Any, owner: type[Any] | None = None) -> Any:
+        if instance is None:
+            return self
+        return self.func.__get__(instance, owner)
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        return self.func(*args, **kwargs)
+
+
+def tool(
+    dynamic_context: Callable[[], dict[str, Any]] | None = None,
+    *,
+    sequential: bool = False,
+):
+    """Decorator to prepare a plugin method for toolset registration."""
+
+    def decorator(func: FunctionType) -> _ToolRegistration:
         if dynamic_context:
             from arox import utils
 
             context = dynamic_context()
             func.__doc__ = utils.render_template(func.__doc__, **context)
-        return func
+        return _ToolRegistration(func, sequential=sequential)
 
     return decorator
 
@@ -226,21 +241,12 @@ class Plugin:
         """
         return []
 
-    def tools(self) -> list[ToolDef]:
-        tls = []
-        for _, method in inspect.getmembers(self, predicate=inspect.ismethod):
-            if getattr(method, "__is_tool__", False):
-                tls.append(
-                    ToolDef(func=method, kwargs=getattr(method, "__tool_kwargs__", {}))
-                )
-        return tls
-
     def capabilities(self) -> Sequence[AbstractCapability[Any]]:
         """Return pydantic_ai capabilities contributed by this plugin.
 
-        The base implementation wraps :meth:`tools` in a ``Toolset`` capability
-        and, when :meth:`history_processor` is overridden, adds a
-        ``ProcessHistory`` capability. Subclasses needing more (tool/model/output
+        The base implementation collects methods decorated with :func:`tool` into
+        a ``Toolset`` capability and, when :meth:`history_processor` is overridden,
+        adds a ``ProcessHistory`` capability. Subclasses needing more (tool/model/output
         wrappers, native tools, ...) should override this and extend
         ``super().capabilities()``.
         """
@@ -253,19 +259,17 @@ class Plugin:
         return caps
 
     def _build_toolset(self) -> FunctionToolset | None:
-        """Build a ``FunctionToolset`` from :meth:`tools`, or None if empty."""
-        tools = self.tools()
-        if not tools:
-            return None
+        """Build a ``FunctionToolset`` from methods decorated with :func:`tool`."""
         toolset = FunctionToolset()
-        for tool_def in tools:
-            if isinstance(tool_def, dict):
-                kwargs = dict(tool_def)
-                func = kwargs.pop("func")
-                toolset.add_function(func, **kwargs)
-            else:
-                toolset.add_function(tool_def.func, **tool_def.kwargs)
-        return toolset
+        registrations = inspect.getmembers(
+            type(self), predicate=lambda member: isinstance(member, _ToolRegistration)
+        )
+        for _, registration in registrations:
+            toolset.add_function(
+                registration.func.__get__(self, type(self)),
+                sequential=registration.sequential,
+            )
+        return toolset if toolset.tools else None
 
     async def history_processor(
         self,

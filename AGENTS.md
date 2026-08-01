@@ -46,7 +46,7 @@ IO is split into two layers: per-agent channels and app-level adapters.
 
 **Extension points**
 - **`Plugin`** (`arox/core/plugin.py`): primary extension unit. A plugin declares:
-  - `tools()` — Python functions exposed to the LLM (`@tool`)
+  - methods decorated with `@tool` — Python functions exposed to the LLM
   - `commands()` — slash commands for the human (`@command`)
   - `history_processor()` — async hook to modify message history before LLM calls
 - **`Slot`** (`arox/core/slot.py`): typed token for loose coupling between plugins/agents, used for both pull and push patterns. Producers call `agent.provide_slot(slot, impl)`; consumers pull or push notifications with `await agent.invoke_slot(slot, ...)`. Built-in slots are in `arox/plugins/slots.py` (e.g. `SUBAGENT`, `PERSISTENT_CONTEXT`, `AGENT_RESET`).
