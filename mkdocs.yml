@@ -30,10 +30,13 @@ nav:
   - Home: index.md
   - Architecture: architecture.md
   - Configuration: configuration.md
+  - Creating Profiles: creating_profiles.md
   - API Reference: vercel_ai_api.md
   - Apps:
     - Coder: apps/coder.md
-  - Development: development.md
+  - Development:
+    - Development Guide: development.md
+    - External Plugins: external_plugins.md
   - Philosophy: philosophy.md
 
 markdown_extensions:
