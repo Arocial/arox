@@ -1,6 +1,13 @@
 from arox.core.types import AgentInfoUpdate, ServerIdMapping, UserInput
 
-from .agent import AgentDeps, DelegatableAgent, LLMBaseAgent, MainAgent, create_agent
+from .agent import (
+    AgentDeps,
+    DelegatableAgent,
+    LLMBaseAgent,
+    MainAgent,
+    create_agent,
+    create_agent_from_session,
+)
 
 __all__ = [
     "AgentDeps",
@@ -11,4 +18,5 @@ __all__ = [
     "ServerIdMapping",
     "UserInput",
     "create_agent",
+    "create_agent_from_session",
 ]

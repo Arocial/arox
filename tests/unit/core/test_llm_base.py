@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -11,8 +12,8 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter, RequestEvent
-from arox.core.llm_base import LLMBaseAgent
-from arox.core.session import AgentSession
+from arox.core.llm_base import LLMBaseAgent, create_agent_from_session
+from arox.core.session import AgentSession, SessionStatus
 from arox.plugins.core import SetModelEvent
 
 
@@ -336,3 +337,130 @@ request_limit_prompt = "Check your progress and continue."
     assert isinstance(user_prompts[0][0], TextContent)
     assert user_prompts[0][0].content == "start"
     assert user_prompts[1] == "Check your progress and continue."
+
+
+@pytest.mark.asyncio
+async def test_agent_lifecycle_session_binding_and_status(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text("""
+model_ref = "test"
+[agent.test_agent]
+system_prompt = "Hi."
+""")
+    config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
+    io_adapter = _StubIOAdapter()
+    session = AgentSession(path=["test-session-id"], agent_name="test_agent")
+
+    agent = LLMBaseAgent(
+        config_loader,
+        io_adapter=io_adapter,
+        session=session,
+    )
+
+    assert agent.uuid == session.id == "test-session-id"
+    assert session.runtime is None
+    assert session.status == SessionStatus.IDLE
+    assert agent.uuid not in io_adapter.hosts
+
+    async with agent:
+        assert session.runtime is agent
+        assert session.status == SessionStatus.ACTIVE
+        assert agent.uuid in io_adapter.hosts
+
+    assert session.runtime is None
+    assert session.status == SessionStatus.IDLE
+    assert agent.uuid not in io_adapter.hosts
+
+
+@pytest.mark.asyncio
+async def test_agent_lifecycle_exception_sets_error_status(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text("""
+model_ref = "test"
+[agent.test_agent]
+system_prompt = "Hi."
+""")
+    config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
+    io_adapter = _StubIOAdapter()
+    session = AgentSession(path=["test-session-err"], agent_name="test_agent")
+
+    agent = LLMBaseAgent(
+        config_loader,
+        io_adapter=io_adapter,
+        session=session,
+    )
+
+    with pytest.raises(RuntimeError, match="something broke"):
+        async with agent:
+            raise RuntimeError("something broke")
+
+    assert session.runtime is None
+    assert session.status == SessionStatus.ERRORED
+    assert "RuntimeError: something broke" in (session.last_error or "")
+    assert agent.uuid not in io_adapter.hosts
+
+
+@pytest.mark.asyncio
+async def test_agent_lifecycle_cancellation_sets_interrupted_status(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text("""
+model_ref = "test"
+[agent.test_agent]
+system_prompt = "Hi."
+""")
+    config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
+    io_adapter = _StubIOAdapter()
+    session = AgentSession(path=["test-session-cancel"], agent_name="test_agent")
+
+    agent = LLMBaseAgent(
+        config_loader,
+        io_adapter=io_adapter,
+        session=session,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        async with agent:
+            raise asyncio.CancelledError()
+
+    assert session.runtime is None
+    assert session.status == SessionStatus.INTERRUPTED
+    assert session.last_error == "Task interrupted."
+    assert agent.uuid not in io_adapter.hosts
+
+
+@pytest.mark.asyncio
+async def test_create_agent_from_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text("""
+model_ref = "test"
+[agent.test_agent]
+system_prompt = "Hi."
+""")
+    config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
+    io_adapter = _StubIOAdapter()
+    session = AgentSession(
+        path=["parent-id", "child-session-id"],
+        agent_name="test_agent",
+        task_name="child_task",
+        target="/test_agent/child_task",
+    )
+
+    agent = create_agent_from_session(
+        session=session,
+        config_loader=config_loader,
+        io_adapter=io_adapter,
+    )
+
+    assert agent.uuid == "child-session-id"
+    assert agent.session is session
+    assert agent.name == "test_agent"

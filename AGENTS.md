@@ -18,7 +18,7 @@ uv run mkdocs serve  # Serve docs at http://127.0.0.1:3420
 
 ### Hierarchy: App → MainAgent (with Plugins)
 
-An **App** is a runnable process that owns one `IOAdapter` and hosts a **MainAgent**. The `MainAgent` runs the user-facing loop and is driven by `AppConfig` and `AgentConfig`. Plugins are loaded in `AgentConfig.plugins` order and receive their per-plugin settings from `AgentConfig.plugin_config`, keyed by the same plugin name used in `plugins`. Subagents are managed by the `SubagentPlugin`: its default `simple` mode exposes only `delegate_task` and waits for each one-shot delegation to complete, while `mode = "advanced"` exposes the resumable task controls (`spawn_agent`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents`) and surfaces instantiated agents through the `SUBAGENTS` slot. Subagent types are defined statically in configuration; advanced-mode tasks own child `AgentSession`s, persist their task metadata, and can be continued after completion or interruption. Running tasks are cancelled and live resources are closed when the parent agent stops.
+An **App** is a runnable process that owns one `IOAdapter` and hosts a **MainAgent**. The `MainAgent` runs the user-facing loop and is driven by `AppConfig` and `AgentConfig`. Plugins are loaded in `AgentConfig.plugins` order and receive their per-plugin settings from `AgentConfig.plugin_config`, keyed by the same plugin name used in `plugins`. Subagents are managed by the `SubagentPlugin`: its default `simple` mode exposes only `delegate_task` and waits for each one-shot delegation to complete, while `mode = "advanced"` exposes the resumable task controls (`spawn_agent`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents`) and surfaces active subagent runtimes through the `SUBAGENTS` slot. Subagent types are defined statically in configuration; advanced-mode tasks are represented directly by child `AgentSession`s, persist their task metadata, and instantiate ephemeral runtime agents on demand for each turn. Running tasks are cancelled and live resources are closed when the parent agent stops.
 
 ```toml
 [agent.coder.plugin_config.subagent]
@@ -27,10 +27,20 @@ mode = "advanced"
 
 Agent types and which agent to instantiate come from config (`arox/core/config.py`): `ConfigLoader` resolves `AppConfig` / `AgentConfig` from layered YAML plus CLI overrides, caches unchanged source files, and exposes the active snapshot through `current_config`; callers use `reload()` to pick up changed config/include/agent/skill files. Apps retain the base loader; `create_agent()` derives an independent loader for the agent's workspace while preserving the app, profile, and CLI context. Failed runtime reloads preserve the last valid `Config` snapshot.
 
-**Session management** is integrated directly into `LLMBaseAgent` via `arox/core/session.py`:
-- Every agent is instantiated with an `AgentSession` (tracking message history and metadata). Agent sessions persist only the agent name/type; the full `AgentConfig` is resolved from the current configuration at runtime. The main agent's `AgentSession` is the top-level session for a run; subagents keep their own `AgentSession`s nested beneath it.
-- `SessionManager` coordinates with `SessionStore` (default `FileSessionStore`) to persist sessions to disk with an age-based cleanup.
-- Sessions are explicitly passed as constructor dependencies. Resuming is done via the `session_id` passed to the App. The `CorePlugin` now primarily provides the `/fork` command.
+**Session-centric architecture** (`arox/core/session.py` and `arox/core/llm_base/agent.py`):
+- **`AgentSession`** is the persistent, authoritative entity tracking:
+  - Identity and hierarchy (`id`, `path`, `owner`, `children`).
+  - Task metadata (`task_name`, `target`, `initial_message`, `last_message`, `last_result`, `last_error`).
+  - Execution state (`SessionStatus`: `IDLE`, `PENDING`, `RUNNING`, `ACTIVE`, `COMPLETED`, `INTERRUPTED`, `ERRORED`, `CLOSED`).
+  - Message history (`events`), run/token metadata (`run_info`), and persistence.
+  - Agent sessions persist only the agent name and type; full `AgentConfig` is resolved dynamically from active configuration. The main agent's `AgentSession` is the top-level session; child tasks and subagents nest beneath it.
+- **`LLMBaseAgent`** is an ephemeral runtime owning live/expensive resources (Pydantic AI agent, MCP clients, plugins, tools, IO channels).
+  - Runtime identity matches `session.id` (`agent.uuid == session.id`).
+  - While active within `async with agent:`, `session.runtime` is bound to the agent and status is `ACTIVE`.
+  - When execution ends (idle, completed, interrupted, errored, or closed), IO channels and live resources are cleaned up, `session.runtime` is detached (`None`), and the session state is persisted.
+  - Subsequent turns reuse the persistent `AgentSession` and reconstruct a fresh runtime via `create_agent_from_session()`.
+- `SessionManager` coordinates with `SessionStore` (default `FileSessionStore`) to persist sessions to disk with debouncing and age-based cleanup.
+- Resuming is done via the `session_id` passed to the App. The `CorePlugin` provides the `/fork` command.
 
 ### IO system
 

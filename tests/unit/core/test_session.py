@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -16,6 +17,7 @@ from arox.core.session import (
     ErrorEvent,
     FileSessionStore,
     ResetEvent,
+    SessionStatus,
     StepEvent,
     UserInputEvent,
 )
@@ -251,6 +253,104 @@ class TestAgentSession:
 
         agent_session.record_reset("ctx1")
         assert "last_user_messages" not in agent_session.metadata
+
+    def test_default_status_is_idle(self):
+        agent_session = AgentSession(agent_name="main")
+        assert agent_session.status == SessionStatus.IDLE
+        assert not agent_session.is_active
+        assert not agent_session.is_running
+
+    def test_first_class_task_fields(self):
+        agent_session = AgentSession(
+            agent_name="main",
+            task_name="my_task",
+            target="/main/my_task",
+            initial_message="start",
+            last_message="continue",
+            last_result="done",
+            last_error=None,
+        )
+        assert agent_session.task_id == agent_session.id
+        assert agent_session.task_name == "my_task"
+        assert agent_session.target == "/main/my_task"
+        assert agent_session.result == "done"
+        assert agent_session.error is None
+
+    @pytest.mark.asyncio
+    async def test_runtime_and_running_task_excluded_from_serialization(self):
+        agent_session = AgentSession(agent_name="main")
+        dummy_task = asyncio.create_task(asyncio.sleep(0))
+        agent_session.runtime = "dummy_runtime"
+        agent_session.running_task = dummy_task
+
+        dumped = agent_session.model_dump(mode="json")
+        assert "runtime" not in dumped
+        assert "running_task" not in dumped
+        assert agent_session.agent == "dummy_runtime"
+        await dummy_task
+
+    def test_status_and_result_helpers(self):
+        agent_session = AgentSession(agent_name="main")
+        agent_session.status = SessionStatus.ACTIVE
+        assert agent_session.is_active
+
+        agent_session.record_result("all done")
+        assert agent_session.status == SessionStatus.COMPLETED
+        assert agent_session.last_result == "all done"
+        assert agent_session.last_error is None
+
+        agent_session.record_interrupted("cancelled by user")
+        assert agent_session.status == SessionStatus.INTERRUPTED
+        assert agent_session.last_error == "cancelled by user"
+
+        agent_session.record_error("something crashed")
+        assert agent_session.status == SessionStatus.ERRORED
+        assert agent_session.last_error == "something crashed"
+        assert agent_session.events[-1].event_type == "error"
+
+        agent_session.close_session()
+        assert agent_session.status == SessionStatus.CLOSED
+        assert agent_session.runtime is None
+
+    def test_legacy_subagent_task_migration(self):
+        data = {
+            "agent_name": "planner",
+            "extra": {
+                "subagent_task": {
+                    "task_id": "task_123",
+                    "task_name": "plan_feature",
+                    "target": "/main/plan_feature",
+                    "agent_type": "planner",
+                    "initial_message": "plan x",
+                    "last_message": "plan x",
+                    "result": "the plan",
+                    "error": None,
+                    "status": "completed",
+                }
+            },
+        }
+        session = AgentSession.model_validate(data)
+        assert session.task_name == "plan_feature"
+        assert session.target == "/main/plan_feature"
+        assert session.initial_message == "plan x"
+        assert session.last_message == "plan x"
+        assert session.last_result == "the plan"
+        assert session.status == SessionStatus.COMPLETED
+        assert "subagent_task" not in session.extra
+
+    @pytest.mark.asyncio
+    async def test_fork_resets_status_and_task_fields(self):
+        original = AgentSession(
+            agent_name="main",
+            status=SessionStatus.COMPLETED,
+            last_result="res",
+            last_error="err",
+        )
+        original.add_event(UserInputEvent(user_input=UserInput(input_content="hi")))
+        forked = await original.fork_at(None)
+        assert forked.status == SessionStatus.IDLE
+        assert forked.last_result is None
+        assert forked.last_error is None
 
 
 class TestFileSessionStore:

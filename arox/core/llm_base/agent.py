@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import re
 import uuid
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any, Literal, overload
 
 import fastmcp
+from anyio import ClosedResourceError, EndOfStream
 from pydantic_ai import (
     AbstractToolset,
     Agent,
@@ -46,6 +48,7 @@ from arox.core.plugin import CommandManager, load_plugins
 from arox.core.session import (
     AgentRunInfo,
     AgentSession,
+    SessionStatus,
 )
 from arox.core.slot import (
     BaseSlot,
@@ -82,9 +85,9 @@ class LLMBaseAgent(IOHost):
         session: AgentSession,
     ):
         super().__init__(io_adapter)
-        self.uuid = str(uuid.uuid4())
-        self._slots: dict[Any, Any] = {}
         self.session = session
+        self.uuid = session.id
+        self._slots: dict[Any, Any] = {}
         self.config_loader = parent_config_loader.for_workspace(self.workspace)
 
         self.local_toolset = FunctionToolset[AgentDeps]()
@@ -171,11 +174,11 @@ class LLMBaseAgent(IOHost):
         return self.session.agent_source
 
     @property
-    def status(self) -> Literal["active", "closed"]:
+    def status(self) -> SessionStatus:
         return self.session.status
 
     def close_session(self) -> None:
-        self.session.status = "closed"
+        self.session.close_session()
 
     @property
     def run_info(self) -> AgentRunInfo:
@@ -267,15 +270,37 @@ class LLMBaseAgent(IOHost):
 
     async def __aenter__(self):
         await super().__aenter__()
+        self.session.runtime = self
+        self.session.status = SessionStatus.ACTIVE
         await self.io_adapter.register_host(self)
 
         if self.mcp_client:
             await self._stack.enter_async_context(self.mcp_client)
-        self._stack.push_async_callback(self.session.save)
         for plugin in self.plugins:
             await plugin.on_start()
             self._stack.push_async_callback(plugin.on_stop)
+        await self.broadcast_agent_info()
         return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if self.session.status == SessionStatus.ACTIVE:
+                if exc_type is asyncio.CancelledError:
+                    self.session.record_interrupted()
+                elif exc_val is not None:
+                    self.session.record_error(exc_val)
+                else:
+                    self.session.status = SessionStatus.IDLE
+            with contextlib.suppress(ClosedResourceError, EndOfStream):
+                await self.broadcast_agent_info()
+        finally:
+            try:
+                await super().__aexit__(exc_type, exc_val, exc_tb)
+            finally:
+                if hasattr(self.io_adapter, "hosts"):
+                    self.io_adapter.hosts.pop(self.uuid, None)
+                self.session.runtime = None
+                await self.session.save()
 
     def add_local_tool(self, func, **kwargs):
         self.local_toolset.add_function(func, **kwargs)
@@ -640,6 +665,8 @@ def create_agent(
     parent_session: AgentSession | None = None,
     agent_source: Literal["static", "dynamic"] = "static",
     workspace: Path | str | None = None,
+    task_name: str | None = None,
+    target: str | None = None,
 ) -> LLMBaseAgent:
     agent_config = config_loader.current_config.agent.get(name)
     if not agent_config:
@@ -660,6 +687,8 @@ def create_agent(
             agent_type=agent_type,
             agent_source=agent_source,
             workspace=str(Path(workspace).absolute()) if workspace else None,
+            task_name=task_name,
+            target=target,
             run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
         )
         if parent_session:
@@ -673,3 +702,16 @@ def create_agent(
         session=session,
     )
     return agent
+
+
+def create_agent_from_session(
+    session: AgentSession,
+    config_loader: ConfigLoader,
+    io_adapter: Any,
+) -> LLMBaseAgent:
+    return create_agent(
+        name=session.agent_name,
+        config_loader=config_loader,
+        io_adapter=io_adapter,
+        session=session,
+    )

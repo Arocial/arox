@@ -6,10 +6,11 @@ import logging
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Literal, Protocol, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_ai.messages import (
     ModelMessage,
 )
@@ -102,10 +103,23 @@ AnySessionEvent = Annotated[
 ]
 
 
+class SessionStatus(StrEnum):
+    IDLE = "idle"
+    PENDING = "pending"
+    RUNNING = "running"
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    INTERRUPTED = "interrupted"
+    ERRORED = "errored"
+    CLOSED = "closed"
+
+
 class Session(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
     path: list[str] = Field(default_factory=lambda: [str(uuid.uuid4())])
     session_type: str
-    status: Literal["active", "closed"] = "active"
+    status: SessionStatus = SessionStatus.IDLE
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     forked_from: tuple[list[str], str] | None = None
@@ -157,19 +171,93 @@ class AgentSession(Session):
     agent_type: str = "chat"
     agent_source: Literal["static", "dynamic"] = "dynamic"
     workspace: str | None = None
+    task_name: str | None = None
+    target: str | None = None
+    initial_message: str | None = None
+    last_message: str | None = None
+    last_result: str | None = None
+    last_error: str | None = None
     run_info: AgentRunInfo = Field(default_factory=AgentRunInfo)
     extra: dict[str, Any] = Field(default_factory=dict)
 
+    runtime: Any = Field(default=None, exclude=True, repr=False)
+    running_task: asyncio.Task[Any] | None = Field(
+        default=None, exclude=True, repr=False
+    )
+
+    @property
+    def task_id(self) -> str:
+        return self.id
+
+    @property
+    def agent(self) -> Any:
+        return self.runtime
+
+    @property
+    def result(self) -> str | None:
+        return self.last_result
+
+    @property
+    def error(self) -> str | None:
+        return self.last_error
+
+    @property
+    def is_active(self) -> bool:
+        return self.status in (SessionStatus.ACTIVE, SessionStatus.RUNNING)
+
+    @property
+    def is_running(self) -> bool:
+        return self.is_active and self.running_task is not None
+
+    def record_result(self, result: str | None) -> None:
+        self.last_result = result
+        self.last_error = None
+        self.status = SessionStatus.COMPLETED
+
+    def record_interrupted(self, message: str = "Task interrupted.") -> None:
+        self.last_error = message
+        self.status = SessionStatus.INTERRUPTED
+
+    def close_session(self) -> None:
+        self.status = SessionStatus.CLOSED
+        self.runtime = None
+
     @model_validator(mode="before")
     @classmethod
-    def _migrate_agent_config(cls, data: Any) -> Any:
-        if not isinstance(data, dict) or "agent_config" not in data:
+    def _migrate_legacy_data(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
             return data
 
         data = dict(data)
-        legacy_config = data.pop("agent_config")
-        if "agent_type" not in data and isinstance(legacy_config, dict):
-            data["agent_type"] = legacy_config.get("type", "chat")
+        if "agent_config" in data:
+            legacy_config = data.pop("agent_config")
+            if "agent_type" not in data and isinstance(legacy_config, dict):
+                data["agent_type"] = legacy_config.get("type", "chat")
+
+        extra = data.get("extra")
+        if isinstance(extra, dict) and "subagent_task" in extra:
+            extra = dict(extra)
+            subagent_task = extra.pop("subagent_task")
+            data["extra"] = extra
+            if isinstance(subagent_task, dict):
+                if data.get("task_name") is None:
+                    data["task_name"] = subagent_task.get("task_name")
+                if data.get("target") is None:
+                    data["target"] = subagent_task.get("target")
+                if data.get("initial_message") is None:
+                    data["initial_message"] = subagent_task.get("initial_message")
+                if data.get("last_message") is None:
+                    data["last_message"] = subagent_task.get("last_message")
+                if data.get("last_result") is None:
+                    data["last_result"] = subagent_task.get("result")
+                if data.get("last_error") is None:
+                    data["last_error"] = subagent_task.get("error")
+                if (
+                    data.get("status") in (None, SessionStatus.IDLE, "active", "closed")
+                    and "status" in subagent_task
+                ):
+                    data["status"] = subagent_task.get("status")
+
         return data
 
     def rebuild_message_history(self) -> list[ModelMessage]:
@@ -229,12 +317,15 @@ class AgentSession(Session):
             last_user_messages.append(text)
         self.metadata["last_user_messages"] = last_user_messages[-2:]
 
-    def record_error(self, error: Exception) -> None:
-        self.add_event(
-            ErrorEvent(
-                error=f"{type(error).__name__}: {error!s}", agent_name=self.agent_name
-            )
+    def record_error(self, error: Exception | str) -> None:
+        err_msg = (
+            str(error)
+            if isinstance(error, str)
+            else f"{type(error).__name__}: {error!s}"
         )
+        self.last_error = err_msg
+        self.status = SessionStatus.ERRORED
+        self.add_event(ErrorEvent(error=err_msg, agent_name=self.agent_name))
 
     def record_subagent_call(self, subagent_name: str, task: str) -> None:
         self.add_event(
@@ -315,6 +406,9 @@ class AgentSession(Session):
                     "events": events,
                     "forked_from": forked_from,
                     "children": [],
+                    "status": SessionStatus.IDLE,
+                    "last_result": None,
+                    "last_error": None,
                     "manager": manager_ref,
                     "owner": owner,
                 },
