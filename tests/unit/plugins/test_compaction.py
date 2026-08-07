@@ -24,9 +24,14 @@ class _FakeCompactionAgent(CompactionAgent):
     """Passes the ``isinstance(sub, CompactionAgent)`` check without a full init."""
 
     def __init__(self, summary: str = "SUMMARY"):
-        self.session = type("DummySession", (), {"agent_name": "compaction"})()
+        self.session = AgentSession(agent_name="compaction")
         self._summary = summary
         self.last_extra_instructions = ""
+        self.message_history = []
+        self.name = "compaction"
+
+    async def execute_task(self, task: str) -> str | None:
+        return await self.summarize(self.message_history, extra_instructions=task)
 
     async def summarize(self, messages, extra_instructions: str = "") -> str:
         self.last_extra_instructions = extra_instructions

@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from arox.core.io import AbstractIOAdapter
     from arox.core.llm_base.agent import LLMBaseAgent
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import (
     ModelMessage,
 )
@@ -30,15 +30,6 @@ class SessionEvent(BaseModel):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     event_type: str
     agent_name: str = ""
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_data(cls, data: Any) -> Any:
-        if isinstance(data, dict) and "data" in data:
-            extra = data.pop("data")
-            if isinstance(extra, dict):
-                data.update(extra)
-        return data
 
 
 class ResetEvent(SessionEvent):
@@ -109,13 +100,7 @@ AnySessionEvent = Annotated[
 
 
 class SessionStatus(StrEnum):
-    IDLE = "idle"
-    PENDING = "pending"
-    RUNNING = "running"
     ACTIVE = "active"
-    COMPLETED = "completed"
-    INTERRUPTED = "interrupted"
-    ERRORED = "errored"
     CLOSED = "closed"
 
 
@@ -124,7 +109,7 @@ class Session(BaseModel):
 
     path: list[str] = Field(default_factory=lambda: [str(uuid.uuid4())])
     session_type: str
-    status: SessionStatus = SessionStatus.IDLE
+    status: SessionStatus = SessionStatus.ACTIVE
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     forked_from: tuple[list[str], str] | None = None
@@ -199,6 +184,10 @@ class AgentSession(Session):
         return self.runtime
 
     @property
+    def has_runtime(self) -> bool:
+        return self.runtime is not None
+
+    @property
     def result(self) -> str | None:
         return self.last_result
 
@@ -208,20 +197,22 @@ class AgentSession(Session):
 
     @property
     def is_active(self) -> bool:
-        return self.status in (SessionStatus.ACTIVE, SessionStatus.RUNNING)
+        return self.status == SessionStatus.ACTIVE
 
     @property
     def is_running(self) -> bool:
-        return self.is_active and self.running_task is not None
+        return (
+            self.is_active
+            and self.running_task is not None
+            and not self.running_task.done()
+        )
 
     def record_result(self, result: str | None) -> None:
         self.last_result = result
         self.last_error = None
-        self.status = SessionStatus.COMPLETED
 
     def record_interrupted(self, message: str = "Task interrupted.") -> None:
         self.last_error = message
-        self.status = SessionStatus.INTERRUPTED
 
     def close_session(self) -> None:
         self.status = SessionStatus.CLOSED
@@ -238,7 +229,7 @@ class AgentSession(Session):
         target: str | None = None,
         initial_message: str | None = None,
         last_message: str | None = None,
-        status: SessionStatus = SessionStatus.IDLE,
+        status: SessionStatus = SessionStatus.ACTIVE,
     ) -> AgentSession:
         child_workspace = (
             str(Path(workspace).absolute()) if workspace is not None else self.workspace
@@ -285,44 +276,6 @@ class AgentSession(Session):
             io_adapter=io_adapter,
             session=self,
         )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _migrate_legacy_data(cls, data: Any) -> Any:
-        if not isinstance(data, dict):
-            return data
-
-        data = dict(data)
-        if "agent_config" in data:
-            legacy_config = data.pop("agent_config")
-            if "agent_type" not in data and isinstance(legacy_config, dict):
-                data["agent_type"] = legacy_config.get("type", "chat")
-
-        extra = data.get("extra")
-        if isinstance(extra, dict) and "subagent_task" in extra:
-            extra = dict(extra)
-            subagent_task = extra.pop("subagent_task")
-            data["extra"] = extra
-            if isinstance(subagent_task, dict):
-                if data.get("task_name") is None:
-                    data["task_name"] = subagent_task.get("task_name")
-                if data.get("target") is None:
-                    data["target"] = subagent_task.get("target")
-                if data.get("initial_message") is None:
-                    data["initial_message"] = subagent_task.get("initial_message")
-                if data.get("last_message") is None:
-                    data["last_message"] = subagent_task.get("last_message")
-                if data.get("last_result") is None:
-                    data["last_result"] = subagent_task.get("result")
-                if data.get("last_error") is None:
-                    data["last_error"] = subagent_task.get("error")
-                if (
-                    data.get("status") in (None, SessionStatus.IDLE, "active", "closed")
-                    and "status" in subagent_task
-                ):
-                    data["status"] = subagent_task.get("status")
-
-        return data
 
     def rebuild_message_history(self) -> list[ModelMessage]:
         history: list[ModelMessage] = []
@@ -388,7 +341,6 @@ class AgentSession(Session):
             else f"{type(error).__name__}: {error!s}"
         )
         self.last_error = err_msg
-        self.status = SessionStatus.ERRORED
         self.add_event(ErrorEvent(error=err_msg, agent_name=self.agent_name))
 
     def record_subagent_call(self, subagent_name: str, task: str) -> None:
@@ -470,7 +422,7 @@ class AgentSession(Session):
                     "events": events,
                     "forked_from": forked_from,
                     "children": [],
-                    "status": SessionStatus.IDLE,
+                    "status": SessionStatus.ACTIVE,
                     "last_result": None,
                     "last_error": None,
                     "manager": manager_ref,

@@ -13,7 +13,6 @@ from arox.plugins.slots import SYSTEM_PROMPT
 from arox.plugins.subagent import (
     SubagentMode,
     SubagentPlugin,
-    SubagentTaskStatus,
 )
 
 
@@ -39,7 +38,7 @@ class _FakeDynamicAgent(DelegatableAgent):
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def run_task(self, task: str) -> str:
+    async def execute_task(self, task: str) -> str:
         self.received_tasks.append(task)
         self.started.set()
         if task.startswith("block"):
@@ -229,7 +228,7 @@ async def test_spawn_and_wait_preserves_resumable_agent(agent_factory):
 
         assert "status: completed" in result
         assert "task done: make a plan" in result
-        assert task_session.status is SessionStatus.COMPLETED
+        assert task_session.status is SessionStatus.ACTIVE
         assert task_session.agent is None
         assert task_session.runtime is None
         assert len(main_agent.session.children) == 1
@@ -239,7 +238,7 @@ async def test_spawn_and_wait_preserves_resumable_agent(agent_factory):
         )
         assert child_session is not None
         assert child_session.task_name == "make_plan"
-        assert child_session.status == SessionStatus.COMPLETED
+        assert child_session.status == SessionStatus.ACTIVE
         assert child_session.last_result == "task done: make a plan"
     finally:
         await plugin.on_stop()
@@ -313,7 +312,7 @@ async def test_wait_timeout_does_not_cancel_task(agent_factory):
         result = await plugin.wait_agent("slow_review", timeout_seconds=0.01)
 
         assert "Agent is still running." in result
-        assert task_session.status in (SessionStatus.RUNNING, SessionStatus.ACTIVE)
+        assert task_session.status is SessionStatus.ACTIVE
         assert task_session.running_task is not None
         assert not task_session.running_task.cancelled()
 
@@ -377,15 +376,13 @@ async def test_list_agents_filters_and_summarizes_results(agent_factory):
         assert isinstance(slow_task_session.runtime, _FakeDynamicAgent)
         await slow_task_session.runtime.started.wait()
 
-        completed = await plugin.list_agents(SubagentTaskStatus.COMPLETED)
-        running = await plugin.list_agents(SubagentTaskStatus.RUNNING)
+        completed = await plugin.list_agents("completed")
+        running = await plugin.list_agents("running")
 
         assert "/main/make_plan" in completed
         assert "result_summary: task done: make a plan" in completed
         assert "/main/slow_review" not in completed
-        assert "/main/slow_review" in running or "/main/slow_review" in (
-            await plugin.list_agents(SessionStatus.ACTIVE)
-        )
+        assert "/main/slow_review" in running
         assert "/main/make_plan" not in running
 
         slow_task_session.runtime.release.set()
@@ -443,7 +440,7 @@ async def test_on_start_restores_running_task_as_interrupted(agent_factory):
         await restored_plugin.on_start()
         restored = restored_plugin._resolve_task("slow_plan")
 
-        assert restored.status is SessionStatus.INTERRUPTED
+        assert restored.status is SessionStatus.ACTIVE
         assert restored.runtime is None
         assert (
             restored.last_error == "Parent process stopped before the task completed."

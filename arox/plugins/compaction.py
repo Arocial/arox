@@ -36,7 +36,7 @@ class CompactEvent(CommandEvent):
 class CompactionAgent(DelegatableAgent):
     """DelegatableAgent specialized for summarizing conversation history."""
 
-    async def run_task(self, task: str) -> str | None:
+    async def execute_task(self, task: str) -> str | None:
         return await self.summarize(self.message_history, extra_instructions=task)
 
     async def summarize(

@@ -168,7 +168,7 @@ class AbstractIOAdapter(ABC):
             if hasattr(host, "invoke_slot"):
                 from arox.plugins.slots import SUBAGENTS
 
-                for agent in await host.invoke_slot(SUBAGENTS, status="active") or []:
+                for agent in await host.invoke_slot(SUBAGENTS) or []:
                     if agent.adapter_io is adapter_io:
                         return agent
         return None

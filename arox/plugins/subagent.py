@@ -7,6 +7,7 @@ from enum import StrEnum
 from typing import Any
 
 from arox.core.llm_base import (
+    AgentStatus,
     DelegatableAgent,
 )
 from arox.core.plugin import Plugin, tool
@@ -16,11 +17,6 @@ from arox.plugins.slots import RUN_SUBAGENT, SUBAGENTS, SYSTEM_PROMPT
 logger = logging.getLogger(__name__)
 
 _TASK_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
-_RUNNING_TASK_STATUSES = {
-    SessionStatus.PENDING,
-    SessionStatus.RUNNING,
-    SessionStatus.ACTIVE,
-}
 
 
 class SubagentMode(StrEnum):
@@ -45,15 +41,29 @@ class SubagentPlugin(Plugin):
         self._active_delegations: dict[str, DelegatableAgent] = {}
         self._lock = asyncio.Lock()
 
-        def get_subagents(status: str | None = None):
+        def get_subagents(status: AgentStatus | str | None = None):
             active = []
             for session in self.task_sessions.values():
                 if session.runtime is not None:
-                    if status is None or session.status == status:
+                    if (
+                        status is None
+                        or (
+                            status == "active"
+                            and session.runtime.status != AgentStatus.STOPPED
+                        )
+                        or session.runtime.status == status
+                    ):
                         active.append(session.runtime)
             for subagent in self._active_delegations.values():
                 if subagent not in active:
-                    if status is None or subagent.status == status:
+                    if (
+                        status is None
+                        or (
+                            status == "active"
+                            and subagent.status != AgentStatus.STOPPED
+                        )
+                        or subagent.status == status
+                    ):
                         active.append(subagent)
             return active
 
@@ -111,6 +121,28 @@ class SubagentPlugin(Plugin):
     def _advanced_tools_enabled(self) -> bool:
         return self.mode is SubagentMode.ADVANCED
 
+    @staticmethod
+    def _get_task_status(task_session: AgentSession) -> str:
+        if task_session.status == SessionStatus.CLOSED:
+            return "closed"
+        if (
+            task_session.running_task is not None
+            and not task_session.running_task.done()
+        ) or (
+            task_session.runtime is not None
+            and task_session.runtime.status == AgentStatus.RUNNING
+        ):
+            return "running"
+        if task_session.last_error:
+            if "interrupt" in task_session.last_error.lower():
+                return "interrupted"
+            return "error"
+        if task_session.last_result is not None:
+            return "completed"
+        if task_session.running_task is not None:
+            return "pending"
+        return "idle"
+
     async def on_start(self) -> None:
         main_session = self.agent.session
         session_manager = main_session.manager if main_session else None
@@ -125,7 +157,11 @@ class SubagentPlugin(Plugin):
             if child_session.task_name is None and child_session.target is None:
                 continue
 
-            if child_session.status in _RUNNING_TASK_STATUSES:
+            if (
+                child_session.status == SessionStatus.ACTIVE
+                and child_session.last_result is None
+                and child_session.last_error is None
+            ):
                 child_session.record_interrupted(
                     "Parent process stopped before the task completed."
                 )
@@ -178,7 +214,7 @@ class SubagentPlugin(Plugin):
         *,
         task_name: str | None = None,
         message: str | None = None,
-        status: SessionStatus = SessionStatus.IDLE,
+        status: SessionStatus = SessionStatus.ACTIVE,
     ) -> AgentSession:
         agent_config = self.agent.config.agent.get(agent_type)
         configured_type = agent_config.type if agent_config else "chat"
@@ -252,8 +288,9 @@ class SubagentPlugin(Plugin):
 
     def _running_task_count(self) -> int:
         return sum(
-            session.status in _RUNNING_TASK_STATUSES
+            1
             for session in self.task_sessions.values()
+            if session.running_task is not None and not session.running_task.done()
         )
 
     async def _spawn_task(
@@ -288,7 +325,7 @@ class SubagentPlugin(Plugin):
                 agent_type,
                 task_name=task_name,
                 message=message,
-                status=SessionStatus.PENDING,
+                status=SessionStatus.ACTIVE,
             )
             self._register_task_session(task_session)
 
@@ -315,34 +352,26 @@ class SubagentPlugin(Plugin):
         message: str,
         initial_runtime: DelegatableAgent | None = None,
     ) -> str | None:
-        task_session.status = SessionStatus.RUNNING
         task_session.last_message = message
         task_session.last_result = None
         task_session.last_error = None
-        if self.agent.session:
-            self.agent.session.record_subagent_call(task_session.agent_name, message)
         await task_session.save()
         await self.agent.broadcast_agent_info()
 
         runtime = initial_runtime or self._create_task_runtime(task_session)
 
         try:
-            async with runtime:
-                await self.agent.broadcast_agent_info()
-                result = await runtime.run_task(message)
-                task_session.record_result(result or "Task completed with no output.")
+            await self.agent.broadcast_agent_info()
+            return await runtime.run_task(message)
         except asyncio.CancelledError:
-            task_session.record_interrupted("Task interrupted.")
             raise
-        except Exception as exc:
+        except Exception:
             logger.exception("Subagent task %s failed", task_session.target)
-            task_session.record_error(exc)
+            return None
         finally:
             task_session.running_task = None
             await task_session.save()
             await self.agent.broadcast_agent_info()
-
-        return task_session.last_result
 
     async def _start_followup_turn(
         self, task_session: AgentSession, message: str
@@ -361,7 +390,6 @@ class SubagentPlugin(Plugin):
                     f"{self.agent.agent_config.max_parallel_subagents}."
                 )
 
-            task_session.status = SessionStatus.PENDING
             task_session.last_message = message
             task_session.last_result = None
             task_session.last_error = None
@@ -378,7 +406,7 @@ class SubagentPlugin(Plugin):
             f"- task_id: {task_session.id}",
             f"- target: {task_session.target}",
             f"- agent_type: {task_session.agent_name}",
-            f"- status: {task_session.status.value if isinstance(task_session.status, SessionStatus) else task_session.status}",
+            f"- status: {self._get_task_status(task_session)}",
         ]
         if task_session.last_error:
             lines.append(f"- error: {task_session.last_error}")
@@ -403,7 +431,7 @@ class SubagentPlugin(Plugin):
                     task_session, False
                 )
             except asyncio.CancelledError:
-                if task_session.status is not SessionStatus.INTERRUPTED:
+                if task_session.last_error != "Task interrupted.":
                     raise
 
         return self._format_task_status(task_session)
@@ -431,13 +459,8 @@ class SubagentPlugin(Plugin):
 
         try:
             await self._notify_subagent_created(on_subagent_created, runtime)
-
-            async with runtime:
-                if self.agent.session:
-                    self.agent.session.record_subagent_call(runtime.name, task)
-                result = await runtime.run_task(task)
-                task_session.record_result(result or "Task completed with no output.")
-                return result or "Task completed with no output."
+            result = await runtime.run_task(task)
+            return result or "Task completed with no output."
         finally:
             self._active_delegations.pop(runtime.uuid, None)
             task_session.close_session()
@@ -494,12 +517,18 @@ class SubagentPlugin(Plugin):
         return "Agent interrupted.\n" + self._format_task_status(task_session, False)
 
     @tool(enabled=_advanced_tools_enabled)
-    async def list_agents(self, status: SessionStatus | None = None) -> str:
+    async def list_agents(self, status: str | None = None) -> str:
         """List spawned agent tasks, optionally filtered by task status."""
+        filter_status = (
+            status.value
+            if hasattr(status, "value")
+            else (str(status).lower() if status is not None else None)
+        )
         task_sessions = [
             task_session
             for task_session in self.task_sessions.values()
-            if status is None or task_session.status == status
+            if filter_status is None
+            or self._get_task_status(task_session) == filter_status
         ]
         if not task_sessions:
             return "No agent tasks."

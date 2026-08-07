@@ -149,9 +149,7 @@ class TextIOAdapter(AbstractIOAdapter):
 
                 for h in self.hosts.values():
                     if isinstance(h, LLMBaseAgent):
-                        for agent in (
-                            await h.invoke_slot(SUBAGENTS, status="active") or []
-                        ):
+                        for agent in await h.invoke_slot(SUBAGENTS) or []:
                             if isinstance(agent, ChatAgent):
                                 agent.cancel_foreground_task()
 

@@ -12,7 +12,7 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter, RequestEvent
-from arox.core.llm_base import LLMBaseAgent
+from arox.core.llm_base import AgentStatus, LLMBaseAgent
 from arox.core.session import AgentSession, SessionStatus
 from arox.plugins.core import SetModelEvent
 
@@ -361,16 +361,22 @@ system_prompt = "Hi."
 
     assert agent.uuid == session.id == "test-session-id"
     assert session.runtime is None
-    assert session.status == SessionStatus.IDLE
+    assert session.has_runtime is False
+    assert session.status == SessionStatus.ACTIVE
+    assert agent.status == AgentStatus.IDLE
     assert agent.uuid not in io_adapter.hosts
 
     async with agent:
         assert session.runtime is agent
+        assert session.has_runtime is True
         assert session.status == SessionStatus.ACTIVE
+        assert agent.status == AgentStatus.IDLE
         assert agent.uuid in io_adapter.hosts
 
     assert session.runtime is None
-    assert session.status == SessionStatus.IDLE
+    assert session.has_runtime is False
+    assert session.status == SessionStatus.ACTIVE
+    assert agent.status == AgentStatus.STOPPED
     assert agent.uuid not in io_adapter.hosts
 
 
@@ -399,7 +405,8 @@ system_prompt = "Hi."
             raise RuntimeError("something broke")
 
     assert session.runtime is None
-    assert session.status == SessionStatus.ERRORED
+    assert session.status == SessionStatus.ACTIVE
+    assert agent.status == AgentStatus.STOPPED
     assert "RuntimeError: something broke" in (session.last_error or "")
     assert agent.uuid not in io_adapter.hosts
 
@@ -431,7 +438,8 @@ system_prompt = "Hi."
             raise asyncio.CancelledError()
 
     assert session.runtime is None
-    assert session.status == SessionStatus.INTERRUPTED
+    assert session.status == SessionStatus.ACTIVE
+    assert agent.status == AgentStatus.STOPPED
     assert session.last_error == "Task interrupted."
     assert agent.uuid not in io_adapter.hosts
 

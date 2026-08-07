@@ -50,17 +50,6 @@ class TestAgentSession:
         assert data["agent_type"] == "custom"
         assert "agent_config" not in data
 
-    def test_migrates_agent_type_from_legacy_agent_config(self):
-        agent_session = AgentSession.model_validate(
-            {
-                "agent_name": "main",
-                "agent_config": {"type": "custom", "system_prompt": "legacy"},
-            }
-        )
-
-        assert agent_session.agent_type == "custom"
-        assert "agent_config" not in agent_session.model_dump(mode="json")
-
     def test_rebuild_empty(self):
         agent_session = AgentSession(agent_name="main")
         history = agent_session.rebuild_message_history()
@@ -263,10 +252,10 @@ class TestAgentSession:
         agent_session.record_reset("ctx1")
         assert "last_user_messages" not in agent_session.metadata
 
-    def test_default_status_is_idle(self):
+    def test_default_status_is_active(self):
         agent_session = AgentSession(agent_name="main")
-        assert agent_session.status == SessionStatus.IDLE
-        assert not agent_session.is_active
+        assert agent_session.status == SessionStatus.ACTIVE
+        assert agent_session.is_active
         assert not agent_session.is_running
 
     def test_first_class_task_fields(self):
@@ -300,20 +289,20 @@ class TestAgentSession:
 
     def test_status_and_result_helpers(self):
         agent_session = AgentSession(agent_name="main")
-        agent_session.status = SessionStatus.ACTIVE
+        assert agent_session.status == SessionStatus.ACTIVE
         assert agent_session.is_active
 
         agent_session.record_result("all done")
-        assert agent_session.status == SessionStatus.COMPLETED
+        assert agent_session.status == SessionStatus.ACTIVE
         assert agent_session.last_result == "all done"
         assert agent_session.last_error is None
 
         agent_session.record_interrupted("cancelled by user")
-        assert agent_session.status == SessionStatus.INTERRUPTED
+        assert agent_session.status == SessionStatus.ACTIVE
         assert agent_session.last_error == "cancelled by user"
 
         agent_session.record_error("something crashed")
-        assert agent_session.status == SessionStatus.ERRORED
+        assert agent_session.status == SessionStatus.ACTIVE
         assert agent_session.last_error == "something crashed"
         assert agent_session.events[-1].event_type == "error"
 
@@ -321,43 +310,17 @@ class TestAgentSession:
         assert agent_session.status == SessionStatus.CLOSED
         assert agent_session.runtime is None
 
-    def test_legacy_subagent_task_migration(self):
-        data = {
-            "agent_name": "planner",
-            "extra": {
-                "subagent_task": {
-                    "task_id": "task_123",
-                    "task_name": "plan_feature",
-                    "target": "/main/plan_feature",
-                    "agent_type": "planner",
-                    "initial_message": "plan x",
-                    "last_message": "plan x",
-                    "result": "the plan",
-                    "error": None,
-                    "status": "completed",
-                }
-            },
-        }
-        session = AgentSession.model_validate(data)
-        assert session.task_name == "plan_feature"
-        assert session.target == "/main/plan_feature"
-        assert session.initial_message == "plan x"
-        assert session.last_message == "plan x"
-        assert session.last_result == "the plan"
-        assert session.status == SessionStatus.COMPLETED
-        assert "subagent_task" not in session.extra
-
     @pytest.mark.asyncio
     async def test_fork_resets_status_and_task_fields(self):
         original = AgentSession(
             agent_name="main",
-            status=SessionStatus.COMPLETED,
+            status=SessionStatus.CLOSED,
             last_result="res",
             last_error="err",
         )
         original.add_event(UserInputEvent(user_input=UserInput(input_content="hi")))
         forked = await original.fork_at(None)
-        assert forked.status == SessionStatus.IDLE
+        assert forked.status == SessionStatus.ACTIVE
         assert forked.last_result is None
         assert forked.last_error is None
 
@@ -379,7 +342,7 @@ class TestAgentSession:
             target="/main/sub_task",
             initial_message="do work",
             last_message="do work",
-            status=SessionStatus.PENDING,
+            status=SessionStatus.ACTIVE,
         )
 
         assert child.owner is parent
@@ -392,7 +355,10 @@ class TestAgentSession:
         assert child.target == "/main/sub_task"
         assert child.initial_message == "do work"
         assert child.last_message == "do work"
-        assert child.status == SessionStatus.PENDING
+        assert child.status == SessionStatus.ACTIVE
+        assert child.workspace == str(tmp_path)
+        assert child.run_info.llm_context_id is not None
+        assert child.run_info.llm_context_id != parent.run_info.llm_context_id
         assert child.workspace == str(tmp_path)
         assert child.run_info.llm_context_id is not None
         assert child.run_info.llm_context_id != parent.run_info.llm_context_id

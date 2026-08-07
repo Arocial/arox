@@ -31,15 +31,19 @@ Agent types and which agent to instantiate come from config (`arox/core/config.p
 - **`AgentSession`** is the persistent, authoritative entity tracking:
   - Identity and hierarchy (`id`, `path`, `owner`, `children`).
   - Task metadata (`task_name`, `target`, `initial_message`, `last_message`, `last_result`, `last_error`).
-  - Execution state (`SessionStatus`: `IDLE`, `PENDING`, `RUNNING`, `ACTIVE`, `COMPLETED`, `INTERRUPTED`, `ERRORED`, `CLOSED`).
+  - Session usability lifecycle (`SessionStatus`: `ACTIVE`, `CLOSED`).
+  - Ephemeral runtime presence via `session.has_runtime` / `session.runtime`.
   - Message history (`events`), run/token metadata (`run_info`), and persistence.
   - Agent sessions persist only the agent name and type; full `AgentConfig` is resolved dynamically from active configuration. The main agent's `AgentSession` is the top-level session; child tasks and subagents nest beneath it.
 - **`LLMBaseAgent`** is an ephemeral runtime owning live/expensive resources (Pydantic AI agent, MCP clients, plugins, tools, IO channels).
+  - Runtime lifecycle state machine (`AgentStatus`: `UNINITIALIZED`, `IDLE`, `RUNNING`, `STOPPED`).
   - Callers construct or load an authoritative `AgentSession` and instantiate an ephemeral runtime via `session.create_agent(config_loader, io_adapter)`.
   - Child sessions are spawned via `parent_session.create_child_session(...)`.
   - Runtime identity matches `session.id` (`agent.uuid == session.id`).
-  - While active within `async with agent:`, `session.runtime` is bound to the agent and status is `ACTIVE`.
-  - When execution ends (idle, completed, interrupted, errored, or closed), IO channels and live resources are cleaned up, `session.runtime` is detached (`None`), and the session state is persisted.
+  - Agent runtime context (`async with agent:`) binds `session.runtime`, initializes plugins/tools/channels, sets `AgentStatus.IDLE`, and on exit handles cleanup, records interruption/errors to `session`, sets `AgentStatus.STOPPED`, unbinds `session.runtime`, and saves the session.
+  - `step()` transitions agent status `IDLE -> RUNNING -> IDLE`.
+  - `run_turn()` coordinates runtime context entry, execution hook (`execute_task()`), and result recording. `DelegatableAgent.run_task()` delegates to `run_turn()`.
+  - Subagent task display states (such as `running`, `completed`, `interrupted`, `error`, `pending`, `idle`, `closed`) are derived on-the-fly from live runtime/task state and session result/error data.
   - Subsequent turns reuse the persistent `AgentSession` and reconstruct a fresh runtime via `session.create_agent(config_loader, io_adapter)`.
 - `SessionManager` coordinates with `SessionStore` (default `FileSessionStore`) to persist sessions to disk with debouncing and age-based cleanup.
 - Resuming is done via the `session_id` passed to the App. The `CorePlugin` provides the `/fork` command.

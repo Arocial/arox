@@ -6,6 +6,7 @@ import uuid
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterable, Sequence
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, overload
 
@@ -48,7 +49,6 @@ from arox.core.plugin import CommandManager, load_plugins
 from arox.core.session import (
     AgentRunInfo,
     AgentSession,
-    SessionStatus,
 )
 from arox.core.slot import (
     BaseSlot,
@@ -71,6 +71,13 @@ from ._pydantic_ai_hack import infer_provider
 logger = logging.getLogger(__name__)
 
 
+class AgentStatus(StrEnum):
+    UNINITIALIZED = "uninitialized"
+    IDLE = "idle"
+    RUNNING = "running"
+    STOPPED = "stopped"
+
+
 @dataclass
 class AgentDeps:
     agent_io: IOEndpoint
@@ -87,6 +94,7 @@ class LLMBaseAgent(IOHost):
         super().__init__(io_adapter)
         self.session = session
         self.uuid = session.id
+        self.status: AgentStatus = AgentStatus.UNINITIALIZED
         self._slots: dict[Any, Any] = {}
         self.config_loader = parent_config_loader.for_workspace(self.workspace)
 
@@ -123,6 +131,7 @@ class LLMBaseAgent(IOHost):
             deps_type=AgentDeps,
             output_type=str,
         )
+        self.status = AgentStatus.IDLE
         self.session.initialized = True
 
     async def broadcast_agent_info(self):
@@ -172,10 +181,6 @@ class LLMBaseAgent(IOHost):
     @property
     def agent_source(self) -> Literal["static", "dynamic"]:
         return self.session.agent_source
-
-    @property
-    def status(self) -> SessionStatus:
-        return self.session.status
 
     def close_session(self) -> None:
         self.session.close_session()
@@ -271,7 +276,7 @@ class LLMBaseAgent(IOHost):
     async def __aenter__(self):
         await super().__aenter__()
         self.session.runtime = self
-        self.session.status = SessionStatus.ACTIVE
+        self.status = AgentStatus.IDLE
         await self.io_adapter.register_host(self)
 
         if self.mcp_client:
@@ -284,13 +289,11 @@ class LLMBaseAgent(IOHost):
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         try:
-            if self.session.status == SessionStatus.ACTIVE:
-                if exc_type is asyncio.CancelledError:
-                    self.session.record_interrupted()
-                elif exc_val is not None:
-                    self.session.record_error(exc_val)
-                else:
-                    self.session.status = SessionStatus.IDLE
+            if exc_type is asyncio.CancelledError:
+                self.session.record_interrupted()
+            elif exc_val is not None:
+                self.session.record_error(exc_val)
+            self.status = AgentStatus.STOPPED
             with contextlib.suppress(ClosedResourceError, EndOfStream):
                 await self.broadcast_agent_info()
         finally:
@@ -605,25 +608,43 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                 )
 
         self.reload_config()
-        while True:
-            result = await self._run_inference(
-                input_content,
-                message_history=self.message_history,
-            )
-            self.message_history = result.all_messages()
-            self.session.record_step(result.new_messages())
+        self.status = AgentStatus.RUNNING
+        try:
+            while True:
+                result = await self._run_inference(
+                    input_content,
+                    message_history=self.message_history,
+                )
+                self.message_history = result.all_messages()
+                self.session.record_step(result.new_messages())
 
-            if not (
-                isinstance(result.output, UsageLimitExceeded)
-                and self.request_limit_prompt
-            ):
-                break
-            logger.info("Continuing agent run after soft usage limit.")
-            input_content = self.request_limit_prompt
+                if not (
+                    isinstance(result.output, UsageLimitExceeded)
+                    and self.request_limit_prompt
+                ):
+                    break
+                logger.info("Continuing agent run after soft usage limit.")
+                input_content = self.request_limit_prompt
 
-        self.result = result
-        await self.agent_io.send(AgentRunResultEvent(result))
-        return result
+            self.result = result
+            await self.agent_io.send(AgentRunResultEvent(result))
+            return result
+        finally:
+            self.status = AgentStatus.IDLE
+
+    async def execute_task(self, task: str) -> str | None:
+        """Execute a task turn; subclasses can override to customize task execution."""
+        result = await self.step(task)
+        return result.output if isinstance(result.output, str) else None
+
+    async def run_turn(self, message: str) -> str | None:
+        """Run a single autonomous turn managing runtime lifecycle and recording results to session."""
+        async with self:
+            if self.session.owner:
+                self.session.owner.record_subagent_call(self.name, message)
+            output = await self.execute_task(message)
+            self.session.record_result(output or "Task completed with no output.")
+            return output
 
     async def reset(self):
         self.message_history = []
@@ -642,16 +663,13 @@ class MainAgent(LLMBaseAgent, ABC):
 
 
 class DelegatableAgent(LLMBaseAgent, ABC):
-    """Marker mixin for subagents that can be delegated tasks.
+    """Base class for subagents that can be delegated tasks.
 
     Subagents inheriting from this class are exposed to the main agent as a
     callable tool and via the `/agent` slash command. The default `run_task`
-    drives the agent through a single `step` and returns its textual output.
+    drives the agent through `run_turn(task)`.
     """
 
     async def run_task(self, task: str) -> str | None:
         """Run a delegated task autonomously until completion."""
-        result = await self.step(task)
-        if result and isinstance(result.output, str):
-            return result.output
-        return None
+        return await self.run_turn(task)
