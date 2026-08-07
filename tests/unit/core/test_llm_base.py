@@ -12,7 +12,7 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter, RequestEvent
-from arox.core.llm_base import LLMBaseAgent, create_agent_from_session
+from arox.core.llm_base import LLMBaseAgent
 from arox.core.session import AgentSession, SessionStatus
 from arox.plugins.core import SetModelEvent
 
@@ -437,7 +437,7 @@ system_prompt = "Hi."
 
 
 @pytest.mark.asyncio
-async def test_create_agent_from_session(tmp_path, monkeypatch):
+async def test_session_create_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
     config_file = tmp_path / ".arox" / "config.toml"
     config_file.parent.mkdir(parents=True, exist_ok=True)
@@ -455,8 +455,7 @@ system_prompt = "Hi."
         target="/test_agent/child_task",
     )
 
-    agent = create_agent_from_session(
-        session=session,
+    agent = session.create_agent(
         config_loader=config_loader,
         io_adapter=io_adapter,
     )

@@ -8,8 +8,6 @@ from typing import Any
 
 from arox.core.llm_base import (
     DelegatableAgent,
-    create_agent,
-    create_agent_from_session,
 )
 from arox.core.plugin import Plugin, tool
 from arox.core.session import AgentRunInfo, AgentSession, SessionStatus
@@ -176,8 +174,7 @@ class SubagentPlugin(Plugin):
             await self.agent.session.save()
 
     def _create_runtime(self, session: AgentSession) -> DelegatableAgent:
-        candidate = create_agent_from_session(
-            session=session,
+        candidate = session.create_agent(
             config_loader=self.agent.config_loader,
             io_adapter=self.agent.io_adapter,
         )
@@ -229,25 +226,34 @@ class SubagentPlugin(Plugin):
             agent_config = self.agent.config.agent.get(agent_type)
             configured_type = agent_config.type if agent_config else "chat"
 
-            child_session = AgentSession(
-                path=[*self.agent.session.path, str(uuid.uuid4())]
-                if self.agent.session
-                else [str(uuid.uuid4())],
-                agent_name=agent_type,
-                agent_type=configured_type,
-                agent_source="static",
-                workspace=str(self.agent.workspace) if self.agent.workspace else None,
-                task_name=task_name,
-                target=f"/{self.agent.name}/{task_name}",
-                initial_message=message,
-                last_message=message,
-                status=SessionStatus.PENDING,
-                run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
-            )
             if self.agent.session:
-                child_session.owner = self.agent.session
-                child_session.manager = self.agent.session.manager
-                self.agent.session.children.append(child_session.id)
+                child_session = self.agent.session.create_child_session(
+                    agent_name=agent_type,
+                    agent_type=configured_type,
+                    workspace=str(self.agent.workspace)
+                    if self.agent.workspace
+                    else None,
+                    task_name=task_name,
+                    target=f"/{self.agent.name}/{task_name}",
+                    initial_message=message,
+                    last_message=message,
+                    status=SessionStatus.PENDING,
+                )
+            else:
+                child_session = AgentSession(
+                    agent_name=agent_type,
+                    agent_type=configured_type,
+                    agent_source="static",
+                    workspace=str(self.agent.workspace)
+                    if self.agent.workspace
+                    else None,
+                    task_name=task_name,
+                    target=f"/{self.agent.name}/{task_name}",
+                    initial_message=message,
+                    last_message=message,
+                    status=SessionStatus.PENDING,
+                    run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
+                )
 
             self._register_record(child_session)
 
@@ -373,13 +379,27 @@ class SubagentPlugin(Plugin):
         if subagent_name not in self.agent.agent_config.subagents:
             raise ValueError(f"Agent type '{subagent_name}' is not configured.")
 
-        candidate = create_agent(
-            name=subagent_name,
+        agent_config = self.agent.config.agent.get(subagent_name)
+        configured_type = agent_config.type if agent_config else "chat"
+
+        if self.agent.session:
+            child_session = self.agent.session.create_child_session(
+                agent_name=subagent_name,
+                agent_type=configured_type,
+                workspace=str(self.agent.workspace) if self.agent.workspace else None,
+            )
+        else:
+            child_session = AgentSession(
+                agent_name=subagent_name,
+                agent_type=configured_type,
+                agent_source="static",
+                workspace=str(self.agent.workspace) if self.agent.workspace else None,
+                run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
+            )
+
+        candidate = child_session.create_agent(
             config_loader=self.agent.config_loader,
             io_adapter=self.agent.io_adapter,
-            parent_session=self.agent.session,
-            agent_source="static",
-            workspace=self.agent.workspace,
         )
         try:
             subagent = self._as_delegatable(candidate, subagent_name)

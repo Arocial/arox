@@ -8,7 +8,12 @@ from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, Literal, Protocol, Union
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol, Union
+
+if TYPE_CHECKING:
+    from arox.core.config import ConfigLoader
+    from arox.core.io import AbstractIOAdapter
+    from arox.core.llm_base.agent import LLMBaseAgent
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_ai.messages import (
@@ -221,6 +226,65 @@ class AgentSession(Session):
     def close_session(self) -> None:
         self.status = SessionStatus.CLOSED
         self.runtime = None
+
+    def create_child_session(
+        self,
+        agent_name: str,
+        *,
+        agent_type: str = "chat",
+        agent_source: Literal["static", "dynamic"] = "static",
+        workspace: Path | str | None = None,
+        task_name: str | None = None,
+        target: str | None = None,
+        initial_message: str | None = None,
+        last_message: str | None = None,
+        status: SessionStatus = SessionStatus.IDLE,
+    ) -> AgentSession:
+        child_workspace = (
+            str(Path(workspace).absolute()) if workspace is not None else self.workspace
+        )
+        child = AgentSession(
+            path=[*self.path, str(uuid.uuid4())],
+            agent_name=agent_name,
+            agent_type=agent_type,
+            agent_source=agent_source,
+            workspace=child_workspace,
+            task_name=task_name,
+            target=target,
+            initial_message=initial_message,
+            last_message=last_message,
+            status=status,
+            run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
+            owner=self,
+            manager=self.manager,
+        )
+        self.children.append(child.id)
+        return child
+
+    def create_agent(
+        self,
+        config_loader: ConfigLoader,
+        io_adapter: AbstractIOAdapter,
+    ) -> LLMBaseAgent:
+        from arox import utils
+
+        agent_config = config_loader.current_config.agent.get(self.agent_name)
+        if not agent_config:
+            raise ValueError(f"Agent config for '{self.agent_name}' not found")
+
+        agent_type = agent_config.type or self.agent_type
+        try:
+            agent_cls = utils.import_class(agent_type, group="arox.agents")
+        except ValueError:
+            raise ValueError(
+                f"Unknown agent type: {agent_type} for agent {self.agent_name}"
+            )
+
+        return agent_cls(
+            parent_config_loader=config_loader,
+            io_adapter=io_adapter,
+            session=self,
+        )
 
     @model_validator(mode="before")
     @classmethod

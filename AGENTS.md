@@ -25,7 +25,7 @@ An **App** is a runnable process that owns one `IOAdapter` and hosts a **MainAge
 mode = "advanced"
 ```
 
-Agent types and which agent to instantiate come from config (`arox/core/config.py`): `ConfigLoader` resolves `AppConfig` / `AgentConfig` from layered YAML plus CLI overrides, caches unchanged source files, and exposes the active snapshot through `current_config`; callers use `reload()` to pick up changed config/include/agent/skill files. Apps retain the base loader; `create_agent()` derives an independent loader for the agent's workspace while preserving the app, profile, and CLI context. Failed runtime reloads preserve the last valid `Config` snapshot.
+Agent types and which agent to instantiate come from config (`arox/core/config.py`): `ConfigLoader` resolves `AppConfig` / `AgentConfig` from layered YAML plus CLI overrides, caches unchanged source files, and exposes the active snapshot through `current_config`; callers use `reload()` to pick up changed config/include/agent/skill files. Apps retain the base loader; creating a runtime agent derives an independent loader for the agent's workspace while preserving the app, profile, and CLI context. Failed runtime reloads preserve the last valid `Config` snapshot.
 
 **Session-centric architecture** (`arox/core/session.py` and `arox/core/llm_base/agent.py`):
 - **`AgentSession`** is the persistent, authoritative entity tracking:
@@ -35,10 +35,12 @@ Agent types and which agent to instantiate come from config (`arox/core/config.p
   - Message history (`events`), run/token metadata (`run_info`), and persistence.
   - Agent sessions persist only the agent name and type; full `AgentConfig` is resolved dynamically from active configuration. The main agent's `AgentSession` is the top-level session; child tasks and subagents nest beneath it.
 - **`LLMBaseAgent`** is an ephemeral runtime owning live/expensive resources (Pydantic AI agent, MCP clients, plugins, tools, IO channels).
+  - Callers construct or load an authoritative `AgentSession` and instantiate an ephemeral runtime via `session.create_agent(config_loader, io_adapter)`.
+  - Child sessions are spawned via `parent_session.create_child_session(...)`.
   - Runtime identity matches `session.id` (`agent.uuid == session.id`).
   - While active within `async with agent:`, `session.runtime` is bound to the agent and status is `ACTIVE`.
   - When execution ends (idle, completed, interrupted, errored, or closed), IO channels and live resources are cleaned up, `session.runtime` is detached (`None`), and the session state is persisted.
-  - Subsequent turns reuse the persistent `AgentSession` and reconstruct a fresh runtime via `create_agent_from_session()`.
+  - Subsequent turns reuse the persistent `AgentSession` and reconstruct a fresh runtime via `session.create_agent(config_loader, io_adapter)`.
 - `SessionManager` coordinates with `SessionStore` (default `FileSessionStore`) to persist sessions to disk with debouncing and age-based cleanup.
 - Resuming is done via the `session_id` passed to the App. The `CorePlugin` provides the `/fork` command.
 

@@ -9,7 +9,7 @@ from pathlib import Path
 os.environ["FASTMCP_LOG_ENABLED"] = "false"
 
 from arox.core.app import app_setup
-from arox.core.llm_base import MainAgent, create_agent
+from arox.core.llm_base import MainAgent
 
 logger = logging.getLogger(__name__)
 
@@ -130,16 +130,26 @@ def main(profile: str | None = None):
                         f"Session {args.session} not found or invalid.", file=sys.stderr
                     )
                     sys.exit(1)
-            main_agent_name = session.agent_name if session else config.app.main_agent
-            main_agent = create_agent(
-                name=main_agent_name,
+            if session is None:
+                main_agent_name = config.app.main_agent
+                agent_config = config.agent.get(main_agent_name)
+                agent_type = agent_config.type if agent_config else "chat"
+                session = AgentSession(
+                    agent_name=main_agent_name,
+                    agent_type=agent_type,
+                    manager=session_manager,
+                )
+            else:
+                session.manager = session_manager
+
+            main_agent = session.create_agent(
                 config_loader=config_loader,
                 io_adapter=io_adapter,
-                session=session,
             )
             if not isinstance(main_agent, MainAgent):
-                raise TypeError(f"Main agent '{main_agent_name}' must be a MainAgent")
-            main_agent.session.manager = session_manager
+                raise TypeError(
+                    f"Main agent '{session.agent_name}' must be a MainAgent"
+                )
 
             async with session_manager, io_adapter:
                 async with main_agent:

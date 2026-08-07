@@ -2,6 +2,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, override
 
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter
@@ -41,7 +42,6 @@ from arox.core.llm_base import (
     LLMBaseAgent,
     MainAgent,
     ServerIdMapping,
-    create_agent,
 )
 from arox.plugins.slots import SUBAGENTS
 
@@ -607,22 +607,29 @@ class VercelStreamServer:
                     status_code=404, detail="Session not found or invalid"
                 )
 
-        config_loader = self.config_loader
-        main_agent_name = (
-            session.agent_name
-            if session
-            else config_loader.current_config.app.main_agent
-        )
-        main_agent = create_agent(
-            name=main_agent_name,
-            config_loader=config_loader,
+        if session is None:
+            main_agent_name = self.config_loader.current_config.app.main_agent
+            agent_config = self.config_loader.current_config.agent.get(main_agent_name)
+            agent_type = agent_config.type if agent_config else "chat"
+            session = AgentSession(
+                agent_name=main_agent_name,
+                agent_type=agent_type,
+                workspace=str(Path(request.workspace).absolute())
+                if request.workspace
+                else None,
+                manager=self.session_manager,
+            )
+        else:
+            session.manager = self.session_manager
+            if request.workspace:
+                session.workspace = str(Path(request.workspace).absolute())
+
+        main_agent = session.create_agent(
+            config_loader=self.config_loader,
             io_adapter=self.io_adapter,
-            session=session,
-            workspace=request.workspace,
         )
         if not isinstance(main_agent, MainAgent):
-            raise TypeError(f"Main agent '{main_agent_name}' must be a MainAgent")
-        main_agent.session.manager = self.session_manager
+            raise TypeError(f"Main agent '{session.agent_name}' must be a MainAgent")
 
         run_instance = AgentRun(main_agent=main_agent)
         self.io_adapter.run_instances[main_agent.uuid] = run_instance

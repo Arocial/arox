@@ -1,5 +1,6 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from pydantic_ai.messages import (
@@ -10,6 +11,8 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
+from arox.core.app import app_setup
+from arox.core.io import AbstractIOAdapter
 from arox.core.session import (
     AgentSession,
     CommandEvent,
@@ -17,11 +20,17 @@ from arox.core.session import (
     ErrorEvent,
     FileSessionStore,
     ResetEvent,
+    SessionManager,
     SessionStatus,
     StepEvent,
     UserInputEvent,
 )
 from arox.core.types import UserInput
+
+
+class _StubIOAdapter(AbstractIOAdapter):
+    async def handle_event(self, adapter_io, event):
+        pass
 
 
 class TestAgentSession:
@@ -351,6 +360,123 @@ class TestAgentSession:
         assert forked.status == SessionStatus.IDLE
         assert forked.last_result is None
         assert forked.last_error is None
+
+    def test_create_child_session(self, tmp_path):
+        store = FileSessionStore()
+        store.base_dir = tmp_path / "sessions"
+        manager = SessionManager(store)
+        parent = AgentSession(
+            agent_name="main",
+            path=["root-id"],
+            workspace=str(tmp_path),
+            manager=manager,
+        )
+
+        child = parent.create_child_session(
+            agent_name="worker",
+            agent_type="chat",
+            task_name="sub_task",
+            target="/main/sub_task",
+            initial_message="do work",
+            last_message="do work",
+            status=SessionStatus.PENDING,
+        )
+
+        assert child.owner is parent
+        assert child.manager is manager
+        assert child.id in parent.children
+        assert child.path == ["root-id", child.id]
+        assert child.agent_name == "worker"
+        assert child.agent_type == "chat"
+        assert child.task_name == "sub_task"
+        assert child.target == "/main/sub_task"
+        assert child.initial_message == "do work"
+        assert child.last_message == "do work"
+        assert child.status == SessionStatus.PENDING
+        assert child.workspace == str(tmp_path)
+        assert child.run_info.llm_context_id is not None
+        assert child.run_info.llm_context_id != parent.run_info.llm_context_id
+
+    def test_create_child_session_workspace_override(self, tmp_path):
+        parent = AgentSession(
+            agent_name="main",
+            path=["root-id"],
+            workspace=str(tmp_path),
+        )
+        custom_ws = tmp_path / "custom"
+        child = parent.create_child_session(
+            agent_name="worker",
+            workspace=custom_ws,
+        )
+        assert child.workspace == str(custom_ws.absolute())
+
+    @pytest.mark.asyncio
+    async def test_create_agent(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+        config_file = tmp_path / ".arox" / "config.toml"
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text("""
+model_ref = "test"
+[agent.test_worker]
+system_prompt = "Hello worker."
+""")
+        config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
+        io_adapter = _StubIOAdapter()
+
+        session = AgentSession(
+            agent_name="test_worker",
+            path=["worker-session-id"],
+        )
+        agent = session.create_agent(
+            config_loader=config_loader,
+            io_adapter=io_adapter,
+        )
+
+        assert agent.uuid == "worker-session-id"
+        assert agent.session is session
+        assert agent.name == "test_worker"
+
+    def test_create_agent_missing_config_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+        config_file = tmp_path / ".arox" / "config.toml"
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text("""
+model_ref = "test"
+""")
+        config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
+        io_adapter = _StubIOAdapter()
+
+        session = AgentSession(
+            agent_name="unconfigured_agent",
+        )
+        with pytest.raises(
+            ValueError, match="Agent config for 'unconfigured_agent' not found"
+        ):
+            session.create_agent(
+                config_loader=config_loader,
+                io_adapter=io_adapter,
+            )
+
+    def test_create_agent_unknown_type_raises(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+        config_file = tmp_path / ".arox" / "config.toml"
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text("""
+model_ref = "test"
+[agent.broken_agent]
+type = "nonexistent_agent_class_name"
+""")
+        config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
+        io_adapter = _StubIOAdapter()
+
+        session = AgentSession(
+            agent_name="broken_agent",
+        )
+        with pytest.raises(ValueError, match="Unknown agent type"):
+            session.create_agent(
+                config_loader=config_loader,
+                io_adapter=io_adapter,
+            )
 
 
 class TestFileSessionStore:
