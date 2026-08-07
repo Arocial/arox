@@ -16,6 +16,11 @@ from arox.plugins.slots import RUN_SUBAGENT, SUBAGENTS, SYSTEM_PROMPT
 logger = logging.getLogger(__name__)
 
 _TASK_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_RUNNING_TASK_STATUSES = {
+    SessionStatus.PENDING,
+    SessionStatus.RUNNING,
+    SessionStatus.ACTIVE,
+}
 
 
 class SubagentMode(StrEnum):
@@ -34,19 +39,19 @@ class SubagentPlugin(Plugin):
     def __init__(self, agent):
         super().__init__(agent)
         self.mode = SubagentMode.SIMPLE
-        self.tasks: dict[str, AgentSession] = {}
-        self._tasks_by_name: dict[str, str] = {}
-        self._tasks_by_target: dict[str, str] = {}
-        self._active_run_subagents: dict[str, DelegatableAgent] = {}
+        self.task_sessions: dict[str, AgentSession] = {}
+        self._task_ids_by_name: dict[str, str] = {}
+        self._task_ids_by_target: dict[str, str] = {}
+        self._active_delegations: dict[str, DelegatableAgent] = {}
         self._lock = asyncio.Lock()
 
         def get_subagents(status: str | None = None):
             active = []
-            for session in self.tasks.values():
+            for session in self.task_sessions.values():
                 if session.runtime is not None:
                     if status is None or session.status == status:
                         active.append(session.runtime)
-            for subagent in self._active_run_subagents.values():
+            for subagent in self._active_delegations.values():
                 if subagent not in active:
                     if status is None or subagent.status == status:
                         active.append(subagent)
@@ -91,7 +96,7 @@ class SubagentPlugin(Plugin):
 
         self.agent.provide_slot(SUBAGENTS, get_subagents)
         self.agent.provide_slot(SYSTEM_PROMPT, get_subagent_instructions)
-        self.agent.provide_slot(RUN_SUBAGENT, self._run_subagent_once)
+        self.agent.provide_slot(RUN_SUBAGENT, self._delegate_once)
 
     def configure(self, config: dict[str, Any]) -> None:
         try:
@@ -120,11 +125,7 @@ class SubagentPlugin(Plugin):
             if child_session.task_name is None and child_session.target is None:
                 continue
 
-            if child_session.status in (
-                SessionStatus.PENDING,
-                SessionStatus.RUNNING,
-                SessionStatus.ACTIVE,
-            ):
+            if child_session.status in _RUNNING_TASK_STATUSES:
                 child_session.record_interrupted(
                     "Parent process stopped before the task completed."
                 )
@@ -132,20 +133,20 @@ class SubagentPlugin(Plugin):
                 child_session.running_task = None
                 await child_session.save()
 
-            if child_session.id in self.tasks or (
+            if child_session.id in self.task_sessions or (
                 child_session.task_name
-                and child_session.task_name in self._tasks_by_name
+                and child_session.task_name in self._task_ids_by_name
             ):
                 logger.warning(
                     "Ignoring duplicate restored subagent task %s", child_session.target
                 )
                 continue
-            self._register_record(child_session)
+            self._register_task_session(child_session)
 
     async def on_stop(self) -> None:
         running = [
             session.running_task
-            for session in self.tasks.values()
+            for session in self.task_sessions.values()
             if session.running_task and not session.running_task.done()
         ]
         for task in running:
@@ -153,51 +154,109 @@ class SubagentPlugin(Plugin):
         if running:
             await asyncio.gather(*running, return_exceptions=True)
 
-    def _register_record(self, session: AgentSession) -> None:
-        self.tasks[session.id] = session
-        if session.task_name:
-            self._tasks_by_name[session.task_name] = session.id
-        if session.target:
-            self._tasks_by_target[session.target] = session.id
+    def _register_task_session(self, task_session: AgentSession) -> None:
+        self.task_sessions[task_session.id] = task_session
+        if task_session.task_name:
+            self._task_ids_by_name[task_session.task_name] = task_session.id
+        if task_session.target:
+            self._task_ids_by_target[task_session.target] = task_session.id
+
+    def _unregister_task_session(self, task_session: AgentSession) -> None:
+        self.task_sessions.pop(task_session.id, None)
+        if task_session.task_name:
+            self._task_ids_by_name.pop(task_session.task_name, None)
+        if task_session.target:
+            self._task_ids_by_target.pop(task_session.target, None)
+
+    def _validate_agent_type(self, agent_type: str) -> None:
+        if agent_type not in self.agent.agent_config.subagents:
+            raise ValueError(f"Agent type '{agent_type}' is not configured.")
+
+    def _create_child_session(
+        self,
+        agent_type: str,
+        *,
+        task_name: str | None = None,
+        message: str | None = None,
+        status: SessionStatus = SessionStatus.IDLE,
+    ) -> AgentSession:
+        agent_config = self.agent.config.agent.get(agent_type)
+        configured_type = agent_config.type if agent_config else "chat"
+        workspace = str(self.agent.workspace) if self.agent.workspace else None
+
+        if self.agent.session:
+            return self.agent.session.create_child_session(
+                agent_name=agent_type,
+                agent_type=configured_type,
+                workspace=workspace,
+                task_name=task_name,
+                target=f"/{self.agent.name}/{task_name}" if task_name else None,
+                initial_message=message,
+                last_message=message,
+                status=status,
+            )
+
+        return AgentSession(
+            agent_name=agent_type,
+            agent_type=configured_type,
+            agent_source="static",
+            workspace=workspace,
+            task_name=task_name,
+            target=f"/{self.agent.name}/{task_name}" if task_name else None,
+            initial_message=message,
+            last_message=message,
+            status=status,
+            run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
+        )
 
     @staticmethod
-    def _as_delegatable(candidate: Any, agent_type: str) -> DelegatableAgent:
-        if not isinstance(candidate, DelegatableAgent):
+    async def _notify_subagent_created(
+        callback: Callable[[DelegatableAgent], Awaitable[None] | None] | None,
+        runtime: DelegatableAgent,
+    ) -> None:
+        if callback is None:
+            return
+        result = callback(runtime)
+        if asyncio.iscoroutine(result):
+            await result
+
+    @staticmethod
+    def _as_delegatable(runtime: Any, agent_type: str) -> DelegatableAgent:
+        if not isinstance(runtime, DelegatableAgent):
             raise TypeError(
                 f"Agent type '{agent_type}' does not support delegated tasks."
             )
-        return candidate
+        return runtime
 
-    async def _discard_new_session(self, session: AgentSession) -> None:
-        if self.agent.session and session.id in self.agent.session.children:
-            self.agent.session.children.remove(session.id)
+    async def _unlink_child_session(self, task_session: AgentSession) -> None:
+        if self.agent.session and task_session.id in self.agent.session.children:
+            self.agent.session.children.remove(task_session.id)
             await self.agent.session.save()
 
-    def _create_runtime(self, session: AgentSession) -> DelegatableAgent:
-        candidate = session.create_agent(
+    def _create_task_runtime(self, task_session: AgentSession) -> DelegatableAgent:
+        runtime = task_session.create_agent(
             config_loader=self.agent.config_loader,
             io_adapter=self.agent.io_adapter,
         )
-        return self._as_delegatable(candidate, session.agent_name)
+        return self._as_delegatable(runtime, task_session.agent_name)
 
-    def _resolve_target(self, target: str) -> AgentSession:
-        task_id = target if target in self.tasks else None
+    def _resolve_task(self, target: str) -> AgentSession:
+        task_id = target if target in self.task_sessions else None
         if task_id is None:
-            task_id = self._tasks_by_target.get(target)
+            task_id = self._task_ids_by_target.get(target)
         if task_id is None:
-            task_id = self._tasks_by_name.get(target)
+            task_id = self._task_ids_by_name.get(target)
         if task_id is None:
             raise ValueError(f"Unknown agent task '{target}'.")
-        return self.tasks[task_id]
+        return self.task_sessions[task_id]
 
-    def _running_count(self) -> int:
+    def _running_task_count(self) -> int:
         return sum(
-            session.status
-            in (SessionStatus.PENDING, SessionStatus.RUNNING, SessionStatus.ACTIVE)
-            for session in self.tasks.values()
+            session.status in _RUNNING_TASK_STATUSES
+            for session in self.task_sessions.values()
         )
 
-    async def _spawn_record(
+    async def _spawn_task(
         self,
         task_name: str,
         message: str,
@@ -211,148 +270,126 @@ class SubagentPlugin(Plugin):
                     "task_name must start with a lowercase letter and contain only "
                     "lowercase letters, digits, or underscores (maximum 64 characters)."
                 )
-            if task_name in self._tasks_by_name:
+            if task_name in self._task_ids_by_name:
                 raise ValueError(
                     f"Task '{task_name}' already exists. Use followup_task to continue it."
                 )
-            if agent_type not in self.agent.agent_config.subagents:
-                raise ValueError(f"Agent type '{agent_type}' is not configured.")
-            if self._running_count() >= self.agent.agent_config.max_parallel_subagents:
+            self._validate_agent_type(agent_type)
+            if (
+                self._running_task_count()
+                >= self.agent.agent_config.max_parallel_subagents
+            ):
                 raise ValueError(
                     "Maximum parallel subagents reached: "
                     f"{self.agent.agent_config.max_parallel_subagents}."
                 )
 
-            agent_config = self.agent.config.agent.get(agent_type)
-            configured_type = agent_config.type if agent_config else "chat"
-
-            if self.agent.session:
-                child_session = self.agent.session.create_child_session(
-                    agent_name=agent_type,
-                    agent_type=configured_type,
-                    workspace=str(self.agent.workspace)
-                    if self.agent.workspace
-                    else None,
-                    task_name=task_name,
-                    target=f"/{self.agent.name}/{task_name}",
-                    initial_message=message,
-                    last_message=message,
-                    status=SessionStatus.PENDING,
-                )
-            else:
-                child_session = AgentSession(
-                    agent_name=agent_type,
-                    agent_type=configured_type,
-                    agent_source="static",
-                    workspace=str(self.agent.workspace)
-                    if self.agent.workspace
-                    else None,
-                    task_name=task_name,
-                    target=f"/{self.agent.name}/{task_name}",
-                    initial_message=message,
-                    last_message=message,
-                    status=SessionStatus.PENDING,
-                    run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
-                )
-
-            self._register_record(child_session)
+            task_session = self._create_child_session(
+                agent_type,
+                task_name=task_name,
+                message=message,
+                status=SessionStatus.PENDING,
+            )
+            self._register_task_session(task_session)
 
             try:
-                subagent = self._create_runtime(child_session)
-                if on_subagent_created:
-                    result = on_subagent_created(subagent)
-                    if asyncio.iscoroutine(result):
-                        await result
-                await child_session.save()
+                runtime = self._create_task_runtime(task_session)
+                await self._notify_subagent_created(on_subagent_created, runtime)
+                await task_session.save()
                 if self.agent.session:
                     await self.agent.session.save()
             except BaseException:
-                self.tasks.pop(child_session.id, None)
-                if child_session.task_name:
-                    self._tasks_by_name.pop(child_session.task_name, None)
-                if child_session.target:
-                    self._tasks_by_target.pop(child_session.target, None)
-                await self._discard_new_session(child_session)
+                self._unregister_task_session(task_session)
+                await self._unlink_child_session(task_session)
                 raise
 
-            child_session.running_task = asyncio.create_task(
-                self._run_turn(child_session, message, initial_subagent=subagent),
-                name=f"subagent:{child_session.target}",
+            task_session.running_task = asyncio.create_task(
+                self._run_task_turn(task_session, message, initial_runtime=runtime),
+                name=f"subagent:{task_session.target}",
             )
-            return child_session
+            return task_session
 
-    async def _run_turn(
+    async def _run_task_turn(
         self,
-        session: AgentSession,
+        task_session: AgentSession,
         message: str,
-        initial_subagent: DelegatableAgent | None = None,
+        initial_runtime: DelegatableAgent | None = None,
     ) -> str | None:
-        session.status = SessionStatus.RUNNING
-        session.last_message = message
-        session.last_result = None
-        session.last_error = None
+        task_session.status = SessionStatus.RUNNING
+        task_session.last_message = message
+        task_session.last_result = None
+        task_session.last_error = None
         if self.agent.session:
-            self.agent.session.record_subagent_call(session.agent_name, message)
-        await session.save()
+            self.agent.session.record_subagent_call(task_session.agent_name, message)
+        await task_session.save()
         await self.agent.broadcast_agent_info()
 
-        subagent = initial_subagent or self._create_runtime(session)
+        runtime = initial_runtime or self._create_task_runtime(task_session)
 
         try:
-            async with subagent:
+            async with runtime:
                 await self.agent.broadcast_agent_info()
-                result = await subagent.run_task(message)
-                session.record_result(result or "Task completed with no output.")
+                result = await runtime.run_task(message)
+                task_session.record_result(result or "Task completed with no output.")
         except asyncio.CancelledError:
-            session.record_interrupted("Task interrupted.")
+            task_session.record_interrupted("Task interrupted.")
             raise
         except Exception as exc:
-            logger.exception("Subagent task %s failed", session.target)
-            session.record_error(exc)
+            logger.exception("Subagent task %s failed", task_session.target)
+            task_session.record_error(exc)
         finally:
-            session.running_task = None
-            await session.save()
+            task_session.running_task = None
+            await task_session.save()
             await self.agent.broadcast_agent_info()
 
-        return session.last_result
+        return task_session.last_result
 
-    async def _start_followup(self, session: AgentSession, message: str) -> None:
+    async def _start_followup_turn(
+        self, task_session: AgentSession, message: str
+    ) -> None:
         async with self._lock:
-            if session.running_task and not session.running_task.done():
-                raise ValueError(f"Agent task '{session.target}' is already running.")
-            if self._running_count() >= self.agent.agent_config.max_parallel_subagents:
+            if task_session.running_task and not task_session.running_task.done():
+                raise ValueError(
+                    f"Agent task '{task_session.target}' is already running."
+                )
+            if (
+                self._running_task_count()
+                >= self.agent.agent_config.max_parallel_subagents
+            ):
                 raise ValueError(
                     "Maximum parallel subagents reached: "
                     f"{self.agent.agent_config.max_parallel_subagents}."
                 )
 
-            session.status = SessionStatus.PENDING
-            session.last_message = message
-            session.last_result = None
-            session.last_error = None
-            await session.save()
-            session.running_task = asyncio.create_task(
-                self._run_turn(session, message),
-                name=f"subagent:{session.target}:followup",
+            task_session.status = SessionStatus.PENDING
+            task_session.last_message = message
+            task_session.last_result = None
+            task_session.last_error = None
+            await task_session.save()
+            task_session.running_task = asyncio.create_task(
+                self._run_task_turn(task_session, message),
+                name=f"subagent:{task_session.target}:followup",
             )
 
-    def _format_status(self, session: AgentSession, include_result: bool = True) -> str:
+    def _format_task_status(
+        self, task_session: AgentSession, include_result: bool = True
+    ) -> str:
         lines = [
-            f"- task_id: {session.id}",
-            f"- target: {session.target}",
-            f"- agent_type: {session.agent_name}",
-            f"- status: {session.status.value if isinstance(session.status, SessionStatus) else session.status}",
+            f"- task_id: {task_session.id}",
+            f"- target: {task_session.target}",
+            f"- agent_type: {task_session.agent_name}",
+            f"- status: {task_session.status.value if isinstance(task_session.status, SessionStatus) else task_session.status}",
         ]
-        if session.last_error:
-            lines.append(f"- error: {session.last_error}")
-        if include_result and session.last_result:
-            lines.extend(("", "Result:", session.last_result))
+        if task_session.last_error:
+            lines.append(f"- error: {task_session.last_error}")
+        if include_result and task_session.last_result:
+            lines.extend(("", "Result:", task_session.last_result))
         return "\n".join(lines)
 
-    async def _wait_record(
-        self, session: AgentSession, timeout_seconds: float | None
+    async def _wait_for_task(
+        self, task_session: AgentSession, timeout_seconds: float | None
     ) -> str:
-        running_task = session.running_task
+        running_task = task_session.running_task
         if running_task is not None:
             try:
                 if timeout_seconds is None:
@@ -362,79 +399,55 @@ class SubagentPlugin(Plugin):
                         asyncio.shield(running_task), timeout=timeout_seconds
                     )
             except TimeoutError:
-                return "Agent is still running.\n" + self._format_status(session, False)
+                return "Agent is still running.\n" + self._format_task_status(
+                    task_session, False
+                )
             except asyncio.CancelledError:
-                if session.status is not SessionStatus.INTERRUPTED:
+                if task_session.status is not SessionStatus.INTERRUPTED:
                     raise
 
-        return self._format_status(session)
+        return self._format_task_status(task_session)
 
-    async def _run_subagent_once(
+    async def _delegate_once(
         self,
         subagent_name: str,
         task: str,
         on_subagent_created: Callable[[DelegatableAgent], Awaitable[None] | None]
         | None = None,
     ) -> str:
-        if subagent_name not in self.agent.agent_config.subagents:
-            raise ValueError(f"Agent type '{subagent_name}' is not configured.")
+        self._validate_agent_type(subagent_name)
+        task_session = self._create_child_session(subagent_name)
 
-        agent_config = self.agent.config.agent.get(subagent_name)
-        configured_type = agent_config.type if agent_config else "chat"
-
-        if self.agent.session:
-            child_session = self.agent.session.create_child_session(
-                agent_name=subagent_name,
-                agent_type=configured_type,
-                workspace=str(self.agent.workspace) if self.agent.workspace else None,
-            )
-        else:
-            child_session = AgentSession(
-                agent_name=subagent_name,
-                agent_type=configured_type,
-                agent_source="static",
-                workspace=str(self.agent.workspace) if self.agent.workspace else None,
-                run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
-            )
-
-        candidate = child_session.create_agent(
-            config_loader=self.agent.config_loader,
-            io_adapter=self.agent.io_adapter,
-        )
         try:
-            subagent = self._as_delegatable(candidate, subagent_name)
+            runtime = self._create_task_runtime(task_session)
         except BaseException:
-            await self._discard_new_session(candidate.session)
+            await self._unlink_child_session(task_session)
             raise
 
-        self._active_run_subagents[candidate.uuid] = subagent
+        self._active_delegations[runtime.uuid] = runtime
         if self.agent.session:
             await self.agent.session.save()
         await self.agent.broadcast_agent_info()
 
         try:
-            if on_subagent_created:
-                result = on_subagent_created(subagent)
-                if asyncio.iscoroutine(result):
-                    await result
+            await self._notify_subagent_created(on_subagent_created, runtime)
 
-            async with subagent:
+            async with runtime:
                 if self.agent.session:
-                    self.agent.session.record_subagent_call(subagent.name, task)
-                result = await subagent.run_task(task)
-                candidate.session.record_result(
-                    result or "Task completed with no output."
-                )
+                    self.agent.session.record_subagent_call(runtime.name, task)
+                result = await runtime.run_task(task)
+                task_session.record_result(result or "Task completed with no output.")
                 return result or "Task completed with no output."
         finally:
-            self._active_run_subagents.pop(candidate.uuid, None)
-            candidate.session.close_session()
+            self._active_delegations.pop(runtime.uuid, None)
+            task_session.close_session()
+            await task_session.save()
             await self.agent.broadcast_agent_info()
 
     @tool(sequential=True, enabled=_simple_tools_enabled)
     async def delegate_task(self, message: str, agent_type: str) -> str:
         """Delegate a task to a configured subagent and wait for its result."""
-        return await self._run_subagent_once(agent_type, message)
+        return await self._delegate_once(agent_type, message)
 
     @tool(sequential=True, enabled=_advanced_tools_enabled)
     async def spawn_agent(self, task_name: str, message: str, agent_type: str) -> str:
@@ -443,8 +456,8 @@ class SubagentPlugin(Plugin):
         `task_name` must be a unique lowercase identifier and `message` must
         contain all context the subagent needs.
         """
-        record = await self._spawn_record(task_name, message, agent_type)
-        return "Agent spawned.\n" + self._format_status(record, False)
+        task_session = await self._spawn_task(task_name, message, agent_type)
+        return "Agent spawned.\n" + self._format_task_status(task_session, False)
 
     @tool(sequential=True, enabled=_advanced_tools_enabled)
     async def followup_task(self, target: str, message: str) -> str:
@@ -452,9 +465,9 @@ class SubagentPlugin(Plugin):
 
         The existing agent session and message history are reused.
         """
-        record = self._resolve_target(target)
-        await self._start_followup(record, message)
-        return "Follow-up started.\n" + self._format_status(record, False)
+        task_session = self._resolve_task(target)
+        await self._start_followup_turn(task_session, message)
+        return "Follow-up started.\n" + self._format_task_status(task_session, False)
 
     @tool(enabled=_advanced_tools_enabled)
     async def wait_agent(self, target: str, timeout_seconds: float = 60) -> str:
@@ -464,36 +477,38 @@ class SubagentPlugin(Plugin):
         """
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero.")
-        return await self._wait_record(self._resolve_target(target), timeout_seconds)
+        return await self._wait_for_task(self._resolve_task(target), timeout_seconds)
 
     @tool(sequential=True, enabled=_advanced_tools_enabled)
     async def interrupt_agent(self, target: str) -> str:
         """Interrupt a running agent turn while preserving its session for follow-up."""
-        record = self._resolve_target(target)
-        running_task = record.running_task
+        task_session = self._resolve_task(target)
+        running_task = task_session.running_task
         if running_task is None or running_task.done():
-            return "Agent is not running.\n" + self._format_status(record, False)
+            return "Agent is not running.\n" + self._format_task_status(
+                task_session, False
+            )
 
         running_task.cancel()
         await asyncio.gather(running_task, return_exceptions=True)
-        return "Agent interrupted.\n" + self._format_status(record, False)
+        return "Agent interrupted.\n" + self._format_task_status(task_session, False)
 
     @tool(enabled=_advanced_tools_enabled)
     async def list_agents(self, status: SessionStatus | None = None) -> str:
         """List spawned agent tasks, optionally filtered by task status."""
-        records = [
-            record
-            for record in self.tasks.values()
-            if status is None or record.status == status
+        task_sessions = [
+            task_session
+            for task_session in self.task_sessions.values()
+            if status is None or task_session.status == status
         ]
-        if not records:
+        if not task_sessions:
             return "No agent tasks."
 
         blocks = []
-        for record in sorted(records, key=lambda item: item.created_at):
-            block = self._format_status(record, False)
-            if record.last_result:
-                summary = record.last_result.replace("\n", " ")[:200]
+        for task_session in sorted(task_sessions, key=lambda item: item.created_at):
+            block = self._format_task_status(task_session, False)
+            if task_session.last_result:
+                summary = task_session.last_result.replace("\n", " ")[:200]
                 block += f"\n- result_summary: {summary}"
             blocks.append(block)
         return "\n\n".join(blocks)
