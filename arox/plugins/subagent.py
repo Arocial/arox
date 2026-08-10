@@ -115,12 +115,6 @@ class SubagentPlugin(Plugin):
             raise ValueError("subagent mode must be 'simple' or 'advanced'") from exc
         super().configure({**config, "mode": self.mode.value})
 
-    def _simple_tools_enabled(self) -> bool:
-        return self.mode is SubagentMode.SIMPLE
-
-    def _advanced_tools_enabled(self) -> bool:
-        return self.mode is SubagentMode.ADVANCED
-
     @staticmethod
     def _get_task_status(task_session: AgentSession) -> str:
         if task_session.status == SessionStatus.CLOSED:
@@ -177,7 +171,11 @@ class SubagentPlugin(Plugin):
                     "Ignoring duplicate restored subagent task %s", child_session.target
                 )
                 continue
-            self._register_task_session(child_session)
+            self.task_sessions[child_session.id] = child_session
+            if child_session.task_name:
+                self._task_ids_by_name[child_session.task_name] = child_session.id
+            if child_session.target:
+                self._task_ids_by_target[child_session.target] = child_session.id
 
     async def on_stop(self) -> None:
         running = [
@@ -189,24 +187,6 @@ class SubagentPlugin(Plugin):
             task.cancel()
         if running:
             await asyncio.gather(*running, return_exceptions=True)
-
-    def _register_task_session(self, task_session: AgentSession) -> None:
-        self.task_sessions[task_session.id] = task_session
-        if task_session.task_name:
-            self._task_ids_by_name[task_session.task_name] = task_session.id
-        if task_session.target:
-            self._task_ids_by_target[task_session.target] = task_session.id
-
-    def _unregister_task_session(self, task_session: AgentSession) -> None:
-        self.task_sessions.pop(task_session.id, None)
-        if task_session.task_name:
-            self._task_ids_by_name.pop(task_session.task_name, None)
-        if task_session.target:
-            self._task_ids_by_target.pop(task_session.target, None)
-
-    def _validate_agent_type(self, agent_type: str) -> None:
-        if agent_type not in self.agent.agent_config.subagents:
-            raise ValueError(f"Agent type '{agent_type}' is not configured.")
 
     def _create_child_session(
         self,
@@ -245,28 +225,6 @@ class SubagentPlugin(Plugin):
             run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
         )
 
-    @staticmethod
-    async def _notify_subagent_created(
-        callback: Callable[[LLMBaseAgent], Awaitable[None] | None] | None,
-        runtime: LLMBaseAgent,
-    ) -> None:
-        if callback is None:
-            return
-        result = callback(runtime)
-        if asyncio.iscoroutine(result):
-            await result
-
-    async def _unlink_child_session(self, task_session: AgentSession) -> None:
-        if self.agent.session and task_session.id in self.agent.session.children:
-            self.agent.session.children.remove(task_session.id)
-            await self.agent.session.save()
-
-    def _create_task_runtime(self, task_session: AgentSession) -> LLMBaseAgent:
-        return task_session.create_agent(
-            config_loader=self.agent.config_loader,
-            io_adapter=self.agent.io_adapter,
-        )
-
     def _resolve_task(self, target: str) -> AgentSession:
         task_id = target if target in self.task_sessions else None
         if task_id is None:
@@ -276,13 +234,6 @@ class SubagentPlugin(Plugin):
         if task_id is None:
             raise ValueError(f"Unknown agent task '{target}'.")
         return self.task_sessions[task_id]
-
-    def _running_task_count(self) -> int:
-        return sum(
-            1
-            for session in self.task_sessions.values()
-            if session.running_task is not None and not session.running_task.done()
-        )
 
     async def _spawn_task(
         self,
@@ -302,9 +253,15 @@ class SubagentPlugin(Plugin):
                 raise ValueError(
                     f"Task '{task_name}' already exists. Use followup_task to continue it."
                 )
-            self._validate_agent_type(agent_type)
+            if agent_type not in self.agent.agent_config.subagents:
+                raise ValueError(f"Agent type '{agent_type}' is not configured.")
             if (
-                self._running_task_count()
+                sum(
+                    1
+                    for session in self.task_sessions.values()
+                    if session.running_task is not None
+                    and not session.running_task.done()
+                )
                 >= self.agent.agent_config.max_parallel_subagents
             ):
                 raise ValueError(
@@ -318,17 +275,34 @@ class SubagentPlugin(Plugin):
                 message=message,
                 status=SessionStatus.ACTIVE,
             )
-            self._register_task_session(task_session)
+            self.task_sessions[task_session.id] = task_session
+            self._task_ids_by_name[task_name] = task_session.id
+            if task_session.target:
+                self._task_ids_by_target[task_session.target] = task_session.id
 
             try:
-                runtime = self._create_task_runtime(task_session)
-                await self._notify_subagent_created(on_subagent_created, runtime)
+                runtime = task_session.create_agent(
+                    config_loader=self.agent.config_loader,
+                    io_adapter=self.agent.io_adapter,
+                )
+                if on_subagent_created is not None:
+                    callback_result = on_subagent_created(runtime)
+                    if asyncio.iscoroutine(callback_result):
+                        await callback_result
                 await task_session.save()
                 if self.agent.session:
                     await self.agent.session.save()
             except BaseException:
-                self._unregister_task_session(task_session)
-                await self._unlink_child_session(task_session)
+                self.task_sessions.pop(task_session.id, None)
+                self._task_ids_by_name.pop(task_name, None)
+                if task_session.target:
+                    self._task_ids_by_target.pop(task_session.target, None)
+                if (
+                    self.agent.session
+                    and task_session.id in self.agent.session.children
+                ):
+                    self.agent.session.children.remove(task_session.id)
+                    await self.agent.session.save()
                 raise
 
             task_session.running_task = asyncio.create_task(
@@ -349,7 +323,10 @@ class SubagentPlugin(Plugin):
         await task_session.save()
         await self.agent.broadcast_agent_info()
 
-        runtime = initial_runtime or self._create_task_runtime(task_session)
+        runtime = initial_runtime or task_session.create_agent(
+            config_loader=self.agent.config_loader,
+            io_adapter=self.agent.io_adapter,
+        )
 
         self.agent.session.record_subagent_call(task_session.agent_name, message)
         try:
@@ -371,32 +348,6 @@ class SubagentPlugin(Plugin):
             await task_session.save()
             await self.agent.broadcast_agent_info()
 
-    async def _start_followup_turn(
-        self, task_session: AgentSession, message: str
-    ) -> None:
-        async with self._lock:
-            if task_session.running_task and not task_session.running_task.done():
-                raise ValueError(
-                    f"Agent task '{task_session.target}' is already running."
-                )
-            if (
-                self._running_task_count()
-                >= self.agent.agent_config.max_parallel_subagents
-            ):
-                raise ValueError(
-                    "Maximum parallel subagents reached: "
-                    f"{self.agent.agent_config.max_parallel_subagents}."
-                )
-
-            task_session.last_message = message
-            task_session.last_result = None
-            task_session.last_error = None
-            await task_session.save()
-            task_session.running_task = asyncio.create_task(
-                self._execute_task(task_session, message),
-                name=f"subagent:{task_session.target}:followup",
-            )
-
     def _format_task_status(
         self, task_session: AgentSession, include_result: bool = True
     ) -> str:
@@ -412,18 +363,119 @@ class SubagentPlugin(Plugin):
             lines.extend(("", "Result:", task_session.last_result))
         return "\n".join(lines)
 
-    async def _wait_for_task(
-        self, task_session: AgentSession, timeout_seconds: float | None
+    async def _delegate_once(
+        self,
+        subagent_name: str,
+        task: str,
+        on_subagent_created: Callable[[LLMBaseAgent], Awaitable[None] | None]
+        | None = None,
     ) -> str:
+        if subagent_name not in self.agent.agent_config.subagents:
+            raise ValueError(f"Agent type '{subagent_name}' is not configured.")
+        task_session = self._create_child_session(subagent_name)
+
+        try:
+            runtime = task_session.create_agent(
+                config_loader=self.agent.config_loader,
+                io_adapter=self.agent.io_adapter,
+            )
+        except BaseException:
+            if self.agent.session and task_session.id in self.agent.session.children:
+                self.agent.session.children.remove(task_session.id)
+                await self.agent.session.save()
+            raise
+
+        self._active_delegations[runtime.uuid] = runtime
+        if self.agent.session:
+            await self.agent.session.save()
+        await self.agent.broadcast_agent_info()
+
+        try:
+            if on_subagent_created is not None:
+                callback_result = on_subagent_created(runtime)
+                if asyncio.iscoroutine(callback_result):
+                    await callback_result
+            result = await self._execute_task(task_session, task, runtime)
+            return result or "Task completed with no output."
+        finally:
+            self._active_delegations.pop(runtime.uuid, None)
+            task_session.close_session()
+            await task_session.save()
+            await self.agent.broadcast_agent_info()
+
+    @tool(
+        sequential=True,
+        enabled=lambda plugin: plugin.mode is SubagentMode.SIMPLE,
+    )
+    async def delegate_task(self, message: str, agent_type: str) -> str:
+        """Delegate a task to a configured subagent and wait for its result."""
+        return await self._delegate_once(agent_type, message)
+
+    @tool(
+        sequential=True,
+        enabled=lambda plugin: plugin.mode is SubagentMode.ADVANCED,
+    )
+    async def spawn_agent(self, task_name: str, message: str, agent_type: str) -> str:
+        """Start a resumable task using a configured subagent.
+
+        `task_name` must be a unique lowercase identifier and `message` must
+        contain all context the subagent needs.
+        """
+        task_session = await self._spawn_task(task_name, message, agent_type)
+        return "Agent spawned.\n" + self._format_task_status(task_session, False)
+
+    @tool(
+        sequential=True,
+        enabled=lambda plugin: plugin.mode is SubagentMode.ADVANCED,
+    )
+    async def followup_task(self, target: str, message: str) -> str:
+        """Continue a completed, interrupted, or errored agent task.
+
+        The existing agent session and message history are reused.
+        """
+        task_session = self._resolve_task(target)
+        async with self._lock:
+            if task_session.running_task and not task_session.running_task.done():
+                raise ValueError(
+                    f"Agent task '{task_session.target}' is already running."
+                )
+            running_task_count = sum(
+                1
+                for session in self.task_sessions.values()
+                if session.running_task is not None and not session.running_task.done()
+            )
+            if running_task_count >= self.agent.agent_config.max_parallel_subagents:
+                raise ValueError(
+                    "Maximum parallel subagents reached: "
+                    f"{self.agent.agent_config.max_parallel_subagents}."
+                )
+
+            task_session.last_message = message
+            task_session.last_result = None
+            task_session.last_error = None
+            await task_session.save()
+            task_session.running_task = asyncio.create_task(
+                self._execute_task(task_session, message),
+                name=f"subagent:{task_session.target}:followup",
+            )
+        return "Follow-up started.\n" + self._format_task_status(task_session, False)
+
+    @tool(enabled=lambda plugin: plugin.mode is SubagentMode.ADVANCED)
+    async def wait_agent(self, target: str, timeout_seconds: float = 60) -> str:
+        """Wait for an agent task and return its latest result.
+
+        Timing out does not interrupt the task.
+        """
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be greater than zero.")
+
+        task_session = self._resolve_task(target)
         running_task = task_session.running_task
         if running_task is not None:
             try:
-                if timeout_seconds is None:
-                    await asyncio.shield(running_task)
-                else:
-                    await asyncio.wait_for(
-                        asyncio.shield(running_task), timeout=timeout_seconds
-                    )
+                await asyncio.wait_for(
+                    asyncio.shield(running_task), timeout=timeout_seconds
+                )
             except TimeoutError:
                 return "Agent is still running.\n" + self._format_task_status(
                     task_session, False
@@ -434,73 +486,10 @@ class SubagentPlugin(Plugin):
 
         return self._format_task_status(task_session)
 
-    async def _delegate_once(
-        self,
-        subagent_name: str,
-        task: str,
-        on_subagent_created: Callable[[LLMBaseAgent], Awaitable[None] | None]
-        | None = None,
-    ) -> str:
-        self._validate_agent_type(subagent_name)
-        task_session = self._create_child_session(subagent_name)
-
-        try:
-            runtime = self._create_task_runtime(task_session)
-        except BaseException:
-            await self._unlink_child_session(task_session)
-            raise
-
-        self._active_delegations[runtime.uuid] = runtime
-        if self.agent.session:
-            await self.agent.session.save()
-        await self.agent.broadcast_agent_info()
-
-        try:
-            await self._notify_subagent_created(on_subagent_created, runtime)
-            result = await self._execute_task(task_session, task, runtime)
-            return result or "Task completed with no output."
-        finally:
-            self._active_delegations.pop(runtime.uuid, None)
-            task_session.close_session()
-            await task_session.save()
-            await self.agent.broadcast_agent_info()
-
-    @tool(sequential=True, enabled=_simple_tools_enabled)
-    async def delegate_task(self, message: str, agent_type: str) -> str:
-        """Delegate a task to a configured subagent and wait for its result."""
-        return await self._delegate_once(agent_type, message)
-
-    @tool(sequential=True, enabled=_advanced_tools_enabled)
-    async def spawn_agent(self, task_name: str, message: str, agent_type: str) -> str:
-        """Start a resumable task using a configured subagent.
-
-        `task_name` must be a unique lowercase identifier and `message` must
-        contain all context the subagent needs.
-        """
-        task_session = await self._spawn_task(task_name, message, agent_type)
-        return "Agent spawned.\n" + self._format_task_status(task_session, False)
-
-    @tool(sequential=True, enabled=_advanced_tools_enabled)
-    async def followup_task(self, target: str, message: str) -> str:
-        """Continue a completed, interrupted, or errored agent task.
-
-        The existing agent session and message history are reused.
-        """
-        task_session = self._resolve_task(target)
-        await self._start_followup_turn(task_session, message)
-        return "Follow-up started.\n" + self._format_task_status(task_session, False)
-
-    @tool(enabled=_advanced_tools_enabled)
-    async def wait_agent(self, target: str, timeout_seconds: float = 60) -> str:
-        """Wait for an agent task and return its latest result.
-
-        Timing out does not interrupt the task.
-        """
-        if timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be greater than zero.")
-        return await self._wait_for_task(self._resolve_task(target), timeout_seconds)
-
-    @tool(sequential=True, enabled=_advanced_tools_enabled)
+    @tool(
+        sequential=True,
+        enabled=lambda plugin: plugin.mode is SubagentMode.ADVANCED,
+    )
     async def interrupt_agent(self, target: str) -> str:
         """Interrupt a running agent turn while preserving its session for follow-up."""
         task_session = self._resolve_task(target)
@@ -514,7 +503,7 @@ class SubagentPlugin(Plugin):
         await asyncio.gather(running_task, return_exceptions=True)
         return "Agent interrupted.\n" + self._format_task_status(task_session, False)
 
-    @tool(enabled=_advanced_tools_enabled)
+    @tool(enabled=lambda plugin: plugin.mode is SubagentMode.ADVANCED)
     async def list_agents(self, status: str | None = None) -> str:
         """List spawned agent tasks, optionally filtered by task status."""
         filter_status = (
