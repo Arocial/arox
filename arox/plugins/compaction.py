@@ -99,11 +99,16 @@ class CompactionPlugin(Plugin):
         if compacted_messages is messages_to_compact:
             return
 
-        agent.message_history = compacted_messages
-        await self._record_compaction(compacted_messages, True)
+        await self._record_compaction(
+            compacted_messages, True, previous_messages=messages_to_compact
+        )
 
     async def _record_compaction(
-        self, compacted: list[ModelMessage], step_boundary: bool
+        self,
+        compacted: list[ModelMessage],
+        step_boundary: bool,
+        *,
+        previous_messages: list[ModelMessage],
     ) -> None:
         """Record a ``compaction`` event.
 
@@ -115,6 +120,7 @@ class CompactionPlugin(Plugin):
             compacted,
             step_boundary,
             agent.run_info.llm_context_id,
+            previous_messages=previous_messages,
         )
 
     async def history_processor(
@@ -145,7 +151,7 @@ class CompactionPlugin(Plugin):
         if compacted is messages:
             return messages
 
-        await self._record_compaction(compacted, False)
+        await self._record_compaction(compacted, False, previous_messages=messages)
         from pydantic_ai._agent_graph import _first_new_message_index
 
         if ctx.run_id:

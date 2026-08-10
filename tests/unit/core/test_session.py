@@ -17,13 +17,10 @@ from arox.core.llm_base import LLMBaseAgent
 from arox.core.session import (
     AgentSession,
     CommandEvent,
-    CompactionEvent,
     ErrorEvent,
     FileSessionStore,
-    ResetEvent,
     SessionManager,
     SessionStatus,
-    StepEvent,
     UserInputEvent,
 )
 from arox.core.types import UserInput
@@ -32,6 +29,14 @@ from arox.core.types import UserInput
 class _StubIOAdapter(AbstractIOAdapter):
     async def handle_event(self, adapter_io, event):
         pass
+
+
+def _user_turn(text: str) -> tuple[UserInputEvent, ModelRequest]:
+    user_input = UserInput(input_content=text)
+    assert user_input.input_content is not None
+    event = UserInputEvent(id=user_input.server_message_id, user_input=user_input)
+    request = ModelRequest(parts=[UserPromptPart(content=user_input.input_content)])
+    return event, request
 
 
 class TestAgentSession:
@@ -51,116 +56,113 @@ class TestAgentSession:
         assert data["agent_type"] == "custom"
         assert "agent_config" not in data
 
-    def test_rebuild_empty(self):
+    def test_message_history_defaults_empty_and_is_serialized(self):
         agent_session = AgentSession(agent_name="main")
-        history = agent_session.rebuild_message_history()
-        assert history == []
+        assert agent_session.message_history.messages == []
+        assert agent_session.archived_message_histories == []
 
-    def test_rebuild_from_steps(self):
+        dumped = agent_session.model_dump(mode="json")
+        assert dumped["message_history"] == {"messages": []}
+        assert dumped["archived_message_histories"] == []
+
+    def test_user_input_ids_are_read_from_message_content(self):
         agent_session = AgentSession(agent_name="main")
+        first_input, first_request = _user_turn("hello")
+        agent_session.add_event(first_input)
         messages_step1 = [
-            ModelRequest(parts=[UserPromptPart(content="hello")]),
+            first_request,
             ModelResponse(parts=[TextPart(content="hi")]),
         ]
+        agent_session.record_step(messages_step1)
+        second_input, second_request = _user_turn("bye")
+        agent_session.add_event(second_input)
         messages_step2 = [
-            ModelRequest(parts=[UserPromptPart(content="bye")]),
+            *messages_step1,
+            second_request,
             ModelResponse(parts=[TextPart(content="goodbye")]),
         ]
-        agent_session.add_event(StepEvent(new_messages=messages_step1))
-        agent_session.add_event(StepEvent(new_messages=messages_step2))
+        agent_session.record_step(messages_step2)
 
-        history = agent_session.rebuild_message_history()
-        assert len(history) == 4
-        assert isinstance(history[0], ModelRequest)
-        part = history[0].parts[0]
-        assert isinstance(part, UserPromptPart)
-        assert part.content == "hello"
+        history = agent_session.message_history
+        assert history.messages == messages_step2
+        assert history.contains_user_input(first_input.id)
+        assert history.contains_user_input(second_input.id)
 
-    def test_rebuild_with_compaction(self):
+    @pytest.mark.asyncio
+    async def test_user_input_id_moves_with_request_when_history_is_inserted(self):
         agent_session = AgentSession(agent_name="main")
-        # Step 1
-        agent_session.add_event(
-            StepEvent(
-                new_messages=[
-                    ModelRequest(parts=[UserPromptPart(content="old msg 1")]),
-                    ModelResponse(parts=[TextPart(content="old reply 1")]),
-                ]
-            )
+        first_input, first_request = _user_turn("first")
+        agent_session.add_event(first_input)
+        response = ModelResponse(parts=[TextPart(content="reply")])
+        agent_session.record_step([first_request, response])
+        second_input, second_request = _user_turn("second")
+        agent_session.add_event(second_input)
+        agent_session.record_step(
+            [
+                first_request,
+                response,
+                second_request,
+                ModelResponse(parts=[TextPart(content="second reply")]),
+            ]
         )
-        # Step 2
-        agent_session.add_event(
-            StepEvent(
-                new_messages=[
-                    ModelRequest(parts=[UserPromptPart(content="old msg 2")]),
-                    ModelResponse(parts=[TextPart(content="old reply 2")]),
-                ]
-            )
-        )
-        # Compaction replaces all history
+
+        inserted = ModelRequest(parts=[UserPromptPart(content="inserted context")])
+        agent_session.message_history.messages.insert(2, inserted)
+
+        forked = await agent_session.fork_at(second_input.id)
+
+        assert len(forked.message_history.messages) == 3
+        assert forked.message_history.messages[1].parts == response.parts
+        assert forked.message_history.messages[2].parts == inserted.parts
+        assert not forked.message_history.contains_user_input(second_input.id)
+
+    def test_compaction_archives_old_history_and_starts_new_segment(self):
+        agent_session = AgentSession(agent_name="main")
+        old_input, old_request = _user_turn("old msg")
+        agent_session.add_event(old_input)
+        old_messages = [
+            old_request,
+            ModelResponse(parts=[TextPart(content="old reply")]),
+        ]
+        agent_session.record_step(old_messages)
+
         compacted: list[ModelMessage] = [
             ModelRequest(parts=[UserPromptPart(content="summary of conversation")])
         ]
-        agent_session.add_event(
-            CompactionEvent(
-                step_boundary=True,
-                compacted_messages=compacted,
-            )
-        )
-        # Step 3 after compaction
-        agent_session.add_event(
-            StepEvent(
-                new_messages=[
-                    ModelRequest(parts=[UserPromptPart(content="new msg")]),
-                    ModelResponse(parts=[TextPart(content="new reply")]),
-                ]
-            )
-        )
+        agent_session.record_compaction(compacted, True, "ctx-summary")
 
-        history = agent_session.rebuild_message_history()
-        # compacted summary + new step
-        assert len(history) == 3
-        part0 = history[0].parts[0]
-        assert isinstance(part0, UserPromptPart)
-        assert part0.content == "summary of conversation"
-        part1 = history[1].parts[0]
-        assert isinstance(part1, UserPromptPart)
-        assert part1.content == "new msg"
+        new_messages = [
+            *compacted,
+            ModelRequest(parts=[UserPromptPart(content="new msg")]),
+            ModelResponse(parts=[TextPart(content="new reply")]),
+        ]
+        agent_session.record_step(new_messages)
 
-    def test_rebuild_llm_context_id_none_without_events(self):
-        agent_session = AgentSession(agent_name="main")
-        assert agent_session.rebuild_llm_context_id() is None
-
-    def test_rebuild_llm_context_id_from_compaction(self):
-        agent_session = AgentSession(agent_name="main")
-        agent_session.add_event(
-            CompactionEvent(compacted_messages=[], llm_context_id="ctx_abc123")
-        )
-        assert agent_session.rebuild_llm_context_id() == "ctx_abc123"
-
-    def test_rebuild_llm_context_id_from_reset(self):
-        agent_session = AgentSession(agent_name="main")
-        agent_session.add_event(
-            CompactionEvent(compacted_messages=[], llm_context_id="ctx_first")
-        )
-        agent_session.add_event(ResetEvent(llm_context_id="ctx_second"))
-        assert agent_session.rebuild_llm_context_id() == "ctx_second"
+        assert len(agent_session.archived_message_histories) == 1
+        archived = agent_session.archived_message_histories[0]
+        assert archived.messages == old_messages
+        assert archived.contains_user_input(old_input.id)
+        assert agent_session.message_history.messages == new_messages
+        assert agent_session.run_info.llm_context_id == "ctx-summary"
 
     @pytest.mark.asyncio
     async def test_fork_at_event(self):
         agent_session = AgentSession(agent_name="main", path=["parent", "main"])
-        agent_session.add_event(
-            UserInputEvent(user_input=UserInput(input_content="first"))
-        )
-        agent_session.add_event(
-            StepEvent(
-                new_messages=[
-                    ModelRequest(parts=[UserPromptPart(content="first")]),
-                    ModelResponse(parts=[TextPart(content="r1")]),
-                ]
-            )
-        )
-        anchor = agent_session.add_event(
-            UserInputEvent(user_input=UserInput(input_content="second"))
+        first_input, first_request = _user_turn("first")
+        agent_session.add_event(first_input)
+        first_messages = [
+            first_request,
+            ModelResponse(parts=[TextPart(content="r1")]),
+        ]
+        agent_session.record_step(first_messages)
+        anchor, second_request = _user_turn("second")
+        agent_session.add_event(anchor)
+        agent_session.record_step(
+            [
+                *first_messages,
+                second_request,
+                ModelResponse(parts=[TextPart(content="r2")]),
+            ]
         )
 
         agent_session.owner = AgentSession(agent_name="parent", path=["parent"])
@@ -173,13 +175,73 @@ class TestAgentSession:
         # owner info is correctly inherited
         assert forked.path[:-1] == agent_session.owner.path
         # Original is untouched
-        assert len(agent_session.events) == 3
+        assert len(agent_session.events) == 4
 
-        history = forked.rebuild_message_history()
-        assert len(history) == 2
-        part = history[0].parts[0]
+        assert len(forked.message_history.messages) == 2
+        part = forked.message_history.messages[0].parts[0]
         assert isinstance(part, UserPromptPart)
-        assert part.content == "first"
+        assert part.content == first_input.user_input.input_content
+
+    @pytest.mark.asyncio
+    async def test_fork_uses_archived_history_after_compaction(self):
+        agent_session = AgentSession(agent_name="main")
+        first_input, first_request = _user_turn("first")
+        agent_session.add_event(first_input)
+        first_messages = [
+            first_request,
+            ModelResponse(parts=[TextPart(content="r1")]),
+        ]
+        agent_session.record_step(first_messages)
+        second_input, second_request = _user_turn("second")
+        agent_session.add_event(second_input)
+
+        compacted = [
+            ModelRequest(parts=[UserPromptPart(content="summary including second")])
+        ]
+        agent_session.record_compaction(
+            compacted,
+            False,
+            "ctx-compact",
+            previous_messages=[*first_messages, second_request],
+        )
+        agent_session.record_step(
+            [*compacted, ModelResponse(parts=[TextPart(content="r2")])]
+        )
+
+        forked = await agent_session.fork_at(second_input.id)
+
+        assert forked.message_history.messages == first_messages
+        assert forked.archived_message_histories == []
+        assert forked.message_history.contains_user_input(first_input.id)
+        assert not forked.message_history.contains_user_input(second_input.id)
+
+    @pytest.mark.asyncio
+    async def test_fork_uses_archived_history_after_reset(self):
+        agent_session = AgentSession(agent_name="main")
+        first_input, first_request = _user_turn("first")
+        agent_session.add_event(first_input)
+        first_messages = [
+            first_request,
+            ModelResponse(parts=[TextPart(content="r1")]),
+        ]
+        agent_session.record_step(first_messages)
+        second_input, second_request = _user_turn("second")
+        agent_session.add_event(second_input)
+        agent_session.record_step(
+            [
+                *first_messages,
+                second_request,
+                ModelResponse(parts=[TextPart(content="r2")]),
+            ]
+        )
+        agent_session.record_reset("ctx-reset")
+
+        forked = await agent_session.fork_at(second_input.id)
+
+        assert forked.message_history.messages == first_messages
+        assert forked.archived_message_histories == []
+        assert forked.message_history.contains_user_input(first_input.id)
+        assert not forked.message_history.contains_user_input(second_input.id)
 
     @pytest.mark.asyncio
     async def test_fork_at_none_creates_empty(self):
@@ -211,11 +273,19 @@ class TestAgentSession:
         owner = AgentSession(agent_name="parent", path=["parent"])
         agent_session = AgentSession(agent_name="main", path=["parent", "main"])
         agent_session.owner = owner
-        agent_session.add_event(
-            UserInputEvent(user_input=UserInput(input_content="first"))
-        )
-        anchor = agent_session.add_event(
-            UserInputEvent(user_input=UserInput(input_content="second"))
+        first_input, first_request = _user_turn("first")
+        agent_session.add_event(first_input)
+        first_response = ModelResponse(parts=[TextPart(content="r1")])
+        agent_session.record_step([first_request, first_response])
+        anchor, second_request = _user_turn("second")
+        agent_session.add_event(anchor)
+        agent_session.record_step(
+            [
+                first_request,
+                first_response,
+                second_request,
+                ModelResponse(parts=[TextPart(content="r2")]),
+            ]
         )
 
         forked = await agent_session.fork_at(anchor.id)
@@ -223,21 +293,21 @@ class TestAgentSession:
         assert forked.path[:-1] == owner.path
         assert forked.id in owner.children
 
-    def test_non_step_events_ignored_in_rebuild(self):
+    def test_non_history_events_do_not_change_message_history(self):
         agent_session = AgentSession(agent_name="main")
         agent_session.add_event(
             UserInputEvent(user_input=UserInput(input_content="hello"))
         )
         agent_session.add_event(CommandEvent(command="/reset"))
         agent_session.add_event(ErrorEvent(error="something"))
-        history = agent_session.rebuild_message_history()
-        assert len(history) == 0
+        assert agent_session.message_history.messages == []
 
     def test_last_user_messages_update(self):
         agent_session = AgentSession(agent_name="main")
         agent_session.record_user_input(
             UserInput(input_content="hello", server_message_id="id1")
         )
+        assert agent_session.events[-1].id == "id1"
         assert agent_session.metadata["last_user_messages"] == ["hello"]
 
         agent_session.record_user_input(
@@ -250,7 +320,11 @@ class TestAgentSession:
         )
         assert agent_session.metadata["last_user_messages"] == ["world", "third"]
 
+        before_reset = [ModelRequest(parts=[UserPromptPart(content="before reset")])]
+        agent_session.replace_message_history(before_reset)
         agent_session.record_reset("ctx1")
+        assert agent_session.message_history.messages == []
+        assert agent_session.archived_message_histories[-1].messages == before_reset
         assert "last_user_messages" not in agent_session.metadata
 
     def test_default_status_is_active(self):
@@ -402,6 +476,7 @@ system_prompt = "Hello worker."
 
         assert agent.uuid == "worker-session-id"
         assert agent.session is session
+        assert agent.message_history is session.message_history.messages
         assert agent.name == "test_worker"
         assert type(agent) is LLMBaseAgent
 
@@ -464,16 +539,24 @@ class TestFileSessionStore:
         # A top-level main-agent session with a subagent session nested under it.
         session = AgentSession(agent_name="coder", path=["coder"])
         agent_session = AgentSession(agent_name="sub", path=["coder", "sub"])
-        agent_session.add_event(
-            UserInputEvent(user_input=UserInput(input_content="hello"))
-        )
-        agent_session.add_event(
-            StepEvent(
-                new_messages=[
-                    ModelRequest(parts=[UserPromptPart(content="hello")]),
-                    ModelResponse(parts=[TextPart(content="hi there")]),
-                ]
-            )
+        first_input, first_request = _user_turn("hello")
+        agent_session.add_event(first_input)
+        messages = [
+            first_request,
+            ModelResponse(parts=[TextPart(content="hi there")]),
+        ]
+        agent_session.record_step(messages)
+        second_input, second_request = _user_turn("follow-up")
+        agent_session.add_event(second_input)
+        compacted = [
+            ModelRequest(parts=[UserPromptPart(content="conversation summary")])
+        ]
+        previous_messages = [*messages, second_request]
+        agent_session.record_compaction(
+            compacted,
+            True,
+            "ctx-compact",
+            previous_messages=previous_messages,
         )
 
         await store.save_session(session)
@@ -489,9 +572,16 @@ class TestFileSessionStore:
         assert loaded_agent is not None
         assert isinstance(loaded_agent, AgentSession)
         assert loaded_agent.agent_name == "sub"
-        assert len(loaded_agent.events) == 2
+        assert len(loaded_agent.events) == 4
         assert loaded_agent.events[0].event_type == "user_input"
         assert loaded_agent.events[1].event_type == "agent_step"
+        assert loaded_agent.events[2].event_type == "user_input"
+        assert loaded_agent.events[3].event_type == "compaction"
+        archived = loaded_agent.archived_message_histories[0]
+        assert archived.messages == previous_messages
+        assert archived.contains_user_input(first_input.id)
+        assert archived.contains_user_input(second_input.id)
+        assert loaded_agent.message_history.messages == compacted
 
     @pytest.mark.asyncio
     async def test_load_keeps_children_as_ids(self, store):

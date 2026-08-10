@@ -101,12 +101,10 @@ class LLMBaseAgent(IOHost):
         self.local_toolset = FunctionToolset[AgentDeps]()
         self.mcp_client = None
         self.plugins = []
-        self.message_history: list[ModelMessage] = []
         self.message_history_fallback: list[ModelMessage] = []
         self.new_message_index = 0
 
         self.parse_configs()
-        self._restore_agent_session(session)
 
         self.command_manager = CommandManager(self)
 
@@ -193,6 +191,14 @@ class LLMBaseAgent(IOHost):
     def run_info(self, value: AgentRunInfo):
         self.session.run_info = value
 
+    @property
+    def message_history(self) -> list[ModelMessage]:
+        return self.session.message_history.messages
+
+    @message_history.setter
+    def message_history(self, value: Sequence[ModelMessage]) -> None:
+        self.session.replace_message_history(value)
+
     async def handle_event(
         self, ctx: RunContext["AgentDeps"], events: AsyncIterable[AgentStreamEvent]
     ):
@@ -263,15 +269,6 @@ class LLMBaseAgent(IOHost):
                     if result:
                         results.append(result)
                 return results
-
-    def _restore_agent_session(self, agent_session: AgentSession) -> None:
-        """Apply a loaded session back onto the live agent runtime."""
-        self.message_history = agent_session.rebuild_message_history()
-        restored_id = agent_session.rebuild_llm_context_id()
-        if restored_id:
-            self.run_info.llm_context_id = restored_id
-        if self.model_ref:
-            self.set_model(self.model_ref)
 
     async def __aenter__(self):
         await super().__aenter__()
@@ -621,8 +618,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                     input_content,
                     message_history=self.message_history,
                 )
-                self.message_history = result.all_messages()
-                self.session.record_step(result.new_messages())
+                self.session.record_step(result.all_messages())
 
                 if not (
                     isinstance(result.output, UsageLimitExceeded)
@@ -639,7 +635,6 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
             self.status = AgentStatus.IDLE
 
     async def reset(self):
-        self.message_history = []
         self.session.initialized = False
         self.run_info = AgentRunInfo()
         self.run_info.llm_context_id = str(uuid.uuid4())

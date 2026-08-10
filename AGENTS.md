@@ -33,7 +33,7 @@ Agent types and which agent to instantiate come from config (`arox/core/config.p
   - Task metadata (`task_name`, `target`, `initial_message`, `last_message`, `last_result`, `last_error`).
   - Session usability lifecycle (`SessionStatus`: `ACTIVE`, `CLOSED`).
   - Ephemeral runtime presence via `session.has_runtime` / `session.runtime`.
-  - Message history (`events`), run/token metadata (`run_info`), and persistence.
+  - Message history is persisted as segments on the session and is the runtime source of truth. Events store only audit metadata; user turns are located through the existing `server_message_id` carried in `UserInput.input_content`. Compaction archives the processor's original messages, including the current user request, while reset archives the active segment, so historical forks can locate and slice the appropriate messages without replaying events or duplicating message payloads or IDs.
   - Agent sessions persist only the agent name and type; full `AgentConfig` is resolved dynamically from active configuration. The main agent's `AgentSession` is the top-level session; child tasks and subagents nest beneath it.
 - **`LLMBaseAgent`** is an ephemeral runtime owning live/expensive resources (Pydantic AI agent, MCP clients, plugins, tools, IO channels).
   - Runtime lifecycle state machine (`AgentStatus`: `UNINITIALIZED`, `IDLE`, `RUNNING`, `STOPPED`).

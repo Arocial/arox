@@ -15,7 +15,7 @@ from pydantic_ai.messages import (
 )
 
 from arox.core.llm_base import LLMBaseAgent
-from arox.core.session import AgentSession, CompactionEvent, StepEvent
+from arox.core.session import AgentSession, CompactionEvent
 from arox.plugins.compaction import CompactionPlugin
 from arox.plugins.slots import PERSISTENT_CONTEXT, SUBAGENTS
 
@@ -46,7 +46,6 @@ class _MockAgent:
     def __init__(self, threshold: int | None, persistent=None):
         from arox.core.config import AgentConfig, Config
 
-        self.message_history = []
         self.run_info = SimpleNamespace(context_tokens=0, llm_context_id="ctx-original")
         self.model_config = None
 
@@ -74,6 +73,14 @@ class _MockAgent:
 
         self._compaction_agent = _FakeAgent()
         self._persistent = persistent or []
+
+    @property
+    def message_history(self):
+        return self.session.message_history.messages
+
+    @message_history.setter
+    def message_history(self, value):
+        self.session.replace_message_history(value)
 
     async def _send(self, _msg):
         return None
@@ -200,6 +207,7 @@ async def test_auto_compaction_records_event_and_stays_consistent():
     agent.run_info.context_tokens = 500
     plugin = _plugin(agent)
     messages = [_user("old 1"), _reply("old reply 1"), _user("current question")]
+    agent.message_history = messages[:-1]
 
     out = await plugin.history_processor(_ctx(500), list(messages))
 
@@ -208,24 +216,25 @@ async def test_auto_compaction_records_event_and_stays_consistent():
     assert "SUMMARY" in _first_text(out[0])
     assert len(out) == 3
 
-    # A compaction event was recorded, cache key rotated, and the recorded base
-    # excludes the last compacted message (it is captured by this step's
-    # agent_step instead).
+    # A compaction event is recorded without duplicating the compacted messages;
+    # the compacted output becomes the active history segment.
     events = agent.session.events
     assert [e.event_type for e in events] == ["compaction"]
     compaction = cast(CompactionEvent, events[0])
     assert agent.run_info.llm_context_id != "ctx-original"
     assert compaction.llm_context_id == agent.run_info.llm_context_id
 
-    assert compaction.compacted_messages == out
+    assert not hasattr(compaction, "compacted_messages")
+    assert agent.session.message_history.messages == out
+    assert len(agent.session.archived_message_histories) == 1
+    assert agent.session.archived_message_histories[0].messages == messages
 
-    # Since step_boundary=False clears the base history during rebuild, the
-    # subsequent agent_step provides the full post-compaction history.
+    # The completed step updates only the active segment.
     response = _reply("answer")
+    complete_history = [*out, response]
 
-    agent.session.add_event(StepEvent(new_messages=[*out, response]))
-    rebuilt = agent.session.rebuild_message_history()
-    assert rebuilt == [*out, response]
+    agent.session.record_step(complete_history)
+    assert agent.session.message_history.messages == complete_history
 
 
 @pytest.mark.asyncio

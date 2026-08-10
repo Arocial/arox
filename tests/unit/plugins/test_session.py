@@ -1,12 +1,21 @@
 from types import SimpleNamespace
 
 import pytest
+from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
 from arox.core.completion import CompletionRequest
 from arox.core.config import AgentConfig
 from arox.core.session import AgentSession, StepEvent, UserInputEvent
 from arox.core.types import UserInput
 from arox.plugins.core import CorePlugin, ForkEvent
+
+
+def _user_turn(text: str) -> tuple[UserInputEvent, ModelRequest]:
+    user_input = UserInput(input_content=text)
+    assert user_input.input_content is not None
+    event = UserInputEvent(id=user_input.server_message_id, user_input=user_input)
+    request = ModelRequest(parts=[UserPromptPart(content=user_input.input_content)])
+    return event, request
 
 
 def _make_plugin(main_agent_session: AgentSession):
@@ -51,9 +60,15 @@ def test_fork_event_parsing():
 @pytest.mark.asyncio
 async def test_handle_fork_success():
     ag = AgentSession(agent_name="main")
-    e0 = ag.add_event(UserInputEvent(user_input=UserInput(input_content="hi")))
-    ag.add_event(StepEvent())
-    e2 = ag.add_event(UserInputEvent(user_input=UserInput(input_content="again")))
+    e0, request0 = _user_turn("hi")
+    ag.add_event(e0)
+    response0 = ModelResponse(parts=[TextPart(content="hello")])
+    ag.record_step([request0, response0])
+    e2, request2 = _user_turn("again")
+    ag.add_event(e2)
+    ag.record_step(
+        [request0, response0, request2, ModelResponse(parts=[TextPart(content="ok")])]
+    )
     plugin = _make_plugin(ag)
 
     msg = await plugin.handle_fork(ForkEvent(event_id=e2.id))
@@ -64,19 +79,19 @@ async def test_handle_fork_success():
 
 
 @pytest.mark.asyncio
-async def test_handle_fork_anchor_check():
+async def test_handle_fork_requires_user_input_event():
     ag = AgentSession(agent_name="main")
-    e0 = ag.add_event(UserInputEvent(user_input=UserInput(input_content="hi")))
-    e1 = ag.add_event(StepEvent())
+    e0, request = _user_turn("hi")
+    ag.add_event(e0)
+    ag.record_step([request, ModelResponse(parts=[TextPart(content="hello")])])
+    e1 = ag.events[-1]
     plugin = _make_plugin(ag)
 
-    # A user_input event is a valid anchor → succeeds.
     msg = await plugin.handle_fork(ForkEvent(event_id=e0.id))
     assert e0.id in msg
 
-    # An agent_step event is also a valid anchor now.
     msg = await plugin.handle_fork(ForkEvent(event_id=e1.id))
-    assert e1.id in msg
+    assert msg == f"event {e1.id} is not a user input"
 
 
 @pytest.mark.asyncio

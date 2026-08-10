@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import uuid
@@ -16,11 +17,9 @@ if TYPE_CHECKING:
     from arox.core.llm_base.agent import LLMBaseAgent
 
 from pydantic import BaseModel, ConfigDict, Field
-from pydantic_ai.messages import (
-    ModelMessage,
-)
+from pydantic_ai.messages import ModelMessage, ModelRequest, TextContent, UserPromptPart
 
-from arox.core.types import UserInput
+from arox.core.types import USER_INPUT_ID_KEY, UserInput
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +38,6 @@ class ResetEvent(SessionEvent):
 
 class StepEvent(SessionEvent):
     event_type: Literal["agent_step"] = "agent_step"
-    new_messages: list[ModelMessage] = Field(default_factory=list)
 
 
 class CommandEvent(SessionEvent):
@@ -78,7 +76,6 @@ class SubagentDeletedEvent(SessionEvent):
 
 class CompactionEvent(SessionEvent):
     event_type: Literal["compaction"] = "compaction"
-    compacted_messages: list[ModelMessage] = Field(default_factory=list)
     step_boundary: bool = False
     llm_context_id: str = ""
 
@@ -155,6 +152,48 @@ class AgentRunInfo(BaseModel):
     run_id: str | None = None
 
 
+class MessageHistorySegment(BaseModel):
+    messages: list[ModelMessage] = Field(default_factory=list)
+
+    @staticmethod
+    def _user_input_ids_on(message: ModelMessage) -> list[str]:
+        if not isinstance(message, ModelRequest):
+            return []
+
+        input_ids: list[str] = []
+        for part in message.parts:
+            if not isinstance(part, UserPromptPart) or isinstance(part.content, str):
+                continue
+            for item in part.content:
+                if not isinstance(item, TextContent) or not item.metadata:
+                    continue
+                input_id = item.metadata.get(USER_INPUT_ID_KEY)
+                if isinstance(input_id, str):
+                    input_ids.append(input_id)
+        return input_ids
+
+    def contains_user_input(self, input_id: str) -> bool:
+        return any(
+            input_id in self._user_input_ids_on(message) for message in self.messages
+        )
+
+    def prefix_before_user_input(self, input_id: str) -> list[ModelMessage]:
+        for index, message in enumerate(self.messages):
+            if input_id in self._user_input_ids_on(message):
+                return list(self.messages[:index])
+        raise KeyError(input_id)
+
+    def copy_before_user_input(
+        self, input_id: str | None = None
+    ) -> "MessageHistorySegment":
+        messages = (
+            self.prefix_before_user_input(input_id)
+            if input_id is not None
+            else self.messages
+        )
+        return MessageHistorySegment(messages=copy.deepcopy(messages))
+
+
 class AgentSession(Session):
     session_type: str = "agent"
     agent_name: str
@@ -168,6 +207,12 @@ class AgentSession(Session):
     last_result: str | None = None
     last_error: str | None = None
     run_info: AgentRunInfo = Field(default_factory=AgentRunInfo)
+    archived_message_histories: list[MessageHistorySegment] = Field(
+        default_factory=list
+    )
+    message_history: MessageHistorySegment = Field(
+        default_factory=MessageHistorySegment
+    )
     extra: dict[str, Any] = Field(default_factory=dict)
 
     runtime: Any = Field(default=None, exclude=True, repr=False)
@@ -277,43 +322,38 @@ class AgentSession(Session):
             session=self,
         )
 
-    def rebuild_message_history(self) -> list[ModelMessage]:
-        history: list[ModelMessage] = []
-        for event in self.events:
-            if isinstance(event, StepEvent):
-                history.extend(event.new_messages)
-            elif isinstance(event, CompactionEvent) and event.step_boundary:
-                history = list(event.compacted_messages)
-            elif isinstance(event, ResetEvent) or (
-                isinstance(event, CompactionEvent) and not event.step_boundary
-            ):
-                history = []
-        return history
+    def replace_message_history(self, messages: Sequence[ModelMessage]) -> None:
+        self.message_history.messages = list(messages)
 
-    def rebuild_llm_context_id(self) -> str | None:
-        context_id = self.run_info.llm_context_id
-        for event in self.events:
-            if isinstance(event, (CompactionEvent, ResetEvent)):
-                context_id = event.llm_context_id
-        return context_id
+    def _start_message_history(
+        self,
+        messages: Sequence[ModelMessage],
+        *,
+        previous_messages: Sequence[ModelMessage] | None = None,
+    ) -> None:
+        history_to_archive = (
+            self.message_history
+            if previous_messages is None
+            else MessageHistorySegment(messages=list(previous_messages))
+        )
+        if history_to_archive.messages:
+            self.archived_message_histories.append(history_to_archive)
+        self.message_history = MessageHistorySegment(messages=list(messages))
 
     def record_reset(self, llm_context_id: str) -> None:
         self.run_info.llm_context_id = llm_context_id
         self.add_event(
             ResetEvent(llm_context_id=llm_context_id, agent_name=self.agent_name)
         )
+        self._start_message_history([])
         self.metadata.pop("last_user_messages", None)
 
     def record_step(
         self,
-        new_messages: Sequence[ModelMessage],
+        message_history: Sequence[ModelMessage],
     ) -> None:
-        self.add_event(
-            StepEvent(
-                new_messages=list(new_messages),
-                agent_name=self.agent_name,
-            )
-        )
+        self.add_event(StepEvent(agent_name=self.agent_name))
+        self.replace_message_history(message_history)
 
     def record_command(self, command: str, arg: str | None) -> None:
         self.add_event(
@@ -376,40 +416,62 @@ class AgentSession(Session):
 
     def record_compaction(
         self,
-        compacted_messages: list[ModelMessage],
+        compacted_messages: Sequence[ModelMessage],
         step_boundary: bool,
         llm_context_id: str,
+        *,
+        previous_messages: Sequence[ModelMessage] | None = None,
     ) -> None:
         self.run_info.llm_context_id = llm_context_id
         self.add_event(
             CompactionEvent(
                 step_boundary=step_boundary,
-                compacted_messages=compacted_messages,
                 llm_context_id=llm_context_id,
                 agent_name=self.agent_name,
             )
         )
+        self._start_message_history(
+            compacted_messages, previous_messages=previous_messages
+        )
+
+    def _fork_message_histories(
+        self, input_id: str
+    ) -> tuple[list[MessageHistorySegment], MessageHistorySegment]:
+        histories = [*self.archived_message_histories, self.message_history]
+        for index, history in enumerate(histories):
+            if not history.contains_user_input(input_id):
+                continue
+
+            archived = [
+                previous.copy_before_user_input() for previous in histories[:index]
+            ]
+            active = history.copy_before_user_input(input_id)
+            return archived, active
+
+        raise ValueError(f"user input {input_id} has no message history")
 
     async def fork_at(
         self, event_id: str | None, new_owner: Session | None = None
     ) -> "AgentSession":
-        """Branch a new session off this one
-
-        With ``event_id`` the new session is a truncated copy holding the events
-        up to (but excluding) that anchor, tagged via ``forked_from``. With
-        ``event_id`` set to ``None`` it starts empty and unforked.
-        """
+        """Branch a new session before a user-input request."""
         owner = new_owner or self.owner
 
         forked_from: tuple[list[str], str] | None
         if event_id is None:
             events = []
+            archived_message_histories = []
+            message_history = MessageHistorySegment()
             forked_from = None
         else:
             event_index = self.index_of_event(event_id)
             if event_index is None:
                 raise ValueError(f"event {event_id} not found")
+            if not isinstance(self.events[event_index], UserInputEvent):
+                raise ValueError(f"event {event_id} is not a user input")
             events = [ev.model_copy(deep=True) for ev in self.events[:event_index]]
+            archived_message_histories, message_history = self._fork_message_histories(
+                event_id
+            )
             forked_from = (self.path, event_id)
 
         manager_ref = self.manager
@@ -424,6 +486,8 @@ class AgentSession(Session):
                     if owner
                     else [str(uuid.uuid4())],
                     "events": events,
+                    "archived_message_histories": archived_message_histories,
+                    "message_history": message_history,
                     "forked_from": forked_from,
                     "children": [],
                     "status": SessionStatus.ACTIVE,
