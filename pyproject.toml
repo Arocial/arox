@@ -40,8 +40,8 @@ Homepage = "https://github.com/Arocial/arox"
 arox = "arox.apps.chat:main"
 
 [project.entry-points."arox.agents"]
+base = "arox.core.llm_base:LLMBaseAgent"
 chat = "arox.core.chat:ChatAgent"
-compaction = "arox.plugins.compaction:CompactionAgent"
 
 [project.entry-points."arox.io_adapters"]
 text = "arox.ui.text_io:TextIOAdapter"

@@ -1,5 +1,5 @@
 [agent.compaction]
-type = "compaction"
+type = "base"
 system_prompt = """
 You are an expert at summarizing technical conversations.
 """

@@ -8,7 +8,7 @@ from typing import Any
 
 from arox.core.llm_base import (
     AgentStatus,
-    DelegatableAgent,
+    LLMBaseAgent,
 )
 from arox.core.plugin import Plugin, tool
 from arox.core.session import AgentRunInfo, AgentSession, SessionStatus
@@ -38,7 +38,7 @@ class SubagentPlugin(Plugin):
         self.task_sessions: dict[str, AgentSession] = {}
         self._task_ids_by_name: dict[str, str] = {}
         self._task_ids_by_target: dict[str, str] = {}
-        self._active_delegations: dict[str, DelegatableAgent] = {}
+        self._active_delegations: dict[str, LLMBaseAgent] = {}
         self._lock = asyncio.Lock()
 
         def get_subagents(status: AgentStatus | str | None = None):
@@ -247,8 +247,8 @@ class SubagentPlugin(Plugin):
 
     @staticmethod
     async def _notify_subagent_created(
-        callback: Callable[[DelegatableAgent], Awaitable[None] | None] | None,
-        runtime: DelegatableAgent,
+        callback: Callable[[LLMBaseAgent], Awaitable[None] | None] | None,
+        runtime: LLMBaseAgent,
     ) -> None:
         if callback is None:
             return
@@ -256,25 +256,16 @@ class SubagentPlugin(Plugin):
         if asyncio.iscoroutine(result):
             await result
 
-    @staticmethod
-    def _as_delegatable(runtime: Any, agent_type: str) -> DelegatableAgent:
-        if not isinstance(runtime, DelegatableAgent):
-            raise TypeError(
-                f"Agent type '{agent_type}' does not support delegated tasks."
-            )
-        return runtime
-
     async def _unlink_child_session(self, task_session: AgentSession) -> None:
         if self.agent.session and task_session.id in self.agent.session.children:
             self.agent.session.children.remove(task_session.id)
             await self.agent.session.save()
 
-    def _create_task_runtime(self, task_session: AgentSession) -> DelegatableAgent:
-        runtime = task_session.create_agent(
+    def _create_task_runtime(self, task_session: AgentSession) -> LLMBaseAgent:
+        return task_session.create_agent(
             config_loader=self.agent.config_loader,
             io_adapter=self.agent.io_adapter,
         )
-        return self._as_delegatable(runtime, task_session.agent_name)
 
     def _resolve_task(self, target: str) -> AgentSession:
         task_id = target if target in self.task_sessions else None
@@ -298,7 +289,7 @@ class SubagentPlugin(Plugin):
         task_name: str,
         message: str,
         agent_type: str,
-        on_subagent_created: Callable[[DelegatableAgent], Awaitable[None] | None]
+        on_subagent_created: Callable[[LLMBaseAgent], Awaitable[None] | None]
         | None = None,
     ) -> AgentSession:
         async with self._lock:
@@ -341,16 +332,16 @@ class SubagentPlugin(Plugin):
                 raise
 
             task_session.running_task = asyncio.create_task(
-                self._run_task_turn(task_session, message, initial_runtime=runtime),
+                self._execute_task(task_session, message, initial_runtime=runtime),
                 name=f"subagent:{task_session.target}",
             )
             return task_session
 
-    async def _run_task_turn(
+    async def _execute_task(
         self,
         task_session: AgentSession,
         message: str,
-        initial_runtime: DelegatableAgent | None = None,
+        initial_runtime: LLMBaseAgent | None = None,
     ) -> str | None:
         task_session.last_message = message
         task_session.last_result = None
@@ -360,12 +351,19 @@ class SubagentPlugin(Plugin):
 
         runtime = initial_runtime or self._create_task_runtime(task_session)
 
+        self.agent.session.record_subagent_call(task_session.agent_name, message)
         try:
             await self.agent.broadcast_agent_info()
-            return await runtime.run_task(message)
+            async with runtime:
+                result = await runtime.step(message)
+            output = result.output if isinstance(result.output, str) else None
+            task_session.record_result(output)
+            return output
         except asyncio.CancelledError:
+            task_session.record_interrupted()
             raise
-        except Exception:
+        except Exception as exc:
+            task_session.record_error(exc)
             logger.exception("Subagent task %s failed", task_session.target)
             return None
         finally:
@@ -395,7 +393,7 @@ class SubagentPlugin(Plugin):
             task_session.last_error = None
             await task_session.save()
             task_session.running_task = asyncio.create_task(
-                self._run_task_turn(task_session, message),
+                self._execute_task(task_session, message),
                 name=f"subagent:{task_session.target}:followup",
             )
 
@@ -440,7 +438,7 @@ class SubagentPlugin(Plugin):
         self,
         subagent_name: str,
         task: str,
-        on_subagent_created: Callable[[DelegatableAgent], Awaitable[None] | None]
+        on_subagent_created: Callable[[LLMBaseAgent], Awaitable[None] | None]
         | None = None,
     ) -> str:
         self._validate_agent_type(subagent_name)
@@ -459,7 +457,7 @@ class SubagentPlugin(Plugin):
 
         try:
             await self._notify_subagent_created(on_subagent_created, runtime)
-            result = await runtime.run_task(task)
+            result = await self._execute_task(task_session, task, runtime)
             return result or "Task completed with no output."
         finally:
             self._active_delegations.pop(runtime.uuid, None)

@@ -3,14 +3,9 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, ClassVar
 
-from pydantic_ai import (
-    ModelMessage,
-    ModelRequest,
-    RunContext,
-    UserPromptPart,
-)
+from pydantic_ai import ModelMessage, ModelRequest, RunContext, UserPromptPart
 
-from arox.core.llm_base import DelegatableAgent, LLMBaseAgent
+from arox.core.llm_base import LLMBaseAgent
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, tool
 from arox.plugins.slots import PERSISTENT_CONTEXT, RUN_SUBAGENT
 
@@ -31,29 +26,6 @@ class CompactEvent(CommandEvent):
     @classmethod
     def from_slash(cls, name, arg):
         return cls(extra_instructions=(arg or "").strip())
-
-
-class CompactionAgent(DelegatableAgent):
-    """DelegatableAgent specialized for summarizing conversation history."""
-
-    async def execute_task(self, task: str) -> str | None:
-        return await self.summarize(self.message_history, extra_instructions=task)
-
-    async def summarize(
-        self, messages: list[ModelMessage], extra_instructions: str = ""
-    ) -> str:
-        logger.info("Starting context compaction...")
-        prompt = self.agent_config.task_prompt
-        if not prompt:
-            raise ValueError(
-                "CompactionAgent requires `task_prompt` to be set in agent config."
-            )
-        if extra_instructions:
-            prompt = f"{prompt}\n\nAdditional instructions: {extra_instructions}"
-        self.message_history = messages
-        result = await self.step(prompt)
-        logger.info("Context compaction completed.")
-        return str(result.output)
 
 
 class CompactionPlugin(Plugin):
@@ -199,10 +171,18 @@ class CompactionPlugin(Plugin):
                 "Compaction agent not configured; skipping compaction."
             )
             logger.warning(
-                "CompactionPlugin could not find a CompactionAgent config named '%s'.",
+                "CompactionPlugin could not find an agent config named '%s'.",
                 COMPACTION_AGENT_NAME,
             )
             return messages
+
+        prompt = agent_config.task_prompt
+        if not prompt:
+            raise ValueError(
+                "Compaction agent requires `task_prompt` to be configured."
+            )
+        if extra_instructions:
+            prompt = f"{prompt}\n\nAdditional instructions: {extra_instructions}"
 
         await agent.agent_io.send(
             "Context size is large. Compacting conversation history..."
@@ -214,7 +194,7 @@ class CompactionPlugin(Plugin):
         summary = await agent.invoke_slot(
             RUN_SUBAGENT,
             COMPACTION_AGENT_NAME,
-            extra_instructions,
+            prompt,
             on_subagent_created=setup_compaction_subagent,
         )
 

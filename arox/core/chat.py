@@ -3,7 +3,7 @@ import logging
 from dataclasses import dataclass
 
 from arox.core.io import ReplyEvent, RequestEvent
-from arox.core.llm_base import DelegatableAgent, MainAgent, UserInput
+from arox.core.llm_base import MainAgent, UserInput
 from arox.core.session import AgentSession
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ class ChatInputReply(UserInput, ReplyEvent):
         return bool(request.request_normal_input and self.input_content is None)
 
 
-class ChatAgent(MainAgent, DelegatableAgent):
+class ChatAgent(MainAgent):
     def __init__(
         self,
         parent_config_loader,

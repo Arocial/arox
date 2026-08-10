@@ -41,8 +41,8 @@ Agent types and which agent to instantiate come from config (`arox/core/config.p
   - Child sessions are spawned via `parent_session.create_child_session(...)`.
   - Runtime identity matches `session.id` (`agent.uuid == session.id`).
   - Agent runtime context (`async with agent:`) binds `session.runtime`, initializes plugins/tools/channels, sets `AgentStatus.IDLE`, and on exit handles cleanup, records interruption/errors to `session`, sets `AgentStatus.STOPPED`, unbinds `session.runtime`, and saves the session.
-  - `step()` transitions agent status `IDLE -> RUNNING -> IDLE`.
-  - `run_turn()` coordinates runtime context entry, execution hook (`execute_task()`), and result recording. `DelegatableAgent.run_task()` delegates to `run_turn()`.
+  - `step()` is the single public request-execution method and transitions agent status `IDLE -> RUNNING -> IDLE`; repeated calls continue from the session's message history.
+  - Runtime context ownership and delegated-task result/error state are managed by the caller. `SubagentPlugin` records parent calls, enters child runtimes, calls `step()`, and updates child task sessions.
   - Subagent task display states (such as `running`, `completed`, `interrupted`, `error`, `pending`, `idle`, `closed`) are derived on-the-fly from live runtime/task state and session result/error data.
   - Subsequent turns reuse the persistent `AgentSession` and reconstruct a fresh runtime via `session.create_agent(config_loader, io_adapter)`.
 - `SessionManager` coordinates with `SessionStore` (default `FileSessionStore`) to persist sessions to disk with debouncing and age-based cleanup.

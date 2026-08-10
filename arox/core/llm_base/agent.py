@@ -290,9 +290,9 @@ class LLMBaseAgent(IOHost):
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         try:
             if exc_type is asyncio.CancelledError:
-                self.session.record_interrupted()
+                self.session.record_error_event("Task interrupted.")
             elif exc_val is not None:
-                self.session.record_error(exc_val)
+                self.session.record_error_event(exc_val)
             self.status = AgentStatus.STOPPED
             with contextlib.suppress(ClosedResourceError, EndOfStream):
                 await self.broadcast_agent_info()
@@ -592,6 +592,12 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         self,
         user_input: UserInput | str | None = None,
     ) -> AgentRunResult[str]:
+        """Execute one request, continuing from this session's message history."""
+        if self.session.runtime is not self:
+            raise RuntimeError("Agent runtime must be entered before calling step().")
+        if self.status != AgentStatus.IDLE:
+            raise RuntimeError(f"Agent cannot step while it is {self.status}.")
+
         if not isinstance(user_input, UserInput):
             user_input = UserInput(input_content=user_input)
 
@@ -632,20 +638,6 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         finally:
             self.status = AgentStatus.IDLE
 
-    async def execute_task(self, task: str) -> str | None:
-        """Execute a task turn; subclasses can override to customize task execution."""
-        result = await self.step(task)
-        return result.output if isinstance(result.output, str) else None
-
-    async def run_turn(self, message: str) -> str | None:
-        """Run a single autonomous turn managing runtime lifecycle and recording results to session."""
-        async with self:
-            if self.session.owner:
-                self.session.owner.record_subagent_call(self.name, message)
-            output = await self.execute_task(message)
-            self.session.record_result(output or "Task completed with no output.")
-            return output
-
     async def reset(self):
         self.message_history = []
         self.session.initialized = False
@@ -660,16 +652,3 @@ class MainAgent(LLMBaseAgent, ABC):
     @abstractmethod
     async def run(self):
         pass
-
-
-class DelegatableAgent(LLMBaseAgent, ABC):
-    """Base class for subagents that can be delegated tasks.
-
-    Subagents inheriting from this class are exposed to the main agent as a
-    callable tool and via the `/agent` slash command. The default `run_task`
-    drives the agent through `run_turn(task)`.
-    """
-
-    async def run_task(self, task: str) -> str | None:
-        """Run a delegated task autonomously until completion."""
-        return await self.run_turn(task)

@@ -407,7 +407,9 @@ system_prompt = "Hi."
     assert session.runtime is None
     assert session.status == SessionStatus.ACTIVE
     assert agent.status == AgentStatus.STOPPED
-    assert "RuntimeError: something broke" in (session.last_error or "")
+    assert session.last_error is None
+    assert session.events[-1].event_type == "error"
+    assert "RuntimeError: something broke" in session.events[-1].error
     assert agent.uuid not in io_adapter.hosts
 
 
@@ -440,7 +442,9 @@ system_prompt = "Hi."
     assert session.runtime is None
     assert session.status == SessionStatus.ACTIVE
     assert agent.status == AgentStatus.STOPPED
-    assert session.last_error == "Task interrupted."
+    assert session.last_error is None
+    assert session.events[-1].event_type == "error"
+    assert session.events[-1].error == "Task interrupted."
     assert agent.uuid not in io_adapter.hosts
 
 

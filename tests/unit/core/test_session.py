@@ -13,6 +13,7 @@ from pydantic_ai.messages import (
 
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter
+from arox.core.llm_base import LLMBaseAgent
 from arox.core.session import (
     AgentSession,
     CommandEvent,
@@ -384,6 +385,7 @@ class TestAgentSession:
         config_file.write_text("""
 model_ref = "test"
 [agent.test_worker]
+type = "base"
 system_prompt = "Hello worker."
 """)
         config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
@@ -401,6 +403,7 @@ system_prompt = "Hello worker."
         assert agent.uuid == "worker-session-id"
         assert agent.session is session
         assert agent.name == "test_worker"
+        assert type(agent) is LLMBaseAgent
 
     def test_create_agent_missing_config_raises(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)

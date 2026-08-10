@@ -335,13 +335,17 @@ class AgentSession(Session):
         self.metadata["last_user_messages"] = last_user_messages[-2:]
 
     def record_error(self, error: Exception | str) -> None:
+        self.last_error = self.record_error_event(error)
+
+    def record_error_event(self, error: Exception | str) -> str:
+        """Record an error event without changing task scheduling state."""
         err_msg = (
             str(error)
             if isinstance(error, str)
             else f"{type(error).__name__}: {error!s}"
         )
-        self.last_error = err_msg
         self.add_event(ErrorEvent(error=err_msg, agent_name=self.agent_name))
+        return err_msg
 
     def record_subagent_call(self, subagent_name: str, task: str) -> None:
         self.add_event(

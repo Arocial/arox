@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from arox.core.config import AgentConfig, Config
-from arox.core.llm_base import DelegatableAgent
+from arox.core.llm_base import LLMBaseAgent
 from arox.core.session import AgentSession, FileSessionStore, SessionStatus
 from arox.plugins.core import CorePlugin
 from arox.plugins.slots import SYSTEM_PROMPT
@@ -21,7 +21,7 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fake")
 
 
-class _FakeDynamicAgent(DelegatableAgent):
+class _FakeDynamicAgent(LLMBaseAgent):
     def __init__(
         self,
         parent_config_loader,
@@ -38,12 +38,13 @@ class _FakeDynamicAgent(DelegatableAgent):
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def execute_task(self, task: str) -> str:
+    async def step(self, user_input=None):
+        task = str(user_input or "")
         self.received_tasks.append(task)
         self.started.set()
         if task.startswith("block"):
             await self.release.wait()
-        return f"task done: {task}"
+        return SimpleNamespace(output=f"task done: {task}")
 
 
 class _MainAgent:
@@ -174,6 +175,10 @@ async def test_simple_mode_exposes_only_delegate_and_waits_for_result(agent_fact
         assert response == "task done: make a plan"
         assert plugin.task_sessions == {}
         assert len(main_agent.session.children) == 1
+        call = main_agent.session.events[-1]
+        assert call.event_type == "subagent_call"
+        assert call.subagent == "planner"
+        assert call.task == "make a plan"
 
         child_session = await store.load_session(
             [main_agent.session.id, main_agent.session.children[0]]
@@ -261,7 +266,7 @@ async def test_spawn_callback_receives_retained_agent(agent_factory):
         await plugin.wait_agent(task_session.task_id)
 
         assert len(created_agents) == 1
-        assert isinstance(created_agents[0], DelegatableAgent)
+        assert isinstance(created_agents[0], LLMBaseAgent)
         assert task_session.runtime is None
     finally:
         await plugin.on_stop()

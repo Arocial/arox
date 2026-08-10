@@ -16,35 +16,26 @@ from pydantic_ai.messages import (
 
 from arox.core.llm_base import LLMBaseAgent
 from arox.core.session import AgentSession, CompactionEvent, StepEvent
-from arox.plugins.compaction import CompactionAgent, CompactionPlugin
+from arox.plugins.compaction import CompactionPlugin
 from arox.plugins.slots import PERSISTENT_CONTEXT, SUBAGENTS
 
 
-class _FakeCompactionAgent(CompactionAgent):
-    """Passes the ``isinstance(sub, CompactionAgent)`` check without a full init."""
-
+class _FakeAgent:
     def __init__(self, summary: str = "SUMMARY"):
         self.session = AgentSession(agent_name="compaction")
         self._summary = summary
-        self.last_extra_instructions = ""
+        self.last_prompt = ""
         self.message_history = []
         self.name = "compaction"
 
-    async def execute_task(self, task: str) -> str | None:
-        return await self.summarize(self.message_history, extra_instructions=task)
-
-    async def summarize(self, messages, extra_instructions: str = "") -> str:
-        self.last_extra_instructions = extra_instructions
-        return self._summary
+    async def step(self, user_input=None):
+        self.last_prompt = str(user_input or "")
+        return SimpleNamespace(output=self._summary)
 
 
 @pytest.fixture(autouse=True)
 def mock_env(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fake")
-    monkeypatch.setattr(
-        "arox.plugins.compaction.CompactionAgent.summarize",
-        AsyncMock(return_value="SUMMARY"),
-    )
     monkeypatch.setattr("arox.core.llm_base.LLMBaseAgent.__aenter__", AsyncMock())
     monkeypatch.setattr("arox.core.llm_base.LLMBaseAgent.__aexit__", AsyncMock())
 
@@ -61,7 +52,7 @@ class _MockAgent:
 
         self.config = Config(
             compaction_threshold=threshold if threshold is not None else 0.7,
-            agent={"compaction": AgentConfig(type="compaction", task_prompt="summary")},
+            agent={"compaction": AgentConfig(type="base", task_prompt="summary")},
         )
         if threshold is None:
             # Overwrite after instantiation if None is needed
@@ -81,7 +72,7 @@ class _MockAgent:
 
         self._stack = contextlib.AsyncExitStack()
 
-        self._compaction_agent = _FakeCompactionAgent()
+        self._compaction_agent = _FakeAgent()
         self._persistent = persistent or []
 
     async def _send(self, _msg):
@@ -103,9 +94,8 @@ class _MockAgent:
                 result = callback(self._compaction_agent)
                 if asyncio.iscoroutine(result):
                     await result
-            return await self._compaction_agent.run_task(
-                args[1] if len(args) > 1 else ""
-            )
+            result = await self._compaction_agent.step(args[1] if len(args) > 1 else "")
+            return result.output
         return None
 
 
@@ -254,8 +244,8 @@ async def test_compact_tool_defers_compaction_until_history_processing():
 
     assert isinstance(out[0], ModelRequest)
     assert "SUMMARY" in _first_text(out[0])
-    assert agent._compaction_agent.last_extra_instructions == (
-        "Preserve implementation details."
+    assert agent._compaction_agent.last_prompt == (
+        "summary\n\nAdditional instructions: Preserve implementation details."
     )
     assert [e.event_type for e in agent.session.events] == ["compaction"]
 
