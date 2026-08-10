@@ -1,6 +1,6 @@
-import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic_ai.messages import (
@@ -14,13 +14,13 @@ from pydantic_ai.messages import (
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter
 from arox.core.llm_base import LLMBaseAgent
+from arox.core.runner import TaskRunner
 from arox.core.session import (
     AgentSession,
     CommandEvent,
     ErrorEvent,
     FileSessionStore,
     SessionManager,
-    SessionStatus,
     UserInputEvent,
 )
 from arox.core.types import UserInput
@@ -48,13 +48,13 @@ class TestAgentSession:
         assert event.event_type == "user_input"
         assert len(agent_session.events) == 1
 
-    def test_persists_only_agent_type(self):
-        agent_session = AgentSession(agent_name="main", agent_type="custom")
+    def test_runner_is_not_persisted(self):
+        agent_session = AgentSession(agent_name="main")
+        agent_session.runner = "runner"
 
         data = agent_session.model_dump(mode="json")
 
-        assert data["agent_type"] == "custom"
-        assert "agent_config" not in data
+        assert "runner" not in data
 
     def test_message_history_defaults_empty_and_is_serialized(self):
         agent_session = AgentSession(agent_name="main")
@@ -327,12 +327,6 @@ class TestAgentSession:
         assert agent_session.archived_message_histories[-1].messages == before_reset
         assert "last_user_messages" not in agent_session.metadata
 
-    def test_default_status_is_active(self):
-        agent_session = AgentSession(agent_name="main")
-        assert agent_session.status == SessionStatus.ACTIVE
-        assert agent_session.is_active
-        assert not agent_session.is_running
-
     def test_first_class_task_fields(self):
         agent_session = AgentSession(
             agent_name="main",
@@ -340,8 +334,7 @@ class TestAgentSession:
             target="/main/my_task",
             initial_message="start",
             last_message="continue",
-            last_result="done",
-            last_error=None,
+            result="done",
         )
         assert agent_session.task_id == agent_session.id
         assert agent_session.task_name == "my_task"
@@ -350,54 +343,35 @@ class TestAgentSession:
         assert agent_session.error is None
 
     @pytest.mark.asyncio
-    async def test_runtime_and_running_task_excluded_from_serialization(self):
+    async def test_runner_excluded_from_serialization(self):
         agent_session = AgentSession(agent_name="main")
-        dummy_task = asyncio.create_task(asyncio.sleep(0))
-        agent_session.runtime = "dummy_runtime"
-        agent_session.running_task = dummy_task
+        runtime = object()
+        agent_session.runner = SimpleNamespace(runtime=runtime)
 
         dumped = agent_session.model_dump(mode="json")
-        assert "runtime" not in dumped
-        assert "running_task" not in dumped
-        assert agent_session.agent == "dummy_runtime"
-        await dummy_task
+        assert "runner" not in dumped
+        assert agent_session.agent is runtime
 
-    def test_status_and_result_helpers(self):
+    def test_turn_error_helper(self):
         agent_session = AgentSession(agent_name="main")
-        assert agent_session.status == SessionStatus.ACTIVE
-        assert agent_session.is_active
 
-        agent_session.record_result("all done")
-        assert agent_session.status == SessionStatus.ACTIVE
-        assert agent_session.last_result == "all done"
-        assert agent_session.last_error is None
-
-        agent_session.record_interrupted("cancelled by user")
-        assert agent_session.status == SessionStatus.ACTIVE
-        assert agent_session.last_error == "cancelled by user"
-
-        agent_session.record_error("something crashed")
-        assert agent_session.status == SessionStatus.ACTIVE
-        assert agent_session.last_error == "something crashed"
+        agent_session.record_turn_error("something crashed")
+        assert agent_session.error == "something crashed"
         assert agent_session.events[-1].event_type == "error"
 
-        agent_session.close_session()
-        assert agent_session.status == SessionStatus.CLOSED
-        assert agent_session.runtime is None
-
     @pytest.mark.asyncio
-    async def test_fork_resets_status_and_task_fields(self):
+    async def test_fork_resets_task_fields(self):
         original = AgentSession(
             agent_name="main",
-            status=SessionStatus.CLOSED,
-            last_result="res",
-            last_error="err",
+            task_name="old_task",
+            result="res",
+            error="err",
         )
         original.add_event(UserInputEvent(user_input=UserInput(input_content="hi")))
         forked = await original.fork_at(None)
-        assert forked.status == SessionStatus.ACTIVE
-        assert forked.last_result is None
-        assert forked.last_error is None
+        assert forked.task_name is None
+        assert forked.result is None
+        assert forked.error is None
 
     def test_create_child_session(self, tmp_path):
         store = FileSessionStore()
@@ -412,12 +386,10 @@ class TestAgentSession:
 
         child = parent.create_child_session(
             agent_name="worker",
-            agent_type="chat",
             task_name="sub_task",
             target="/main/sub_task",
             initial_message="do work",
             last_message="do work",
-            status=SessionStatus.ACTIVE,
         )
 
         assert child.owner is parent
@@ -425,12 +397,10 @@ class TestAgentSession:
         assert child.id in parent.children
         assert child.path == ["root-id", child.id]
         assert child.agent_name == "worker"
-        assert child.agent_type == "chat"
         assert child.task_name == "sub_task"
         assert child.target == "/main/sub_task"
         assert child.initial_message == "do work"
         assert child.last_message == "do work"
-        assert child.status == SessionStatus.ACTIVE
         assert child.workspace == str(tmp_path)
         assert child.run_info.llm_context_id is not None
         assert child.run_info.llm_context_id != parent.run_info.llm_context_id
@@ -452,14 +422,13 @@ class TestAgentSession:
         assert child.workspace == str(custom_ws.absolute())
 
     @pytest.mark.asyncio
-    async def test_create_agent(self, tmp_path, monkeypatch):
+    async def test_create_runtime(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
         config_file = tmp_path / ".arox" / "config.toml"
         config_file.parent.mkdir(parents=True, exist_ok=True)
         config_file.write_text("""
 model_ref = "test"
 [agent.test_worker]
-type = "base"
 system_prompt = "Hello worker."
 """)
         config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
@@ -469,18 +438,19 @@ system_prompt = "Hello worker."
             agent_name="test_worker",
             path=["worker-session-id"],
         )
-        agent = session.create_agent(
-            config_loader=config_loader,
-            io_adapter=io_adapter,
-        )
+        runner = TaskRunner(session, config_loader, io_adapter)
+        agent = await runner.start()
+        try:
+            assert agent.uuid == "worker-session-id"
+            assert agent.session is session
+            assert agent.message_history is session.message_history.messages
+            assert agent.name == "test_worker"
+            assert type(agent) is LLMBaseAgent
+        finally:
+            await runner.stop()
 
-        assert agent.uuid == "worker-session-id"
-        assert agent.session is session
-        assert agent.message_history is session.message_history.messages
-        assert agent.name == "test_worker"
-        assert type(agent) is LLMBaseAgent
-
-    def test_create_agent_missing_config_raises(self, tmp_path, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_create_runtime_missing_config_raises(self, tmp_path, monkeypatch):
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
         config_file = tmp_path / ".arox" / "config.toml"
         config_file.parent.mkdir(parents=True, exist_ok=True)
@@ -496,19 +466,18 @@ model_ref = "test"
         with pytest.raises(
             ValueError, match="Agent config for 'unconfigured_agent' not found"
         ):
-            session.create_agent(
-                config_loader=config_loader,
-                io_adapter=io_adapter,
-            )
+            await TaskRunner(session, config_loader, io_adapter).start()
 
-    def test_create_agent_unknown_type_raises(self, tmp_path, monkeypatch):
+    @pytest.mark.asyncio
+    async def test_agent_config_type_is_not_runtime_dispatch(
+        self, tmp_path, monkeypatch
+    ):
         monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
         config_file = tmp_path / ".arox" / "config.toml"
         config_file.parent.mkdir(parents=True, exist_ok=True)
         config_file.write_text("""
 model_ref = "test"
 [agent.broken_agent]
-type = "nonexistent_agent_class_name"
 """)
         config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
         io_adapter = _StubIOAdapter()
@@ -516,11 +485,12 @@ type = "nonexistent_agent_class_name"
         session = AgentSession(
             agent_name="broken_agent",
         )
-        with pytest.raises(ValueError, match="Unknown agent type"):
-            session.create_agent(
-                config_loader=config_loader,
-                io_adapter=io_adapter,
-            )
+        runner = TaskRunner(session, config_loader, io_adapter)
+        agent = await runner.start()
+        try:
+            assert type(agent) is LLMBaseAgent
+        finally:
+            await runner.stop()
 
 
 class TestFileSessionStore:
@@ -736,3 +706,35 @@ class TestFileSessionStore:
 
         deleted = await store.cleanup()
         assert deleted == 1
+
+    @pytest.mark.asyncio
+    async def test_manager_tree_api(self, store):
+        manager = SessionManager(store)
+        manager.register_session_type(AgentSession)
+        root = AgentSession(agent_name="main", path=["root"], manager=manager)
+        child = root.create_child_session("worker", task_name="child")
+        grandchild = child.create_child_session("worker", task_name="grandchild")
+        await root.save()
+        await child.save()
+        await grandchild.save()
+
+        loaded = await manager.resolve(root.id)
+        assert isinstance(loaded, AgentSession)
+        assert loaded is root
+        children = await manager.children_of(loaded)
+        assert [item.id for item in children] == [child.id]
+        assert children[0].owner is loaded
+        assert children[0].manager is manager
+
+        walked = await manager.walk(loaded)
+        assert [item.id for item in walked] == [root.id, child.id, grandchild.id]
+        found = await manager.find(loaded, grandchild.id)
+        assert found is walked[-1]
+
+        roots = await manager.list_roots()
+        assert roots == [loaded]
+
+        await manager.remove_child(loaded, children[0])
+        assert loaded.children == []
+        assert await manager.resolve(child.id, loaded) is None
+        assert await store.load_session(child.path) is None

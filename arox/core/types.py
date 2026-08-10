@@ -10,7 +10,7 @@ USER_INPUT_ID_KEY = "user_input_id"
 
 @dataclass
 class UserInput:
-    """A unit of user input passed to :meth:`LLMBaseAgent.step`.
+    """A unit of user input passed to :meth:`LLMBaseAgent.run`.
 
     ``client_message_id`` is an opaque id assigned by a client to the message that
     produced this input; it is echoed back in :class:`ServerIdMapping` so the client
@@ -50,7 +50,7 @@ class ServerIdMapping:
 
 
 @dataclass
-class AgentInfoUpdate:
-    """Carries updated agent info to broadcast to clients."""
+class SessionTreeUpdate:
+    """Requests broadcasting the latest tree for a root session."""
 
-    agent_uuid: str
+    session_id: str

@@ -17,7 +17,7 @@ class HeadlessIOAdapter(AbstractIOAdapter):
     end of a step (its ``result.output``); streaming text, tool calls and
     thinking are dropped. On the first ChatInputRequest it replies with the
     prompt; on any subsequent request it replies with abort so
-    ChatAgent.run() exits cleanly.
+    The chat serve loop exits cleanly.
     """
 
     def __init__(self, prompt: str):

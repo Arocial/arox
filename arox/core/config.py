@@ -76,7 +76,6 @@ class ModelConfig(BaseModel):
 
 
 class AgentConfig(BaseModel):
-    type: str = "chat"
     description: str = ""
     system_prompt: str = ""
     task_prompt: str = ""

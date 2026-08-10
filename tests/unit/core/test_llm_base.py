@@ -1,5 +1,7 @@
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic_ai.messages import (
@@ -12,14 +14,26 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter, RequestEvent
-from arox.core.llm_base import AgentStatus, LLMBaseAgent
-from arox.core.session import AgentSession, SessionStatus
+from arox.core.llm_base import LLMBaseAgent
+from arox.core.runner import TaskRunner
+from arox.core.session import AgentSession
 from arox.plugins.core import SetModelEvent
 
 
 class _StubIOAdapter(AbstractIOAdapter):
     async def handle_event(self, adapter_io, event):
         pass
+
+
+@asynccontextmanager
+async def _managed_runtime(agent, config_loader, io_adapter):
+    runner = SimpleNamespace(runtime=agent)
+    agent.session.runner = runner
+    try:
+        async with agent:
+            yield agent
+    finally:
+        agent.session.runner = None
 
 
 @pytest.mark.asyncio
@@ -72,7 +86,7 @@ skills = ["skill1"]
         ),
     )
 
-    async with agent:
+    async with _managed_runtime(agent, config_loader, agent.io_adapter):
         assert "skill1" in agent.skill_catalog
     assert "skill2" not in agent.skill_catalog
 
@@ -127,7 +141,7 @@ skills = "skill2"
         ),
     )
 
-    async with agent:
+    async with _managed_runtime(agent, config_loader, agent.io_adapter):
         assert "skill1" not in agent.skill_catalog
     assert "skill2" in agent.skill_catalog
 
@@ -181,7 +195,7 @@ system_prompt = "Hi there."
         ),
     )
 
-    async with agent:
+    async with _managed_runtime(agent, config_loader, agent.io_adapter):
         assert "skill1" in agent.skill_catalog
     assert "skill2" in agent.skill_catalog
 
@@ -216,7 +230,7 @@ system_prompt = "Hi."
 
     agent.register_request_handler(CustomEvent, handler)
 
-    async with agent:
+    async with _managed_runtime(agent, config_loader, agent.io_adapter):
         ev = CustomEvent()
         await agent.adapter_io.send(ev)
 
@@ -252,7 +266,7 @@ system_prompt = "Hi."
 
     agent.set_model = spy  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
-    async with agent:
+    async with _managed_runtime(agent, config_loader, agent.io_adapter):
         calls.clear()
         agent.register_request_handler(
             SetModelEvent, lambda e: agent.set_model(e.model_ref)
@@ -318,13 +332,15 @@ request_limit_prompt = "Check your progress and continue."
         else:
             yield "done"
 
-    async with agent:
+    async with _managed_runtime(agent, config_loader, agent.io_adapter):
         with agent.pydantic_agent.override(
             model=FunctionModel(stream_function=stream_function)
         ):
             result = await agent.step("start")
 
     assert result.output == "done"
+    assert agent.session.result == "done"
+    assert agent.session.error is None
     assert len(requests) == 2
     assert tool_executions == 1
     parts = [part for message in result.all_messages() for part in message.parts]
@@ -360,24 +376,63 @@ system_prompt = "Hi."
     )
 
     assert agent.uuid == session.id == "test-session-id"
-    assert session.runtime is None
-    assert session.has_runtime is False
-    assert session.status == SessionStatus.ACTIVE
-    assert agent.status == AgentStatus.IDLE
+    assert session.runner is None
+    assert session.is_active is False
+    assert not hasattr(agent, "status")
     assert agent.uuid not in io_adapter.hosts
 
-    async with agent:
-        assert session.runtime is agent
-        assert session.has_runtime is True
-        assert session.status == SessionStatus.ACTIVE
-        assert agent.status == AgentStatus.IDLE
+    async with _managed_runtime(agent, config_loader, io_adapter):
+        assert session.agent is agent
+        assert session.is_active is True
         assert agent.uuid in io_adapter.hosts
 
-    assert session.runtime is None
-    assert session.has_runtime is False
-    assert session.status == SessionStatus.ACTIVE
-    assert agent.status == AgentStatus.STOPPED
+    assert session.runner is None
+    assert session.is_active is False
     assert agent.uuid not in io_adapter.hosts
+
+
+@pytest.mark.asyncio
+async def test_agent_manages_current_task(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text("""
+model_ref = "test"
+[agent.test_agent]
+system_prompt = "Hi."
+""")
+    agent = LLMBaseAgent(
+        app_setup(cli_args={"workspace": str(tmp_path)}),
+        io_adapter=_StubIOAdapter(),
+        session=AgentSession(path=["managed-task"], agent_name="test_agent"),
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def blocking_step(user_input=None):
+        started.set()
+        await release.wait()
+        return user_input
+
+    agent.step = blocking_step  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+
+    runner = TaskRunner(agent.session, agent.config_loader, agent.io_adapter)
+    runner.runtime = agent
+    agent.session.runner = runner
+    async with agent:
+        task = runner.run("work")
+        await started.wait()
+        assert runner.current_task is task
+        with pytest.raises(RuntimeError, match="already running"):
+            runner.run("duplicate")
+        with pytest.raises(TimeoutError):
+            await runner.wait(0.01)
+        assert runner.current_task is task
+        assert await runner.cancel()
+        assert task.cancelled()
+        assert runner.current_task is None
+        assert not await runner.cancel()
+    agent.session.runner = None
 
 
 @pytest.mark.asyncio
@@ -401,13 +456,10 @@ system_prompt = "Hi."
     )
 
     with pytest.raises(RuntimeError, match="something broke"):
-        async with agent:
+        async with _managed_runtime(agent, config_loader, io_adapter):
             raise RuntimeError("something broke")
 
-    assert session.runtime is None
-    assert session.status == SessionStatus.ACTIVE
-    assert agent.status == AgentStatus.STOPPED
-    assert session.last_error is None
+    assert session.runner is None
     assert session.events[-1].event_type == "error"
     assert "RuntimeError: something broke" in session.events[-1].error
     assert agent.uuid not in io_adapter.hosts
@@ -436,20 +488,17 @@ system_prompt = "Hi."
     )
 
     with pytest.raises(asyncio.CancelledError):
-        async with agent:
+        async with _managed_runtime(agent, config_loader, io_adapter):
             raise asyncio.CancelledError()
 
-    assert session.runtime is None
-    assert session.status == SessionStatus.ACTIVE
-    assert agent.status == AgentStatus.STOPPED
-    assert session.last_error is None
+    assert session.runner is None
     assert session.events[-1].event_type == "error"
     assert session.events[-1].error == "Task interrupted."
     assert agent.uuid not in io_adapter.hosts
 
 
 @pytest.mark.asyncio
-async def test_session_create_agent(tmp_path, monkeypatch):
+async def test_runner_creates_runtime(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
     config_file = tmp_path / ".arox" / "config.toml"
     config_file.parent.mkdir(parents=True, exist_ok=True)
@@ -463,15 +512,13 @@ system_prompt = "Hi."
     session = AgentSession(
         path=["parent-id", "child-session-id"],
         agent_name="test_agent",
-        task_name="child_task",
-        target="/test_agent/child_task",
     )
 
-    agent = session.create_agent(
-        config_loader=config_loader,
-        io_adapter=io_adapter,
-    )
-
-    assert agent.uuid == "child-session-id"
-    assert agent.session is session
-    assert agent.name == "test_agent"
+    runner = TaskRunner(session, config_loader, io_adapter)
+    agent = await runner.start()
+    try:
+        assert agent.uuid == "child-session-id"
+        assert agent.session is session
+        assert agent.name == "test_agent"
+    finally:
+        await runner.stop()

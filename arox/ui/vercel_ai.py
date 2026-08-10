@@ -1,7 +1,7 @@
+from __future__ import annotations
+
 import asyncio
 import logging
-from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, override
 
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_ai import (
     FinalResultEvent,
     FunctionToolCallEvent,
@@ -30,6 +30,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from arox.core.chat import (
     ChatInputReply,
     ChatInputRequest,
+    ChatServeDriver,
     StepDoneEvent,
 )
 from arox.core.completion import parse_request
@@ -38,12 +39,37 @@ from arox.core.io import (
     IOEndpoint,
 )
 from arox.core.llm_base import (
-    AgentInfoUpdate,
-    LLMBaseAgent,
-    MainAgent,
     ServerIdMapping,
+    SessionTreeUpdate,
 )
-from arox.plugins.slots import SUBAGENTS
+from arox.core.runner import ServingRunner, TaskRunner
+from arox.core.session import AgentSession
+
+
+async def build_session_view(session: AgentSession) -> SessionView:
+    child_sessions = (
+        await session.manager.children_of(session) if session.manager else []
+    )
+    children = [
+        await build_session_view(child)
+        for child in child_sessions
+        if isinstance(child, AgentSession)
+    ]
+    return SessionView(
+        id=session.id,
+        path=session.path,
+        agent_name=session.agent_name,
+        created_at=session.created_at.isoformat(),
+        updated_at=session.updated_at.isoformat(),
+        workspace=session.workspace,
+        metadata=session.metadata,
+        active=session.is_active,
+        task_name=session.task_name,
+        target=session.target,
+        result=session.result,
+        error=session.error,
+        children=children,
+    )
 
 
 class TokenAuthASGIMiddleware:
@@ -184,77 +210,24 @@ class SuggestionResponse(BaseModel):
     items: list[SuggestionItem]
 
 
-class CreateAgentRequest(BaseModel):
+class CreateSessionRequest(BaseModel):
     workspace: str | None = None
-    session_id: str | None = None
 
 
-class SessionInfo(BaseModel):
+class SessionView(BaseModel):
     id: str
-    main_agent: str
+    path: list[str]
+    agent_name: str
     created_at: str
     updated_at: str
     workspace: str | None
     metadata: dict
-
-
-class AgentTaskStatus(str, Enum):
-    RUNNING = "running"
-    STOPPED = "stopped"
-    CANCELLED = "cancelled"
-    ERROR = "error"
-
-
-class AgentInfo(BaseModel):
-    id: str
-    name: str
-    status: str
-    workspace: str | None = None
-    subagents: list["AgentInfo"] = []
-
-
-@dataclass
-class AgentRun:
-    main_agent: MainAgent
-    task: asyncio.Task | None = None
-    status: AgentTaskStatus = AgentTaskStatus.RUNNING
-    error: Exception | None = None
-
-    async def get_agent(self, uuid: str) -> LLMBaseAgent | None:
-        if self.main_agent.uuid == uuid:
-            return self.main_agent
-        subagents = await self.main_agent.invoke_slot(SUBAGENTS)
-        if subagents:
-            for sa in subagents:
-                if sa.uuid == uuid:
-                    return sa
-        return None
-
-    async def _get_subagents(self) -> list["AgentInfo"]:
-        subagents = await self.main_agent.invoke_slot(SUBAGENTS)
-        if subagents:
-            return [
-                AgentInfo(
-                    id=sa.uuid,
-                    name=sa.name,
-                    status=sa.status,
-                    workspace=str(sa.workspace) if sa.workspace else None,
-                    subagents=[],
-                )
-                for sa in subagents
-            ]
-        return []
-
-    async def get_agent_info(self) -> AgentInfo:
-        return AgentInfo(
-            id=self.main_agent.uuid,
-            name=self.main_agent.name,
-            status=self.main_agent.status,
-            workspace=str(self.main_agent.workspace)
-            if self.main_agent.workspace
-            else None,
-            subagents=await self._get_subagents(),
-        )
+    active: bool
+    task_name: str | None
+    target: str | None
+    result: str | None
+    error: str | None
+    children: list["SessionView"] = Field(default_factory=list)
 
 
 class VercelStreamIOAdapter(AbstractIOAdapter):
@@ -263,7 +236,6 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         self.read_lock = asyncio.Lock()
         self.event_queues = {}
         self.pending_inputs: dict[IOEndpoint, ChatInputRequest] = {}
-        self.run_instances: dict[str, AgentRun] = {}
         self.event_streams = {}
 
     @override
@@ -288,7 +260,11 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             logger.error(f"Error draining events: {e}")
 
     async def _event_messages(
-        self, adapter_io: IOEndpoint, event, target_run: AgentRun, agent: LLMBaseAgent
+        self,
+        adapter_io: IOEndpoint,
+        event,
+        root_session: AgentSession,
+        target_session: AgentSession,
     ) -> list[dict]:
         messages: list[dict] = []
 
@@ -346,12 +322,12 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             messages.append(frame)
 
         else:
-            if isinstance(event, AgentInfoUpdate):
-                if event.agent_uuid == target_run.main_agent.uuid:
+            if isinstance(event, SessionTreeUpdate):
+                if event.session_id == root_session.id:
                     messages.append(
                         {
-                            "type": "cmd-agent-info",
-                            **((await target_run.get_agent_info()).model_dump()),
+                            "type": "cmd-session-tree",
+                            **((await build_session_view(root_session)).model_dump()),
                         }
                     )
 
@@ -375,10 +351,11 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
     async def _apply_input(self, target, payload: dict) -> dict:
         if payload.get("cancel"):
-            from arox.core.llm_base import LLMBaseAgent
-
-            if isinstance(target, LLMBaseAgent):
-                target.cancel_foreground_task()
+            runner = target.session.runner
+            if isinstance(runner, ServingRunner):
+                await runner.cancel_turn()
+            elif isinstance(runner, TaskRunner):
+                await runner.cancel()
             return {"status": "cancelled"}
 
         cmd = payload.get("command")
@@ -436,11 +413,20 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         return {"status": "noop"}
 
     async def ws_handler(
-        self, websocket: WebSocket, target_run: AgentRun, agent: LLMBaseAgent
+        self,
+        websocket: WebSocket,
+        root_session: AgentSession,
+        target_session: AgentSession,
     ):
         from fastapi import WebSocketDisconnect
 
-        adapter_io = agent.adapter_io
+        runtime = (
+            target_session.runner.runtime if target_session.runner is not None else None
+        )
+        if runtime is None:
+            await websocket.close(code=4009, reason="session runtime is not active")
+            return
+        adapter_io = runtime.adapter_io
         queue = self.event_queues.setdefault(adapter_io, asyncio.Queue())
 
         await websocket.accept()
@@ -449,7 +435,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             while True:
                 _io, event = await queue.get()
                 for msg in await self._event_messages(
-                    adapter_io, event, target_run, agent
+                    adapter_io, event, root_session, target_session
                 ):
                     msg_str = str(msg)
                     if len(msg_str) > 1024:
@@ -469,12 +455,12 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     event = self.pending_inputs.get(adapter_io)
                     if event is not None:
                         for msg in await self._event_messages(
-                            adapter_io, event, target_run, agent
+                            adapter_io, event, root_session, target_session
                         ):
                             await websocket.send_json(msg)
                     await websocket.send_json({"type": "ack", "status": "ok"})
                 else:
-                    ack = await self._apply_input(agent, payload)
+                    ack = await self._apply_input(runtime, payload)
                     await websocket.send_json({"type": "ack", **ack})
 
         out_task = asyncio.create_task(pump_out())
@@ -532,22 +518,11 @@ class VercelStreamServer:
         self.port = port
         self.io_adapter = VercelStreamIOAdapter()
         self.session_manager = session_manager
-        self.session_store = session_manager.session_store
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
             async with self.session_manager, self.io_adapter:
                 yield
-            # Cancel all running app tasks on shutdown
-            tasks = [
-                r.task
-                for r in self.io_adapter.run_instances.values()
-                if r.task and not r.task.done()
-            ]
-            for task in tasks:
-                task.cancel()
-            if tasks:
-                await asyncio.gather(*tasks, return_exceptions=True)
 
         self.app = FastAPI(lifespan=lifespan)
         self.app.add_middleware(TokenAuthASGIMiddleware)
@@ -559,146 +534,127 @@ class VercelStreamServer:
             allow_headers=["*"],
         )
 
-        self.app.get("/api/agents", response_model=list[AgentInfo])(self.list_agents)
-        self.app.post("/api/agents", response_model=AgentInfo)(self.create_agent)
-        self.app.delete("/api/agents/{main_agent_uuid}")(self.delete_agent)
-        self.app.websocket("/api/agents/{main_agent_uuid}/{subagent_uuid}/ws")(self.ws)
-        self.app.get(
-            "/api/agents/{main_agent_uuid}/{subagent_uuid}/suggestions",
-            response_model=SuggestionResponse,
-        )(self.suggestions)
-        self.app.get("/api/agents/{main_agent_uuid}/{subagent_uuid}/state")(self.state)
-        self.app.get("/api/sessions", response_model=list[SessionInfo])(
+        self.app.get("/api/sessions", response_model=list[SessionView])(
             self.list_sessions
         )
+        self.app.post("/api/sessions", response_model=SessionView)(self.create_session)
+        self.app.get("/api/sessions/{session_id}", response_model=SessionView)(
+            self.get_session
+        )
+        self.app.post("/api/sessions/{session_id}/start", response_model=SessionView)(
+            self.start_session
+        )
+        self.app.post("/api/sessions/{session_id}/stop", response_model=SessionView)(
+            self.stop_session
+        )
         self.app.delete("/api/sessions/{session_id}")(self.delete_session)
+        self.app.websocket(
+            "/api/sessions/{root_session_id}/nodes/{target_session_id}/ws"
+        )(self.ws)
+        self.app.get(
+            "/api/sessions/{root_session_id}/nodes/{target_session_id}/suggestions",
+            response_model=SuggestionResponse,
+        )(self.suggestions)
+        self.app.get("/api/sessions/{root_session_id}/nodes/{target_session_id}/state")(
+            self.state
+        )
         self.app.get("/api/health")(self.health)
 
     async def health(self):
         return {"status": "ok"}
 
-    async def _get_agent(self, main_agent_uuid: str, subagent_uuid: str):
-        run_instance = self.io_adapter.run_instances.get(main_agent_uuid)
-        if not run_instance:
-            raise HTTPException(
-                status_code=404, detail=f"Agent {main_agent_uuid} not found."
-            )
-        agent = await run_instance.get_agent(subagent_uuid)
-        if not agent:
-            raise HTTPException(
-                status_code=404, detail=f"Agent {subagent_uuid} not found."
-            )
-        return agent
-
-    async def list_agents(self) -> list[AgentInfo]:
-        agents = []
-        for run_instance in self.io_adapter.run_instances.values():
-            agents.append(await run_instance.get_agent_info())
-        return agents
-
-    async def create_agent(self, request: CreateAgentRequest):
-        from arox.core.session import AgentSession
-
-        session = None
-        if request.session_id:
-            session = await self.session_store.load_session([request.session_id])
-            if not session or not isinstance(session, AgentSession):
-                raise HTTPException(
-                    status_code=404, detail="Session not found or invalid"
-                )
-
+    async def _resolve_root_session(self, session_id: str) -> AgentSession:
+        loaded = await self.session_manager.resolve(session_id)
+        session = loaded if isinstance(loaded, AgentSession) else None
         if session is None:
-            main_agent_name = self.config_loader.current_config.app.main_agent
-            agent_config = self.config_loader.current_config.agent.get(main_agent_name)
-            agent_type = agent_config.type if agent_config else "chat"
-            session = AgentSession(
-                agent_name=main_agent_name,
-                agent_type=agent_type,
-                workspace=str(Path(request.workspace).absolute())
-                if request.workspace
-                else None,
-                manager=self.session_manager,
-            )
-        else:
-            session.manager = self.session_manager
-            if request.workspace:
-                session.workspace = str(Path(request.workspace).absolute())
+            raise HTTPException(status_code=404, detail="Session not found.")
+        return session
 
-        main_agent = session.create_agent(
-            config_loader=self.config_loader,
-            io_adapter=self.io_adapter,
+    async def _resolve_child_session(
+        self, root: AgentSession, target_session_id: str
+    ) -> AgentSession:
+        found = await self.session_manager.find(root, target_session_id)
+        if isinstance(found, AgentSession):
+            return found
+        raise HTTPException(status_code=404, detail="Session node not found.")
+
+    async def _start_root(self, session: AgentSession) -> None:
+        if session.is_active:
+            raise HTTPException(status_code=409, detail="Session is already active.")
+        runner = ServingRunner(
+            session, self.config_loader, self.io_adapter, ChatServeDriver()
         )
-        if not isinstance(main_agent, MainAgent):
-            raise TypeError(f"Main agent '{session.agent_name}' must be a MainAgent")
+        await runner.start_serving()
 
-        run_instance = AgentRun(main_agent=main_agent)
-        self.io_adapter.run_instances[main_agent.uuid] = run_instance
+    async def _stop_root(self, session_id: str) -> AgentSession:
+        session = await self._resolve_root_session(session_id)
+        await self.session_manager.stop_tree(session)
+        return session
 
-        async def run_agent():
-            async with main_agent:
-                if request.session_id:
-                    await main_agent.agent_io.send(
-                        f"Session restored: {request.session_id}"
-                    )
-                await main_agent.run()
+    async def create_session(self, request: CreateSessionRequest) -> SessionView:
+        main_agent_name = self.config_loader.current_config.app.main_agent
+        session = AgentSession(
+            agent_name=main_agent_name,
+            workspace=str(Path(request.workspace).absolute())
+            if request.workspace
+            else None,
+            manager=self.session_manager,
+        )
+        await session.save()
+        await self._start_root(session)
+        return await build_session_view(session)
 
-        task = asyncio.create_task(run_agent())
-        run_instance.task = task
+    async def start_session(self, session_id: str) -> SessionView:
+        session = await self._resolve_root_session(session_id)
+        await self._start_root(session)
+        return await build_session_view(session)
 
-        def on_task_done(t: asyncio.Task):
-            try:
-                t.result()
-                run_instance.status = AgentTaskStatus.STOPPED
-                logger.info(f"Agent {main_agent.uuid} finished normally.")
-            except asyncio.CancelledError:
-                run_instance.status = AgentTaskStatus.CANCELLED
-                logger.info(f"Agent {main_agent.uuid} was cancelled.")
-            except Exception as e:
-                run_instance.status = AgentTaskStatus.ERROR
-                run_instance.error = e
-                logger.exception(f"Agent {main_agent.uuid} crashed with error.")
+    async def stop_session(self, session_id: str) -> SessionView:
+        session = await self._stop_root(session_id)
+        return await build_session_view(session)
 
-        task.add_done_callback(on_task_done)
+    async def get_session(self, session_id: str) -> SessionView:
+        return await build_session_view(await self._resolve_root_session(session_id))
 
-        return await run_instance.get_agent_info()
-
-    async def delete_agent(self, main_agent_uuid: str):
-        run_instance = self.io_adapter.run_instances.pop(main_agent_uuid, None)
-        if not run_instance:
-            raise HTTPException(status_code=404, detail="Agent not found")
-        if run_instance.task and not run_instance.task.done():
-            run_instance.task.cancel()
-        return {"status": "deleted"}
-
-    async def ws(self, websocket: WebSocket, main_agent_uuid: str, subagent_uuid: str):
-        run_instance = self.io_adapter.run_instances.get(main_agent_uuid)
-        if not run_instance:
-            await websocket.close(code=4004, reason="agent not found")
+    async def ws(
+        self,
+        websocket: WebSocket,
+        root_session_id: str,
+        target_session_id: str,
+    ):
+        try:
+            root = await self._resolve_root_session(root_session_id)
+            target = await self._resolve_child_session(root, target_session_id)
+        except HTTPException as exc:
+            await websocket.close(code=4004, reason=str(exc.detail))
             return
-        agent = await run_instance.get_agent(subagent_uuid)
-        if not agent:
-            await websocket.close(code=4004, reason="agent not found")
-            return
-        return await self.io_adapter.ws_handler(websocket, run_instance, agent)
+        return await self.io_adapter.ws_handler(websocket, root, target)
 
     async def suggestions(
         self,
-        main_agent_uuid: str,
-        subagent_uuid: str,
+        root_session_id: str,
+        target_session_id: str,
         command: str | None = None,
         q: str | None = None,
     ):
-        agent = await self._get_agent(main_agent_uuid, subagent_uuid)
-        return await self.io_adapter.suggestions(agent, command, q)
+        root = await self._resolve_root_session(root_session_id)
+        target = await self._resolve_child_session(root, target_session_id)
+        runtime = target.runner.runtime if target.runner is not None else None
+        if runtime is None:
+            raise HTTPException(
+                status_code=409, detail="Session runtime is not active."
+            )
+        return await self.io_adapter.suggestions(runtime, command, q)
 
-    async def state(self, main_agent_uuid: str, subagent_uuid: str):
-        agent = await self._get_agent(main_agent_uuid, subagent_uuid)
+    async def state(self, root_session_id: str, target_session_id: str):
+        root = await self._resolve_root_session(root_session_id)
+        session = await self._resolve_child_session(root, target_session_id)
 
         from pydantic_ai import ModelRequest
 
         messages = [
             msg
-            for msg in agent.message_history
+            for msg in session.message_history.messages
             if not (
                 isinstance(msg, ModelRequest)
                 and msg.metadata
@@ -707,34 +663,30 @@ class VercelStreamServer:
         ]
         history = build_state_history(messages)
 
-        return {
-            "history": history,
-            "model": agent.provider_model,
-        }
+        runtime = session.runner.runtime if session.runner is not None else None
+        agent_config = self.config_loader.current_config.agent.get(session.agent_name)
+        model = (
+            runtime.provider_model
+            if runtime is not None
+            else session.extra.get("model_override")
+            or (agent_config.model_ref if agent_config else None)
+            or self.config_loader.current_config.model_ref
+        )
+        return {"history": history, "model": model}
 
     async def list_sessions(self):
-        from arox.core.session import AgentSession
-
-        # The top-level session is the main agent's own AgentSession; filter to
-        # the configured main agent so subagent sessions don't leak in.
         main_agent = self.config_loader.current_config.app.main_agent
-
-        sessions = await self.session_store.list_sessions()
-        return [
-            SessionInfo(
-                id=s.id,
-                main_agent=s.agent_name,
-                created_at=s.created_at.isoformat(),
-                updated_at=s.updated_at.isoformat(),
-                workspace=s.workspace,
-                metadata=s.metadata,
-            )
-            for s in sessions
-            if isinstance(s, AgentSession) and s.agent_name == main_agent
-        ]
+        sessions = await self.session_manager.list_roots()
+        views = []
+        for stored in sessions:
+            if not isinstance(stored, AgentSession) or stored.agent_name != main_agent:
+                continue
+            views.append(await build_session_view(stored))
+        return views
 
     async def delete_session(self, session_id: str):
-        await self.session_store.delete_session([session_id])
+        session = await self._resolve_root_session(session_id)
+        await self.session_manager.delete_tree(session)
         return {"status": "deleted"}
 
     async def run(self):

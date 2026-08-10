@@ -9,7 +9,8 @@ from pathlib import Path
 os.environ["FASTMCP_LOG_ENABLED"] = "false"
 
 from arox.core.app import app_setup
-from arox.core.llm_base import MainAgent
+from arox.core.chat import ChatServeDriver
+from arox.core.runner import ServingRunner
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,7 @@ def main(profile: str | None = None):
             await session_store.cleanup()
             session = None
             if args.session:
-                session = await session_store.load_session([args.session])
+                session = await session_manager.resolve(args.session)
                 if not session or not isinstance(session, AgentSession):
                     print(
                         f"Session {args.session} not found or invalid.", file=sys.stderr
@@ -132,32 +133,27 @@ def main(profile: str | None = None):
                     sys.exit(1)
             if session is None:
                 main_agent_name = config.app.main_agent
-                agent_config = config.agent.get(main_agent_name)
-                agent_type = agent_config.type if agent_config else "chat"
                 session = AgentSession(
                     agent_name=main_agent_name,
-                    agent_type=agent_type,
                     manager=session_manager,
                 )
             else:
                 session.manager = session_manager
 
-            main_agent = session.create_agent(
-                config_loader=config_loader,
-                io_adapter=io_adapter,
-            )
-            if not isinstance(main_agent, MainAgent):
-                raise TypeError(
-                    f"Main agent '{session.agent_name}' must be a MainAgent"
-                )
-
             async with session_manager, io_adapter:
-                async with main_agent:
+                runner = ServingRunner(
+                    session, config_loader, io_adapter, ChatServeDriver()
+                )
+                try:
+                    main_agent = await runner.start()
                     if args.session:
                         await main_agent.agent_io.send(
                             f"Session restored: {args.session}"
                         )
-                    await main_agent.run()
+                    runner.serve()
+                    await runner.wait()
+                finally:
+                    await runner.stop()
 
         if args.ui == "headless":
             from arox.ui.headless import HeadlessIOAdapter

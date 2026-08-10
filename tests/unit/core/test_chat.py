@@ -7,7 +7,8 @@ from pydantic_ai import ToolCallPart
 from pydantic_ai.models.test import TestModel
 
 from arox.core.app import app_setup
-from arox.core.chat import ChatAgent
+from arox.core.chat import ChatServeDriver
+from arox.core.runner import ServingRunner
 from arox.core.session import AgentSession
 from arox.ui.text_io import TextIOAdapter, UserInputGenerator
 
@@ -40,21 +41,26 @@ system_prompt = "Hi there."
         user_input = UserInputGenerator(input=pipe_input, output=DummyOutput())
 
         io_adapter = TextIOAdapter()
-        agent = ChatAgent(
-            config_loader,
-            io_adapter=io_adapter,
-            session=AgentSession(path=["dummy"], agent_name="dummy_chat"),
-        )
-        agent.add_local_tool(multiply)
+        session = AgentSession(path=["dummy"], agent_name="dummy_chat")
         io_adapter.user_input = user_input
 
         for msg in test_user_msg:
             pipe_input.send_text(msg)
 
         test_model = TestModel(call_tools=["multiply"])
-        async with io_adapter, agent:
-            with agent.pydantic_agent.override(model=test_model):
-                await agent.run()
+        async with io_adapter:
+            runner = ServingRunner(
+                session, config_loader, io_adapter, ChatServeDriver()
+            )
+            try:
+                agent = await runner.start()
+                agent.add_local_tool(multiply)
+                with agent.pydantic_agent.override(model=test_model):
+                    runner.serve()
+                    await runner.wait()
+                    assert not session.is_active
+            finally:
+                await runner.stop()
 
         # Verify that the tool was called
         messages = agent.message_history

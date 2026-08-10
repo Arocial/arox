@@ -7,16 +7,10 @@ import logging
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal, Protocol, Union
+from typing import Annotated, Any, Literal, Protocol, Union
 
-if TYPE_CHECKING:
-    from arox.core.config import ConfigLoader
-    from arox.core.io import AbstractIOAdapter
-    from arox.core.llm_base.agent import LLMBaseAgent
-
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from pydantic_ai.messages import ModelMessage, ModelRequest, TextContent, UserPromptPart
 
 from arox.core.types import USER_INPUT_ID_KEY, UserInput
@@ -96,17 +90,11 @@ AnySessionEvent = Annotated[
 ]
 
 
-class SessionStatus(StrEnum):
-    ACTIVE = "active"
-    CLOSED = "closed"
-
-
 class Session(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     path: list[str] = Field(default_factory=lambda: [str(uuid.uuid4())])
     session_type: str
-    status: SessionStatus = SessionStatus.ACTIVE
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     forked_from: tuple[list[str], str] | None = None
@@ -197,15 +185,14 @@ class MessageHistorySegment(BaseModel):
 class AgentSession(Session):
     session_type: str = "agent"
     agent_name: str
-    agent_type: str = "chat"
     agent_source: Literal["static", "dynamic"] = "dynamic"
     workspace: str | None = None
     task_name: str | None = None
     target: str | None = None
     initial_message: str | None = None
     last_message: str | None = None
-    last_result: str | None = None
-    last_error: str | None = None
+    result: str | None = None
+    error: str | None = None
     run_info: AgentRunInfo = Field(default_factory=AgentRunInfo)
     archived_message_histories: list[MessageHistorySegment] = Field(
         default_factory=list
@@ -215,10 +202,8 @@ class AgentSession(Session):
     )
     extra: dict[str, Any] = Field(default_factory=dict)
 
-    runtime: Any = Field(default=None, exclude=True, repr=False)
-    running_task: asyncio.Task[Any] | None = Field(
-        default=None, exclude=True, repr=False
-    )
+    runner: Any = Field(default=None, exclude=True, repr=False)
+    _runner_lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
 
     @property
     def task_id(self) -> str:
@@ -226,55 +211,22 @@ class AgentSession(Session):
 
     @property
     def agent(self) -> Any:
-        return self.runtime
-
-    @property
-    def has_runtime(self) -> bool:
-        return self.runtime is not None
-
-    @property
-    def result(self) -> str | None:
-        return self.last_result
-
-    @property
-    def error(self) -> str | None:
-        return self.last_error
+        return self.runner.runtime if self.runner is not None else None
 
     @property
     def is_active(self) -> bool:
-        return self.status == SessionStatus.ACTIVE
-
-    @property
-    def is_running(self) -> bool:
-        return (
-            self.is_active
-            and self.running_task is not None
-            and not self.running_task.done()
-        )
-
-    def record_result(self, result: str | None) -> None:
-        self.last_result = result
-        self.last_error = None
-
-    def record_interrupted(self, message: str = "Task interrupted.") -> None:
-        self.last_error = message
-
-    def close_session(self) -> None:
-        self.status = SessionStatus.CLOSED
-        self.runtime = None
+        return self.runner is not None
 
     def create_child_session(
         self,
         agent_name: str,
         *,
-        agent_type: str = "chat",
         agent_source: Literal["static", "dynamic"] = "static",
         workspace: Path | str | None = None,
         task_name: str | None = None,
         target: str | None = None,
         initial_message: str | None = None,
         last_message: str | None = None,
-        status: SessionStatus = SessionStatus.ACTIVE,
     ) -> AgentSession:
         child_workspace = (
             str(Path(workspace).absolute()) if workspace is not None else self.workspace
@@ -282,45 +234,21 @@ class AgentSession(Session):
         child = AgentSession(
             path=[*self.path, str(uuid.uuid4())],
             agent_name=agent_name,
-            agent_type=agent_type,
             agent_source=agent_source,
             workspace=child_workspace,
             task_name=task_name,
             target=target,
             initial_message=initial_message,
             last_message=last_message,
-            status=status,
             run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
             owner=self,
             manager=self.manager,
         )
         self.children.append(child.id)
+        if self.manager:
+            self.manager._track(self, self.owner)
+            self.manager._track(child, self)
         return child
-
-    def create_agent(
-        self,
-        config_loader: ConfigLoader,
-        io_adapter: AbstractIOAdapter,
-    ) -> LLMBaseAgent:
-        from arox import utils
-
-        agent_config = config_loader.current_config.agent.get(self.agent_name)
-        if not agent_config:
-            raise ValueError(f"Agent config for '{self.agent_name}' not found")
-
-        agent_type = agent_config.type or self.agent_type
-        try:
-            agent_cls = utils.import_class(agent_type, group="arox.agents")
-        except ValueError:
-            raise ValueError(
-                f"Unknown agent type: {agent_type} for agent {self.agent_name}"
-            )
-
-        return agent_cls(
-            parent_config_loader=config_loader,
-            io_adapter=io_adapter,
-            session=self,
-        )
 
     def replace_message_history(self, messages: Sequence[ModelMessage]) -> None:
         self.message_history.messages = list(messages)
@@ -374,8 +302,9 @@ class AgentSession(Session):
             last_user_messages.append(text)
         self.metadata["last_user_messages"] = last_user_messages[-2:]
 
-    def record_error(self, error: Exception | str) -> None:
-        self.last_error = self.record_error_event(error)
+    def record_turn_error(self, error: Exception | str) -> None:
+        error_message = self.record_error_event(error)
+        self.error = error_message
 
     def record_error_event(self, error: Exception | str) -> str:
         """Record an error event without changing task scheduling state."""
@@ -490,9 +419,12 @@ class AgentSession(Session):
                     "message_history": message_history,
                     "forked_from": forked_from,
                     "children": [],
-                    "status": SessionStatus.ACTIVE,
-                    "last_result": None,
-                    "last_error": None,
+                    "task_name": None,
+                    "target": None,
+                    "initial_message": None,
+                    "last_message": None,
+                    "result": None,
+                    "error": None,
                     "manager": manager_ref,
                     "owner": owner,
                 },
@@ -505,24 +437,17 @@ class AgentSession(Session):
         if owner:
             owner.children.append(new_session.id)
 
-        for child_id in self.children:
+        child_sessions = await self.manager.children_of(self) if self.manager else []
+        if not self.manager and self.children:
+            logger.warning("No session manager to load child sessions")
+        for sub_session in child_sessions:
             try:
-                if self.manager:
-                    sub_session = await self.manager.load_session(child_id, self)
-                else:
-                    logger.warning(
-                        f"No session manager to load child session {child_id}"
-                    )
-                    continue
-            except Exception:
-                logger.warning(
-                    f"Failed to load child session {child_id}", exc_info=True
-                )
-                continue
-
-            if sub_session:
                 forked_child = await sub_session.fork_at(None, new_session)
                 await forked_child.save()
+            except Exception:
+                logger.warning(
+                    "Failed to fork child session %s", sub_session.id, exc_info=True
+                )
 
         return new_session
 
@@ -534,6 +459,7 @@ class SessionManager:
         self.session_store.set_session_types(self._session_types)
 
         self._dirty_sessions: dict[str, Session] = {}
+        self._sessions: dict[tuple[str, ...], Session] = {}
         self._save_event: asyncio.Event = asyncio.Event()
         self._save_task: asyncio.Task | None = None
 
@@ -542,6 +468,7 @@ class SessionManager:
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.stop_all()
         if self._save_task is not None:
             self._save_task.cancel()
             try:
@@ -587,17 +514,105 @@ class SessionManager:
         type_name = cls.model_fields["session_type"].default
         self._session_types[type_name] = cls
 
+    def _track(self, session: Session, owner: Session | None = None) -> Session:
+        session.manager = self
+        session.owner = owner
+        self._sessions[tuple(session.path)] = session
+        return session
+
+    def _forget_tree(self, path: list[str]) -> None:
+        prefix = tuple(path)
+        for cached_path in list(self._sessions):
+            if cached_path[: len(prefix)] == prefix:
+                self._sessions.pop(cached_path, None)
+
+    async def stop_all(self) -> None:
+        """Stop every live root tree managed by this instance."""
+        roots = [
+            session
+            for session in self._sessions.values()
+            if isinstance(session, AgentSession)
+            and session.is_active
+            and len(session.path) == 1
+        ]
+        await asyncio.gather(
+            *(self.stop_tree(session) for session in roots),
+            return_exceptions=True,
+        )
+
     async def save_session(self, session: Session) -> None:
+        self._track(session, session.owner)
         await self.session_store.save_session(session)
 
-    async def load_session(
-        self, session_id: str, owner: Session | None
+    async def resolve(
+        self, session_id: str, owner: Session | None = None
     ) -> Session | None:
+        """Resolve a root or direct child, preferring its live instance."""
         path = [*owner.path, session_id] if owner else [session_id]
+        cached = self._sessions.get(tuple(path))
+        if cached is not None:
+            return self._track(cached, owner)
+
         session = await self.session_store.load_session(path)
         if session:
-            session.owner = owner
+            self._track(session, owner)
         return session
+
+    async def list_roots(self, session_type: str = "agent") -> list[Session]:
+        roots = await self.session_store.list_sessions(session_type)
+        resolved = []
+        for stored in roots:
+            root = self._sessions.get(tuple(stored.path), stored)
+            self._track(root)
+            resolved.append(root)
+        return resolved
+
+    async def children_of(self, parent: Session) -> list[Session]:
+        children = []
+        for child_id in parent.children:
+            child = await self.resolve(child_id, parent)
+            if child is not None:
+                children.append(child)
+        return children
+
+    async def walk(self, root: Session) -> list[Session]:
+        sessions = [root]
+        for child in await self.children_of(root):
+            sessions.extend(await self.walk(child))
+        return sessions
+
+    async def find(self, root: Session, session_id: str) -> Session | None:
+        if root.id == session_id:
+            return root
+        for child in await self.children_of(root):
+            found = await self.find(child, session_id)
+            if found is not None:
+                return found
+        return None
+
+    async def stop_tree(self, root: Session) -> None:
+        for child in await self.children_of(root):
+            await self.stop_tree(child)
+        if isinstance(root, AgentSession):
+            if root.runner is not None:
+                await root.runner.stop()
+
+    async def delete_tree(self, root: Session) -> None:
+        await self.stop_tree(root)
+        await self.session_store.delete_session(root.path)
+        self._forget_tree(root.path)
+
+    async def remove_child(self, parent: Session, child: Session | str) -> None:
+        """Detach and delete a direct child subtree."""
+        child_id = child.id if isinstance(child, Session) else child
+        child_session = (
+            child if isinstance(child, Session) else await self.resolve(child, parent)
+        )
+        if child_session is not None:
+            await self.delete_tree(child_session)
+        if child_id in parent.children:
+            parent.children.remove(child_id)
+            await self.save_session(parent)
 
 
 class SessionStore(Protocol):

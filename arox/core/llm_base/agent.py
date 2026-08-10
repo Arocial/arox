@@ -3,10 +3,8 @@ import contextlib
 import logging
 import re
 import uuid
-from abc import ABC, abstractmethod
 from collections.abc import AsyncIterable, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, overload
 
@@ -60,7 +58,7 @@ from arox.core.slot import (
 from arox.core.slot import (
     Provider as SlotProvider,
 )
-from arox.core.types import AgentInfoUpdate, ServerIdMapping, UserInput
+from arox.core.types import ServerIdMapping, SessionTreeUpdate, UserInput
 from arox.plugins.slots import (
     AGENT_RESET,
     SYSTEM_PROMPT,
@@ -69,13 +67,6 @@ from arox.plugins.slots import (
 from ._pydantic_ai_hack import infer_provider
 
 logger = logging.getLogger(__name__)
-
-
-class AgentStatus(StrEnum):
-    UNINITIALIZED = "uninitialized"
-    IDLE = "idle"
-    RUNNING = "running"
-    STOPPED = "stopped"
 
 
 @dataclass
@@ -94,7 +85,6 @@ class LLMBaseAgent(IOHost):
         super().__init__(io_adapter)
         self.session = session
         self.uuid = session.id
-        self.status: AgentStatus = AgentStatus.UNINITIALIZED
         self._slots: dict[Any, Any] = {}
         self.config_loader = parent_config_loader.for_workspace(self.workspace)
 
@@ -129,16 +119,11 @@ class LLMBaseAgent(IOHost):
             deps_type=AgentDeps,
             output_type=str,
         )
-        self.status = AgentStatus.IDLE
         self.session.initialized = True
 
-    async def broadcast_agent_info(self):
-        info = AgentInfoUpdate(agent_uuid=self.uuid)
+    async def broadcast_session_tree(self):
+        info = SessionTreeUpdate(session_id=self.session.path[0])
         await self.agent_io.send(info)
-
-    def cancel_foreground_task(self) -> None:
-        """Cancel any long-running foreground task. Subclasses can override this."""
-        pass
 
     def reload_config(self) -> Config:
         config = self.config_loader.reload()
@@ -173,15 +158,8 @@ class LLMBaseAgent(IOHost):
         return agent_config
 
     @property
-    def agent_type(self) -> str:
-        return self.session.agent_type
-
-    @property
     def agent_source(self) -> Literal["static", "dynamic"]:
         return self.session.agent_source
-
-    def close_session(self) -> None:
-        self.session.close_session()
 
     @property
     def run_info(self) -> AgentRunInfo:
@@ -271,9 +249,9 @@ class LLMBaseAgent(IOHost):
                 return results
 
     async def __aenter__(self):
+        if self.session.runner is None or self.session.runner.runtime is not self:
+            raise RuntimeError("Agent runtime must be started through a SessionRunner.")
         await super().__aenter__()
-        self.session.runtime = self
-        self.status = AgentStatus.IDLE
         await self.io_adapter.register_host(self)
 
         if self.mcp_client:
@@ -281,7 +259,7 @@ class LLMBaseAgent(IOHost):
         for plugin in self.plugins:
             await plugin.on_start()
             self._stack.push_async_callback(plugin.on_stop)
-        await self.broadcast_agent_info()
+        await self.broadcast_session_tree()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -290,16 +268,14 @@ class LLMBaseAgent(IOHost):
                 self.session.record_error_event("Task interrupted.")
             elif exc_val is not None:
                 self.session.record_error_event(exc_val)
-            self.status = AgentStatus.STOPPED
             with contextlib.suppress(ClosedResourceError, EndOfStream):
-                await self.broadcast_agent_info()
+                await self.broadcast_session_tree()
         finally:
             try:
                 await super().__aexit__(exc_type, exc_val, exc_tb)
             finally:
                 if hasattr(self.io_adapter, "hosts"):
                     self.io_adapter.hosts.pop(self.uuid, None)
-                self.session.runtime = None
                 await self.session.save()
 
     def add_local_tool(self, func, **kwargs):
@@ -590,29 +566,29 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         user_input: UserInput | str | None = None,
     ) -> AgentRunResult[str]:
         """Execute one request, continuing from this session's message history."""
-        if self.session.runtime is not self:
+        if self.session.runner is None or self.session.runner.runtime is not self:
             raise RuntimeError("Agent runtime must be entered before calling step().")
-        if self.status != AgentStatus.IDLE:
-            raise RuntimeError(f"Agent cannot step while it is {self.status}.")
-
         if not isinstance(user_input, UserInput):
             user_input = UserInput(input_content=user_input)
 
-        input_content = user_input.input_content
-
-        if user_input.input_content is not None:
-            self.session.record_user_input(user_input)
-            if user_input.client_message_id:
-                await self.agent_io.send(
-                    ServerIdMapping(
-                        server_message_id=user_input.server_message_id,
-                        client_message_id=user_input.client_message_id,
-                    )
-                )
-
-        self.reload_config()
-        self.status = AgentStatus.RUNNING
+        self.session.last_message = user_input.text_content
+        self.session.result = None
+        self.session.error = None
         try:
+            await self.session.save()
+            input_content = user_input.input_content
+
+            if user_input.input_content is not None:
+                self.session.record_user_input(user_input)
+                if user_input.client_message_id:
+                    await self.agent_io.send(
+                        ServerIdMapping(
+                            server_message_id=user_input.server_message_id,
+                            client_message_id=user_input.client_message_id,
+                        )
+                    )
+
+            self.reload_config()
             while True:
                 result = await self._run_inference(
                     input_content,
@@ -629,10 +605,18 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                 input_content = self.request_limit_prompt
 
             self.result = result
+            output = result.output if isinstance(result.output, str) else None
+            self.session.result = output
             await self.agent_io.send(AgentRunResultEvent(result))
             return result
+        except asyncio.CancelledError:
+            self.session.error = "Task interrupted."
+            raise
+        except Exception as exc:
+            self.session.record_turn_error(exc)
+            raise
         finally:
-            self.status = AgentStatus.IDLE
+            await self.session.save()
 
     async def reset(self):
         self.session.initialized = False
@@ -641,9 +625,3 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         await self.invoke_slot(AGENT_RESET)
         self.session.record_reset(self.run_info.llm_context_id)
         self.session.initialized = True
-
-
-class MainAgent(LLMBaseAgent, ABC):
-    @abstractmethod
-    async def run(self):
-        pass

@@ -7,7 +7,10 @@ import pytest
 
 from arox.core.config import AgentConfig, Config
 from arox.core.llm_base import LLMBaseAgent
-from arox.core.session import AgentSession, FileSessionStore, SessionStatus
+from arox.core.session import (
+    AgentSession,
+    FileSessionStore,
+)
 from arox.plugins.core import CorePlugin
 from arox.plugins.slots import SYSTEM_PROMPT
 from arox.plugins.subagent import (
@@ -40,15 +43,26 @@ class _FakeDynamicAgent(LLMBaseAgent):
 
     async def step(self, user_input=None):
         task = str(user_input or "")
+        self.session.result = None
+        self.session.error = None
+        await self.session.save()
         self.received_tasks.append(task)
         self.started.set()
-        if task.startswith("block"):
-            await self.release.wait()
-        return SimpleNamespace(output=f"task done: {task}")
+        try:
+            if task.startswith("block"):
+                await self.release.wait()
+            output = f"task done: {task}"
+            self.session.result = output
+            await self.session.save()
+            return SimpleNamespace(output=output)
+        except asyncio.CancelledError:
+            self.session.error = "Task interrupted."
+            await self.session.save()
+            raise
 
 
-class _MainAgent:
-    async def broadcast_agent_info(self):
+class _HostAgent:
+    async def broadcast_session_tree(self):
         pass
 
     def __init__(
@@ -85,13 +99,12 @@ class _MainAgent:
         self.config = Config(
             agent={
                 "main": AgentConfig(
-                    type="chat",
                     plugins=[],
                     subagents=["planner", "reviewer"],
                     max_parallel_subagents=max_parallel_subagents,
                 ),
-                "planner": AgentConfig(type="chat", description="Plans work"),
-                "reviewer": AgentConfig(type="chat", description="Reviews code"),
+                "planner": AgentConfig(description="Plans work"),
+                "reviewer": AgentConfig(description="Reviews code"),
             }
         )
 
@@ -124,17 +137,13 @@ class _MainAgent:
 
 @pytest.fixture
 def agent_factory(tmp_path, monkeypatch):
-    import arox.utils
-
-    monkeypatch.setattr(
-        arox.utils, "import_class", lambda *_args, **_kwargs: _FakeDynamicAgent
-    )
+    monkeypatch.setattr("arox.core.runner.LLMBaseAgent", _FakeDynamicAgent)
     store = FileSessionStore()
     store.base_dir = tmp_path / "sessions"
 
     def create(*, max_parallel_subagents: int = 4):
         session = AgentSession(path=["main-session"], agent_name="main")
-        return _MainAgent(
+        return _HostAgent(
             session,
             store,
             max_parallel_subagents=max_parallel_subagents,
@@ -184,7 +193,6 @@ async def test_simple_mode_exposes_only_delegate_and_waits_for_result(agent_fact
             [main_agent.session.id, main_agent.session.children[0]]
         )
         assert child_session is not None
-        assert child_session.status is SessionStatus.CLOSED
     finally:
         await plugin.on_stop()
 
@@ -231,11 +239,9 @@ async def test_spawn_and_wait_preserves_resumable_agent(agent_factory):
         task_session = plugin._resolve_task("make_plan")
         result = await plugin.wait_agent(task_session.task_id)
 
-        assert "status: completed" in result
         assert "task done: make a plan" in result
-        assert task_session.status is SessionStatus.ACTIVE
-        assert task_session.agent is None
-        assert task_session.runtime is None
+        assert isinstance(task_session.agent, _FakeDynamicAgent)
+        assert task_session.runner.runtime is task_session.agent
         assert len(main_agent.session.children) == 1
 
         child_session = await store.load_session(
@@ -243,8 +249,7 @@ async def test_spawn_and_wait_preserves_resumable_agent(agent_factory):
         )
         assert child_session is not None
         assert child_session.task_name == "make_plan"
-        assert child_session.status == SessionStatus.ACTIVE
-        assert child_session.last_result == "task done: make a plan"
+        assert child_session.result == "task done: make a plan"
     finally:
         await plugin.on_stop()
 
@@ -267,7 +272,7 @@ async def test_spawn_callback_receives_retained_agent(agent_factory):
 
         assert len(created_agents) == 1
         assert isinstance(created_agents[0], LLMBaseAgent)
-        assert task_session.runtime is None
+        assert task_session.runner.runtime is created_agents[0]
     finally:
         await plugin.on_stop()
 
@@ -305,26 +310,25 @@ async def test_wait_timeout_does_not_cancel_task(agent_factory):
     try:
         await plugin.spawn_agent("slow_review", "block until released", "reviewer")
         task_session = plugin._resolve_task("slow_review")
-        assert task_session.running_task is not None
+        assert task_session.runner.current_task is not None
 
         # Wait for agent to start
-        while task_session.runtime is None:
+        while task_session.runner is None:
             await asyncio.sleep(0.01)
-        subagent = task_session.runtime
+        subagent = task_session.runner.runtime
         assert isinstance(subagent, _FakeDynamicAgent)
         await subagent.started.wait()
 
         result = await plugin.wait_agent("slow_review", timeout_seconds=0.01)
 
         assert "Agent is still running." in result
-        assert task_session.status is SessionStatus.ACTIVE
-        assert task_session.running_task is not None
-        assert not task_session.running_task.cancelled()
+        assert task_session.runner.current_task is not None
+        assert not task_session.runner.current_task.cancelled()
 
         subagent.release.set()
         completed = await plugin.wait_agent("slow_review")
-        assert "status: completed" in completed
-        assert task_session.runtime is None
+        assert "Result:" in completed
+        assert task_session.runner.runtime is subagent
     finally:
         await plugin.on_stop()
 
@@ -340,15 +344,15 @@ async def test_interrupt_then_followup_reuses_agent_and_session(agent_factory):
         task_session = plugin._resolve_task("review_patch")
         original_session_id = task_session.id
 
-        while task_session.runtime is None:
+        while task_session.runner is None:
             await asyncio.sleep(0.01)
-        subagent = task_session.runtime
+        subagent = task_session.runner.runtime
         assert isinstance(subagent, _FakeDynamicAgent)
         await subagent.started.wait()
 
         interrupted = await plugin.interrupt_agent("review_patch")
-        assert "status: interrupted" in interrupted
-        assert task_session.runtime is None
+        assert "Task interrupted." in interrupted
+        assert task_session.runner.runtime is subagent
 
         followup = await plugin.followup_task(
             "/main/review_patch", "review the updated tests"
@@ -356,10 +360,13 @@ async def test_interrupt_then_followup_reuses_agent_and_session(agent_factory):
         assert "Follow-up started." in followup
         completed = await plugin.wait_agent(task_session.task_id)
 
-        assert "status: completed" in completed
         assert "review the updated tests" in completed
         assert task_session.id == original_session_id
-        assert task_session.runtime is None
+        assert task_session.runner.runtime is subagent
+        assert subagent.received_tasks == [
+            "block first review",
+            "review the updated tests",
+        ]
         assert len(main_agent.session.children) == 1
     finally:
         await plugin.on_stop()
@@ -376,21 +383,18 @@ async def test_list_agents_filters_and_summarizes_results(agent_factory):
         await plugin.wait_agent("make_plan")
         await plugin.spawn_agent("slow_review", "block review", "reviewer")
         slow_task_session = plugin._resolve_task("slow_review")
-        while slow_task_session.runtime is None:
+        while slow_task_session.runner is None:
             await asyncio.sleep(0.01)
-        assert isinstance(slow_task_session.runtime, _FakeDynamicAgent)
-        await slow_task_session.runtime.started.wait()
+        assert isinstance(slow_task_session.runner.runtime, _FakeDynamicAgent)
+        await slow_task_session.runner.runtime.started.wait()
 
-        completed = await plugin.list_agents("completed")
-        running = await plugin.list_agents("running")
+        agents = await plugin.list_agents()
 
-        assert "/main/make_plan" in completed
-        assert "result_summary: task done: make a plan" in completed
-        assert "/main/slow_review" not in completed
-        assert "/main/slow_review" in running
-        assert "/main/make_plan" not in running
+        assert "/main/make_plan" in agents
+        assert "result_summary: task done: make a plan" in agents
+        assert "/main/slow_review" in agents
 
-        slow_task_session.runtime.release.set()
+        slow_task_session.runner.runtime.release.set()
         await plugin.wait_agent("slow_review")
     finally:
         await plugin.on_stop()
@@ -410,47 +414,43 @@ async def test_spawn_validates_name_type_and_parallel_limit(agent_factory):
 
         await plugin.spawn_agent("first_task", "block first", "planner")
         first_task_session = plugin._resolve_task("first_task")
-        while first_task_session.runtime is None:
+        while first_task_session.runner is None:
             await asyncio.sleep(0.01)
-        assert isinstance(first_task_session.runtime, _FakeDynamicAgent)
-        await first_task_session.runtime.started.wait()
+        assert isinstance(first_task_session.runner.runtime, _FakeDynamicAgent)
+        await first_task_session.runner.runtime.started.wait()
 
         with pytest.raises(ValueError, match="Maximum parallel"):
             await plugin.spawn_agent("second_task", "task", "reviewer")
         with pytest.raises(ValueError, match="already exists"):
             await plugin.spawn_agent("first_task", "task", "planner")
 
-        first_task_session.runtime.release.set()
+        first_task_session.runner.runtime.release.set()
         await plugin.wait_agent("first_task")
     finally:
         await plugin.on_stop()
 
 
 @pytest.mark.asyncio
-async def test_on_start_restores_running_task_as_interrupted(agent_factory):
+async def test_on_start_restores_task_without_process_state(agent_factory):
     create_agent, store = agent_factory
     first_main = create_agent()
     first_plugin = _advanced_plugin(first_main)
 
     await first_plugin.spawn_agent("slow_plan", "block planning", "planner")
     first_task_session = first_plugin._resolve_task("slow_plan")
-    while first_task_session.runtime is None:
+    while first_task_session.runner is None:
         await asyncio.sleep(0.01)
-    assert isinstance(first_task_session.runtime, _FakeDynamicAgent)
-    await first_task_session.runtime.started.wait()
+    assert isinstance(first_task_session.runner.runtime, _FakeDynamicAgent)
+    await first_task_session.runner.runtime.started.wait()
 
-    restored_main = _MainAgent(first_main.session, store)
+    restored_main = _HostAgent(first_main.session, store)
     restored_plugin = _advanced_plugin(restored_main)
     try:
         await restored_plugin.on_start()
         restored = restored_plugin._resolve_task("slow_plan")
 
-        assert restored.status is SessionStatus.ACTIVE
-        assert restored.runtime is None
-        assert (
-            restored.last_error == "Parent process stopped before the task completed."
-        )
+        assert restored.runner is None
     finally:
-        first_task_session.runtime.release.set()
+        first_task_session.runner.runtime.release.set()
         await restored_plugin.on_stop()
         await first_plugin.on_stop()

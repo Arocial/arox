@@ -28,7 +28,7 @@ class _FakeAgent:
         self.message_history = []
         self.name = "compaction"
 
-    async def step(self, user_input=None):
+    async def run(self, user_input=None):
         self.last_prompt = str(user_input or "")
         return SimpleNamespace(output=self._summary)
 
@@ -51,7 +51,7 @@ class _MockAgent:
 
         self.config = Config(
             compaction_threshold=threshold if threshold is not None else 0.7,
-            agent={"compaction": AgentConfig(type="base", task_prompt="summary")},
+            agent={"compaction": AgentConfig(task_prompt="summary")},
         )
         if threshold is None:
             # Overwrite after instantiation if None is needed
@@ -85,7 +85,7 @@ class _MockAgent:
     async def _send(self, _msg):
         return None
 
-    async def broadcast_agent_info(self):
+    async def broadcast_session_tree(self):
         pass
 
     async def invoke_slot(self, slot, *args, **kwargs):
@@ -101,7 +101,7 @@ class _MockAgent:
                 result = callback(self._compaction_agent)
                 if asyncio.iscoroutine(result):
                     await result
-            result = await self._compaction_agent.step(args[1] if len(args) > 1 else "")
+            result = await self._compaction_agent.run(args[1] if len(args) > 1 else "")
             return result.output
         return None
 

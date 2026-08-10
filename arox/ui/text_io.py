@@ -23,7 +23,6 @@ from pydantic_ai import (
 )
 
 from arox.core.chat import (
-    ChatAgent,
     ChatInputReply,
     ChatInputRequest,
 )
@@ -33,6 +32,7 @@ from arox.core.io import (
     IOEndpoint,
     IOHost,
 )
+from arox.core.runner import ServingRunner, TaskRunner
 
 logger = logging.getLogger(__name__)
 
@@ -140,8 +140,10 @@ class TextIOAdapter(AbstractIOAdapter):
         def sigint_handler(signum, frame):
             logger.info("Received SIGINT, cancelling current step...")
             for host in self.hosts.values():
-                if isinstance(host, ChatAgent):
-                    host.cancel_foreground_task()
+                if isinstance(host.session.runner, ServingRunner):
+                    loop.create_task(host.session.runner.cancel_turn())
+                elif isinstance(host.session.runner, TaskRunner):
+                    loop.create_task(host.session.runner.cancel())
 
             async def _cancel_all_subagents():
                 from arox.core.llm_base import LLMBaseAgent
@@ -150,8 +152,10 @@ class TextIOAdapter(AbstractIOAdapter):
                 for h in self.hosts.values():
                     if isinstance(h, LLMBaseAgent):
                         for agent in await h.invoke_slot(SUBAGENTS) or []:
-                            if isinstance(agent, ChatAgent):
-                                agent.cancel_foreground_task()
+                            if isinstance(agent.session.runner, ServingRunner):
+                                await agent.session.runner.cancel_turn()
+                            elif isinstance(agent.session.runner, TaskRunner):
+                                await agent.session.runner.cancel()
 
             loop.create_task(_cancel_all_subagents())
 

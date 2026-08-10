@@ -3,8 +3,8 @@ import logging
 from dataclasses import dataclass
 
 from arox.core.io import ReplyEvent, RequestEvent
-from arox.core.llm_base import MainAgent, UserInput
-from arox.core.session import AgentSession
+from arox.core.llm_base import UserInput
+from arox.core.runner import ServingRunner
 
 logger = logging.getLogger(__name__)
 
@@ -25,26 +25,11 @@ class ChatInputReply(UserInput, ReplyEvent):
         return bool(request.request_normal_input and self.input_content is None)
 
 
-class ChatAgent(MainAgent):
-    def __init__(
-        self,
-        parent_config_loader,
-        io_adapter,
-        session: AgentSession,
-    ):
-        self.foreground_task: asyncio.Task | None = None
-        super().__init__(
-            parent_config_loader,
-            io_adapter,
-            session,
-        )
-
-    def cancel_foreground_task(self):
-        if self.foreground_task:
-            self.foreground_task.cancel()
-
-    async def run(self):
+class ChatServeDriver:
+    async def serve(self, runner: ServingRunner) -> None:
         """Start the agent with optional input generator"""
+        runtime = runner.runtime
+        assert runtime is not None
         pending_exception: BaseException | None = None
 
         while True:
@@ -56,29 +41,27 @@ class ChatAgent(MainAgent):
                 pending_exception = None
 
             # 2. Send the request and wait for the matching reply
-            reply: ChatInputReply = await self.agent_io.send(input_request)
+            reply: ChatInputReply = await runtime.agent_io.send(input_request)
 
             if reply.is_abort(input_request):
                 break
 
             # 5. Execute the step
             try:
-                step_task = asyncio.create_task(self.step(reply))
-                self.foreground_task = step_task
-
-                result = await step_task
+                result = await runner.run_turn(reply)
 
                 if result and isinstance(result.output, Exception):
                     e = result.output
                     logger.error("An error occurred.", exc_info=e)
-                    self.session.record_error(e)
+                    runner.session.record_turn_error(e)
                     pending_exception = e
 
             except asyncio.CancelledError:
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    raise
                 logger.info("Step cancelled.")
-                await self.agent_io.send("\n[Step cancelled]\n")
-            finally:
-                self.foreground_task = None
+                await runtime.agent_io.send("\n[Step cancelled]\n")
 
             # 6. Send StepDoneEvent to indicate the step is finished
-            await self.agent_io.send(StepDoneEvent())
+            await runtime.agent_io.send(StepDoneEvent())

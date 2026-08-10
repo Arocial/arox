@@ -4,7 +4,8 @@ import pytest
 from pydantic_ai.models.test import TestModel
 
 from arox.core.app import app_setup
-from arox.core.chat import ChatAgent
+from arox.core.chat import ChatServeDriver
+from arox.core.runner import ServingRunner
 from arox.core.session import AgentSession
 from arox.ui.headless import HeadlessIOAdapter
 
@@ -25,16 +26,18 @@ system_prompt = "Hi there."
     )
 
     io_adapter = HeadlessIOAdapter(prompt="say hello")
-    agent = ChatAgent(
-        config_loader,
-        io_adapter=io_adapter,
-        session=AgentSession(path=["dummy"], agent_name="dummy_chat"),
-    )
+    session = AgentSession(path=["dummy"], agent_name="dummy_chat")
 
     test_model = TestModel(custom_output_text="hello world")
-    async with io_adapter, agent:
-        with agent.pydantic_agent.override(model=test_model):
-            await agent.run()
+    async with io_adapter:
+        runner = ServingRunner(session, config_loader, io_adapter, ChatServeDriver())
+        try:
+            agent = await runner.start()
+            with agent.pydantic_agent.override(model=test_model):
+                runner.serve()
+                await runner.wait()
+        finally:
+            await runner.stop()
 
     captured = capsys.readouterr()
     assert "hello world" in captured.out
@@ -57,11 +60,7 @@ system_prompt = "Hi there."
     )
 
     io_adapter = HeadlessIOAdapter(prompt="boom")
-    agent = ChatAgent(
-        config_loader,
-        io_adapter=io_adapter,
-        session=AgentSession(path=["dummy"], agent_name="dummy_chat"),
-    )
+    session = AgentSession(path=["dummy"], agent_name="dummy_chat")
 
     async def failing_step(*args, **kwargs):
         class MockResult:
@@ -69,10 +68,15 @@ system_prompt = "Hi there."
 
         return MockResult()
 
-    agent.step = failing_step  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
-
-    async with io_adapter, agent:
-        await agent.run()
+    async with io_adapter:
+        runner = ServingRunner(session, config_loader, io_adapter, ChatServeDriver())
+        try:
+            agent = await runner.start()
+            agent.step = failing_step  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+            runner.serve()
+            await runner.wait()
+        finally:
+            await runner.stop()
 
     assert io_adapter.error is not None
     assert "step blew up" in str(io_adapter.error)

@@ -1,18 +1,14 @@
-from arox.core.types import AgentInfoUpdate, ServerIdMapping, UserInput
+from arox.core.types import ServerIdMapping, SessionTreeUpdate, UserInput
 
 from .agent import (
     AgentDeps,
-    AgentStatus,
     LLMBaseAgent,
-    MainAgent,
 )
 
 __all__ = [
     "AgentDeps",
-    "AgentInfoUpdate",
-    "AgentStatus",
     "LLMBaseAgent",
-    "MainAgent",
     "ServerIdMapping",
+    "SessionTreeUpdate",
     "UserInput",
 ]

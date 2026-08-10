@@ -20,7 +20,6 @@ def test_config_basic_parsing(tmp_path):
     config_file.write_text("""
     model_ref = "test-model"
     [agent.test_agent]
-    type = "chat"
     plugins = ["subagent"]
     [agent.test_agent.plugin_config.subagent]
     mode = "advanced"
@@ -29,7 +28,7 @@ def test_config_basic_parsing(tmp_path):
     config = ConfigLoader(workspace=tmp_path).reload()
 
     assert config.model_ref == "test-model"
-    assert config.agent["test_agent"].type == "chat"
+    assert config.agent["test_agent"].plugins == ["subagent"]
     assert config.agent["test_agent"].plugin_config == {
         "subagent": {"mode": "advanced"}
     }
@@ -75,16 +74,16 @@ def test_cli_overrides(tmp_path):
     config_file.write_text("""
     model_ref = "file-model"
     [agent.test_agent]
-    type = "chat"
+    description = "file-description"
     """)
 
     cli_overrides = parse_dot_config(
-        ["model_ref=cli-model", "agent.test_agent.type=custom"]
+        ["model_ref=cli-model", "agent.test_agent.description=custom"]
     )
     config = ConfigLoader(workspace=tmp_path, cli_args=cli_overrides).reload()
 
     assert config.model_ref == "cli-model"
-    assert config.agent["test_agent"].type == "custom"
+    assert config.agent["test_agent"].description == "custom"
 
 
 def test_config_include_merges_and_overrides(tmp_path):
@@ -93,7 +92,7 @@ def test_config_include_merges_and_overrides(tmp_path):
     shared.write_text("""
     model_ref = "shared-model"
     [agent.compaction]
-    type = "compaction"
+    description = "compaction"
     system_prompt = "shared"
     task_prompt = "shared-task"
     """)
@@ -109,7 +108,7 @@ def test_config_include_merges_and_overrides(tmp_path):
     config = ConfigLoader(workspace=tmp_path).reload()
     assert config.model_ref == "shared-model"
     comp = config.agent["compaction"]
-    assert comp.type == "compaction"
+    assert comp.description == "compaction"
     assert comp.system_prompt == "host-override"
     assert comp.task_prompt == "shared-task"
 

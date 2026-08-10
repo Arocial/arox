@@ -4,7 +4,6 @@ include = ["../_shared/compaction.toml"]
 main_agent = "general"
 
 [agent.general]
-type = "chat"
 subagents = ["compaction"]
 system_prompt = '''
 You are Arox Assistant, a helpful and capable general-purpose AI assistant.

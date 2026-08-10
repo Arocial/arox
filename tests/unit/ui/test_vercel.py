@@ -1,7 +1,17 @@
+import asyncio
+from pathlib import Path
+
+import pytest
 from pydantic_ai.messages import ModelRequest, TextContent, UserPromptPart
 
+from arox.core.app import app_setup
+from arox.core.session import AgentSession, FileSessionStore, SessionManager
 from arox.core.types import USER_INPUT_ID_KEY
-from arox.ui.vercel_ai import build_state_history
+from arox.ui.vercel_ai import (
+    CreateSessionRequest,
+    VercelStreamServer,
+    build_state_history,
+)
 
 
 def test_build_state_history_carries_user_input_id():
@@ -71,3 +81,60 @@ def test_build_state_history_identical_text_different_anchors():
     assert (
         history[1].get("metadata", {}).get("custom", {}).get(USER_INPUT_ID_KEY) == "b"
     )
+
+
+@pytest.mark.asyncio
+async def test_server_exposes_session_resources(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text("""
+model_ref = "test"
+[app]
+main_agent = "coder"
+[agent.coder]
+""")
+    config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
+    store = FileSessionStore()
+    store.base_dir = tmp_path / "sessions"
+    manager = SessionManager(store)
+    manager.register_session_type(AgentSession)
+    session = AgentSession(
+        path=["root-session"],
+        agent_name="coder",
+        manager=manager,
+    )
+    session.message_history.messages = [
+        ModelRequest(parts=[UserPromptPart(content="hello")])
+    ]
+    await session.save()
+
+    server = VercelStreamServer(manager, config_loader)
+    routes = {getattr(route, "path", None) for route in server.app.routes}
+    assert "/api/agents" not in routes
+    assert "/api/sessions" in routes
+    assert "/api/sessions/{session_id}/start" in routes
+    assert "/api/sessions/{root_session_id}/nodes/{target_session_id}/ws" in routes
+
+    views = await server.list_sessions()
+    assert len(views) == 1
+    assert views[0].id == session.id
+    assert not views[0].active
+
+    state = await server.state(session.id, session.id)
+    assert state["history"][0]["role"] == "user"
+    assert state["model"] == "test"
+
+    async with manager, server.io_adapter:
+        created = await server.create_session(CreateSessionRequest())
+        await asyncio.sleep(0)
+        assert created.active
+        active = await manager.resolve(created.id)
+        assert isinstance(active, AgentSession)
+        assert active.runner.serve_task is not None
+
+        stopped = await server.stop_session(created.id)
+        assert not stopped.active
+        inactive = await manager.resolve(created.id)
+        assert isinstance(inactive, AgentSession)
+        assert not inactive.is_active

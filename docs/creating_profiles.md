@@ -40,7 +40,6 @@ Only `config.toml` is required. Add the other directories when the profile needs
 main_agent = "coordinator"
 
 [agent.coordinator]
-type = "chat"
 plugins = ["core", "subagent"]
 subagents = ["researcher"]
 
@@ -198,4 +197,3 @@ Checking the entry point catches installation and environment mistakes before th
 | Plugin is installed but has no tools | Plugin entry-point name was not enabled for the agent | Add the entry-point name to the agent's `plugins` list |
 | Relative data path points somewhere unexpected | Profile location was confused with workspace | Resolve project data from `agent.workspace` or configure an absolute path |
 | Plugin edits do not appear in a running session | Existing agents retain their plugin instances | Restart Arox or create a new agent |
-

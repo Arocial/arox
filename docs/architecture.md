@@ -2,17 +2,15 @@
 
 Arox is organized around a clear runtime hierarchy, a split IO system, and a small set of extension points on top of a common agent base. This document walks through each layer.
 
-## Hierarchy: App → MainAgent
+## Hierarchy: App → AgentSession + SessionRunner
 
-An **App** is a runnable process (e.g. `arox-coder`) that owns a single **IO adapter** and hosts a **MainAgent**.
+An **App** is a runnable process (e.g. `arox-coder`) that owns a single **IO adapter** and activates an `AgentSession` through a `SessionRunner`.
 
-A **`MainAgent`** assembles a working agent system against a workspace, augmented by plugins:
-
-- Exactly one **main agent** — the user-facing entry point, must subclass `MainAgent` (typically a `ChatAgent`).
-- Zero or more **subagents** — specialized agents run as resumable tasks by the `SubagentPlugin`. The main agent can spawn, wait for, interrupt, inspect, and continue these tasks through callable tools. Live subagent instances are also exposed through the `SUBAGENTS` slot for IO routing and status rendering.
+- Exactly one user-facing session driven by `ServingRunner` and `ChatServeDriver`.
+- Zero or more **subagents** — specialized agents run as resumable tasks by the `SubagentPlugin`. The main agent can spawn, wait for, interrupt, inspect, and continue these tasks through callable tools. Live subagent instances are also exposed through the `SUBAGENTS` slot for IO routing.
 - A resolved `AppConfig` and `AgentConfig` (from `arox/core/config.py`), which names the main agent, its subagents, and their per-agent configuration.
 
-The App drives lifecycle: it constructs the main agent (looked up by entry-point name from `AgentConfig.type`), attaches pre/post step hooks, enters its async context (which in turn starts plugins), and then runs `main_agent.run()`.
+The runner creates the common `LLMBaseAgent` runtime, initializes its plugins and IO resources, and owns all asyncio tasks. `TaskRunner` manages resumable turns; `ServingRunner` manages a long-lived serve loop and its current turn separately.
 
 ### Session management
 
@@ -49,8 +47,9 @@ Built-in adapters:
 ### Types
 
 - **`LLMBaseAgent`** (`arox/core/llm_base.py`) — base class for all LLM agents. Owns model inference via `pydantic_ai`, tool registration (local + MCP), message history, and pre/post step hooks.
-- **`MainAgent`** (`arox/core/llm_base.py`) — abstract subclass a composer's main agent must extend; defines the top-level run loop entry point.
-- **`ChatAgent`** (`arox/core/chat.py`) — concrete `MainAgent` that adds a conversational loop and a `CommandManager` for slash commands (`/model`, `/reset`, …). Standard choice for user-facing agents.
+- **`TaskRunner`** (`arox/core/runner.py`) — owns task turn scheduling and cancellation.
+- **`ServingRunner`** (`arox/core/runner.py`) — owns serve-loop and current-turn scheduling.
+- **`ChatServeDriver`** (`arox/core/chat.py`) — implements the chat request/reply protocol.
 
 ### Extension points
 
@@ -64,7 +63,7 @@ Built-in adapters:
 ## Data flow
 
 1. **User input** arrives at the IO adapter and is forwarded over the main agent's `IOEndpoint`.
-2. **Command check**: the `ChatAgent` tests whether the input is a slash command and, if so, executes it locally without calling the LLM.
+2. **Command check**: the IO adapter tests whether the input is a slash command and, if so, executes it locally without calling the LLM.
 3. **LLM inference**: otherwise the message is appended to history (an `agent_step` event) and sent to the LLM via `pydantic_ai`.
 4. **Tool execution**: tool calls (local, MCP, or a subagent) are dispatched and their results fed back to the LLM.
 5. **Response**: the final text is streamed back through the agent's IO channel and rendered by the adapter.

@@ -16,36 +16,33 @@ uv run mkdocs serve  # Serve docs at http://127.0.0.1:3420
 
 ## Architecture
 
-### Hierarchy: App → MainAgent (with Plugins)
+### Hierarchy: App → AgentSession + SessionRunner
 
-An **App** is a runnable process that owns one `IOAdapter` and hosts a **MainAgent**. The `MainAgent` runs the user-facing loop and is driven by `AppConfig` and `AgentConfig`. Plugins are loaded in `AgentConfig.plugins` order and receive their per-plugin settings from `AgentConfig.plugin_config`, keyed by the same plugin name used in `plugins`. Subagents are managed by the `SubagentPlugin`: its default `simple` mode exposes only `delegate_task` and waits for each one-shot delegation to complete, while `mode = "advanced"` exposes the resumable task controls (`spawn_agent`, `followup_task`, `wait_agent`, `interrupt_agent`, and `list_agents`) and surfaces active subagent runtimes through the `SUBAGENTS` slot. Subagent types are defined statically in configuration; advanced-mode tasks are represented directly by child `AgentSession`s, persist their task metadata, and instantiate ephemeral runtime agents on demand for each turn. Running tasks are cancelled and live resources are closed when the parent agent stops.
+An **App** is a runnable process that owns one `IOAdapter` and activates an `AgentSession` through a `SessionRunner`. `ServingRunner` owns the user-facing serve loop and `TaskRunner` owns resumable subagent turns. Both create the same `LLMBaseAgent` runtime. Plugins are loaded in `AgentConfig.plugins` order and receive their settings from `AgentConfig.plugin_config`. The `SubagentPlugin` exposes synchronous delegation in `simple` mode and resumable task controls in `advanced` mode.
 
 ```toml
 [agent.coder.plugin_config.subagent]
 mode = "advanced"
 ```
 
-Agent types and which agent to instantiate come from config (`arox/core/config.py`): `ConfigLoader` resolves `AppConfig` / `AgentConfig` from layered YAML plus CLI overrides, caches unchanged source files, and exposes the active snapshot through `current_config`; callers use `reload()` to pick up changed config/include/agent/skill files. Apps retain the base loader; creating a runtime agent derives an independent loader for the agent's workspace while preserving the app, profile, and CLI context. Failed runtime reloads preserve the last valid `Config` snapshot.
+`ConfigLoader` resolves `AppConfig` / `AgentConfig` from layered YAML plus CLI overrides, caches unchanged source files, and exposes the active snapshot through `current_config`; callers use `reload()` to pick up changed config/include/agent/skill files. Agent configuration no longer selects a runtime class.
 
 **Session-centric architecture** (`arox/core/session.py` and `arox/core/llm_base/agent.py`):
 - **`AgentSession`** is the persistent, authoritative entity tracking:
   - Identity and hierarchy (`id`, `path`, `owner`, `children`).
-  - Task metadata (`task_name`, `target`, `initial_message`, `last_message`, `last_result`, `last_error`).
-  - Session usability lifecycle (`SessionStatus`: `ACTIVE`, `CLOSED`).
-  - Ephemeral runtime presence via `session.has_runtime` / `session.runtime`.
+  - Task metadata (`task_name`, `target`, `initial_message`, `last_message`, `result`, `error`).
+  - Ephemeral execution presence via `session.runner`; runners are not persisted.
   - Message history is persisted as segments on the session and is the runtime source of truth. Events store only audit metadata; user turns are located through the existing `server_message_id` carried in `UserInput.input_content`. Compaction archives the processor's original messages, including the current user request, while reset archives the active segment, so historical forks can locate and slice the appropriate messages without replaying events or duplicating message payloads or IDs.
-  - Agent sessions persist only the agent name and type; full `AgentConfig` is resolved dynamically from active configuration. The main agent's `AgentSession` is the top-level session; child tasks and subagents nest beneath it.
+  - Agent sessions persist only the agent name; full `AgentConfig` is resolved dynamically. The user-facing `AgentSession` is the top-level session; child tasks nest beneath it.
 - **`LLMBaseAgent`** is an ephemeral runtime owning live/expensive resources (Pydantic AI agent, MCP clients, plugins, tools, IO channels).
-  - Runtime lifecycle state machine (`AgentStatus`: `UNINITIALIZED`, `IDLE`, `RUNNING`, `STOPPED`).
-  - Callers construct or load an authoritative `AgentSession` and instantiate an ephemeral runtime via `session.create_agent(config_loader, io_adapter)`.
+  - It executes one turn through `step()` and does not own asyncio tasks.
+  - A `SessionRunner` creates, enters, and closes the runtime; startup is serialized through the session and failed initialization rolls back the runner binding.
   - Child sessions are spawned via `parent_session.create_child_session(...)`.
   - Runtime identity matches `session.id` (`agent.uuid == session.id`).
-  - Agent runtime context (`async with agent:`) binds `session.runtime`, initializes plugins/tools/channels, sets `AgentStatus.IDLE`, and on exit handles cleanup, records interruption/errors to `session`, sets `AgentStatus.STOPPED`, unbinds `session.runtime`, and saves the session.
-  - `step()` is the single public request-execution method and transitions agent status `IDLE -> RUNNING -> IDLE`; repeated calls continue from the session's message history.
-  - Runtime context ownership and delegated-task result/error state are managed by the caller. `SubagentPlugin` records parent calls, enters child runtimes, calls `step()`, and updates child task sessions.
-  - Subagent task display states (such as `running`, `completed`, `interrupted`, `error`, `pending`, `idle`, `closed`) are derived on-the-fly from live runtime/task state and session result/error data.
-  - Subsequent turns reuse the persistent `AgentSession` and reconstruct a fresh runtime via `session.create_agent(config_loader, io_adapter)`.
-- `SessionManager` coordinates with `SessionStore` (default `FileSessionStore`) to persist sessions to disk with debouncing and age-based cleanup.
+  - `TaskRunner.run()` starts one turn; `wait()` and `cancel()` manage it while retaining the runtime for follow-ups.
+  - `ServingRunner` separately owns a long-lived serve task and the current turn task. `cancel_turn()` preserves the serve loop; `stop()` closes both tasks and the runtime.
+  - `ChatServeDriver` implements the concrete request/reply protocol used by `ServingRunner`.
+- `SessionManager` coordinates with `SessionStore` (default `FileSessionStore`) and maintains one authoritative in-process Session identity map keyed by full path. Its tree API (`resolve`, `list_roots`, `children_of`, `walk`, `find`, `stop_tree`, `delete_tree`, and `remove_child`) transparently prefers cached/live instances over storage, while manager shutdown stops every live root tree before flushing pending saves.
 - Resuming is done via the `session_id` passed to the App. The `CorePlugin` provides the `/fork` command.
 
 ### IO system
@@ -61,9 +58,10 @@ IO is split into two layers: per-agent channels and app-level adapters.
 ### Agents
 
 **Types**
-- **`LLMBaseAgent`** (`arox/core/llm_base/agent.py`): base class for all LLM agents. Owns model inference via `pydantic_ai`, tool registration, MCP clients, message history, and pre/post step hooks.
-- **`MainAgent`** (`arox/core/llm_base/agent.py`): abstract subclass that an App's main agent must extend; hosts the user-driven run loop entry point.
-- **`ChatAgent`** (`arox/core/chat.py`): concrete `MainAgent` adding a conversational loop and `CommandManager` for slash commands (e.g. `/model`, `/reset`). Standard choice for user-facing agents.
+- **`LLMBaseAgent`** (`arox/core/llm_base/agent.py`): the single LLM runtime. Owns inference, plugins, tools, MCP clients, IO channels, and single-turn `step()` execution.
+- **`TaskRunner`** (`arox/core/runner.py`): manages resumable task turns.
+- **`ServingRunner`** (`arox/core/runner.py`): manages the long-lived interaction loop and its current turn.
+- **`ChatServeDriver`** (`arox/core/chat.py`): implements the chat request/reply loop.
 
 **Extension points**
 - **`Plugin`** (`arox/core/plugin.py`): primary extension unit. A plugin declares:
