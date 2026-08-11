@@ -12,10 +12,10 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
+from arox.core.agent_runtime import AgentRuntime
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter
-from arox.core.llm_base import LLMBaseAgent
-from arox.core.runner import TaskRunner
+from arox.core.runner import TaskSessionRunner
 from arox.core.session import (
     AgentSession,
     CommandEvent,
@@ -326,7 +326,7 @@ class TestAgentSession:
 
         dumped = agent_session.model_dump(mode="json")
         assert "runner" not in dumped
-        assert agent_session.agent is runtime
+        assert agent_session.runtime is runtime
 
     def test_turn_error_helper(self):
         agent_session = AgentSession(agent_name="main")
@@ -414,14 +414,14 @@ system_prompt = "Hello worker."
             agent_name="test_worker",
             path=["worker-session-id"],
         )
-        runner = TaskRunner(session, config_loader, io_adapter)
-        agent = await runner.start()
+        runner = TaskSessionRunner(session, config_loader, io_adapter)
+        runtime = await runner.start()
         try:
-            assert agent.uuid == "worker-session-id"
-            assert agent.session is session
-            assert agent.message_history is session.message_history.messages
-            assert agent.name == "test_worker"
-            assert type(agent) is LLMBaseAgent
+            assert runtime.uuid == "worker-session-id"
+            assert runtime.session is session
+            assert runtime.message_history is session.message_history.messages
+            assert runtime.name == "test_worker"
+            assert type(runtime) is AgentRuntime
         finally:
             await runner.stop()
 
@@ -442,7 +442,7 @@ model_ref = "test"
         with pytest.raises(
             ValueError, match="Agent config for 'unconfigured_agent' not found"
         ):
-            await TaskRunner(session, config_loader, io_adapter).start()
+            await TaskSessionRunner(session, config_loader, io_adapter).start()
 
     @pytest.mark.asyncio
     async def test_agent_config_type_is_not_runtime_dispatch(
@@ -461,10 +461,10 @@ model_ref = "test"
         session = AgentSession(
             agent_name="broken_agent",
         )
-        runner = TaskRunner(session, config_loader, io_adapter)
-        agent = await runner.start()
+        runner = TaskSessionRunner(session, config_loader, io_adapter)
+        runtime = await runner.start()
         try:
-            assert type(agent) is LLMBaseAgent
+            assert type(runtime) is AgentRuntime
         finally:
             await runner.stop()
 

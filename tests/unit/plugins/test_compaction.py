@@ -14,7 +14,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from arox.core.llm_base import LLMBaseAgent
+from arox.core.agent_runtime import AgentRuntime
 from arox.core.session import AgentSession, CompactionEvent
 from arox.plugins.compaction import CompactionPlugin
 from arox.plugins.slots import PERSISTENT_CONTEXT, SUBAGENTS
@@ -36,8 +36,8 @@ class _FakeAgent:
 @pytest.fixture(autouse=True)
 def mock_env(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fake")
-    monkeypatch.setattr("arox.core.llm_base.LLMBaseAgent.__aenter__", AsyncMock())
-    monkeypatch.setattr("arox.core.llm_base.LLMBaseAgent.__aexit__", AsyncMock())
+    monkeypatch.setattr("arox.core.agent_runtime.AgentRuntime.__aenter__", AsyncMock())
+    monkeypatch.setattr("arox.core.agent_runtime.AgentRuntime.__aexit__", AsyncMock())
 
 
 class _MockAgent:
@@ -107,7 +107,7 @@ class _MockAgent:
 
 
 def _plugin(agent: _MockAgent) -> CompactionPlugin:
-    return CompactionPlugin(cast(LLMBaseAgent, agent))
+    return CompactionPlugin(cast(AgentRuntime, agent))
 
 
 def _ctx(total_tokens: int):

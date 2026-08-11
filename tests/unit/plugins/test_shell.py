@@ -255,7 +255,7 @@ async def test_session_delete_removes_shell_output(plugin, monkeypatch):
     output_path = _output_path(result)
     assert output_path.exists()
 
-    session = plugin.agent.session
+    session = plugin.runtime.session
     await session.manager.session_store.delete_session(session.path)
     assert not output_path.exists()
 
@@ -520,8 +520,8 @@ async def test_background_kills_child_process_tree(plugin):
 @pytest.mark.asyncio
 async def test_env_vars_restoration(plugin, monkeypatch):
     # Setup: mock app config with some env vars
-    plugin.agent.config.app.env_vars = {"TEST_VAR": "arox_value"}
-    plugin.agent.config.app.api_keys = {"test_provider": "arox_key"}
+    plugin.runtime.config.app.env_vars = {"TEST_VAR": "arox_value"}
+    plugin.runtime.config.app.api_keys = {"test_provider": "arox_key"}
 
     # Mock os.environ and original env
     monkeypatch.setenv("TEST_VAR", "arox_value")

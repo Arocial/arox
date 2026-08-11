@@ -10,7 +10,7 @@ from arox.core.session import AgentSession, UserInputEvent
 from arox.plugins.slots import AGENT_INFO
 
 if TYPE_CHECKING:
-    from arox.core.llm_base import LLMBaseAgent
+    from arox.core.agent_runtime import AgentRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -73,9 +73,9 @@ def user_turns_from_session(session: AgentSession) -> list[tuple[str, str]]:
 
 
 class CorePlugin(Plugin):
-    def __init__(self, agent: Any):
-        super().__init__(agent)
-        self.agent: "LLMBaseAgent" = agent
+    def __init__(self, runtime: Any):
+        super().__init__(runtime)
+        self.runtime: "AgentRuntime" = runtime
         self._pending_skills: list[str] = []
 
     def commands(self):
@@ -89,12 +89,12 @@ class CorePlugin(Plugin):
     async def handle_set_model(self, event: SetModelEvent) -> str:
         if not event.model_ref:
             return "Please specify a model name"
-        self.agent.override_model(event.model_ref)
+        self.runtime.override_model(event.model_ref)
         return f"Model switched to {event.model_ref}"
 
     async def complete_model_ref(self, req: CompletionRequest):
         typed = req.current_token.lower()
-        for ref in self.agent.config.available_models:
+        for ref in self.runtime.config.available_models:
             if typed and typed not in ref.lower():
                 continue
             score = 2.0 if ref.lower().startswith(typed) else 1.0 if typed else 0.0
@@ -106,18 +106,18 @@ class CorePlugin(Plugin):
             )
 
     async def handle_info(self, event: InfoEvent) -> str:
-        self.agent.reload_config()
+        self.runtime.reload_config()
         lines = [
-            f"Current model: {self.agent.provider_model or 'Unknown'}",
-            f"Usage: total: {self.agent.run_info.total_tokens}, context: {self.agent.run_info.context_tokens}",
+            f"Current model: {self.runtime.provider_model or 'Unknown'}",
+            f"Usage: total: {self.runtime.run_info.total_tokens}, context: {self.runtime.run_info.context_tokens}",
         ]
-        for info in await self.agent.invoke_slot(AGENT_INFO) or []:
+        for info in await self.runtime.invoke_slot(AGENT_INFO) or []:
             if info:
                 lines.append(info)
         return "\n".join(lines)
 
     async def complete_fork(self, req: CompletionRequest):
-        session = self.agent.session
+        session = self.runtime.session
         if not session:
             return
         turns = user_turns_from_session(session)
@@ -141,7 +141,7 @@ class CorePlugin(Plugin):
             )
 
     async def handle_fork(self, event: ForkEvent) -> str:
-        agent_session = self.agent.session
+        agent_session = self.runtime.session
 
         if not event.event_id:
             return "Cannot fork: specify a user turn."
@@ -165,7 +165,7 @@ class CorePlugin(Plugin):
         loaded = []
         not_found = []
         for skill_name in event.skills:
-            if skill_name in self.agent.config.skills:
+            if skill_name in self.runtime.config.skills:
                 self._pending_skills.append(skill_name)
                 loaded.append(skill_name)
             else:
@@ -180,7 +180,7 @@ class CorePlugin(Plugin):
 
     async def complete_skill(self, req: CompletionRequest):
         typed = req.current_token.lower()
-        for skill_name in self.agent.config.skills:
+        for skill_name in self.runtime.config.skills:
             if typed and typed not in skill_name.lower():
                 continue
             yield CompletionItem(
@@ -197,7 +197,7 @@ class CorePlugin(Plugin):
             return messages
 
         if messages and isinstance(messages[-1], ModelRequest):
-            extra_content = self.agent.build_skill_prompts(self._pending_skills)
+            extra_content = self.runtime.build_skill_prompts(self._pending_skills)
 
             self._pending_skills = []
 

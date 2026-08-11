@@ -21,8 +21,8 @@ class WebSearchPlugin(Plugin):
         self, tool: NativeToolT
     ) -> Callable[[RunContext[Any]], NativeToolT | None]:
         def prepare(ctx: RunContext[Any]) -> NativeToolT | None:
-            agent = ctx.deps.agent
-            provider_config = agent.config.provider.get(agent.provider_name)
+            runtime = ctx.deps.runtime
+            provider_config = runtime.config.provider.get(runtime.provider_name)
             if (
                 provider_config is not None
                 and tool.kind in provider_config.disabled_native_tools

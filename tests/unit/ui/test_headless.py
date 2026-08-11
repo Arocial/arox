@@ -5,7 +5,7 @@ from pydantic_ai.models.test import TestModel
 
 from arox.core.app import app_setup
 from arox.core.chat import ChatServeDriver
-from arox.core.runner import ServingRunner
+from arox.core.runner import ServeRunner
 from arox.core.session import AgentSession
 from arox.ui.headless import HeadlessIOAdapter
 
@@ -30,10 +30,10 @@ system_prompt = "Hi there."
 
     test_model = TestModel(custom_output_text="hello world")
     async with io_adapter:
-        runner = ServingRunner(session, config_loader, io_adapter, ChatServeDriver())
+        runner = ServeRunner(session, config_loader, io_adapter, ChatServeDriver())
         try:
-            agent = await runner.start()
-            with agent.pydantic_agent.override(model=test_model):
+            runtime = await runner.start()
+            with runtime._pydantic_agent.override(model=test_model):
                 runner.serve()
                 await runner.wait()
         finally:
@@ -62,17 +62,17 @@ system_prompt = "Hi there."
     io_adapter = HeadlessIOAdapter(prompt="boom")
     session = AgentSession(path=["dummy"], agent_name="dummy_chat")
 
-    async def failing_step(*args, **kwargs):
+    async def failing_turn(*args, **kwargs):
         class MockResult:
             output = RuntimeError("step blew up")
 
         return MockResult()
 
     async with io_adapter:
-        runner = ServingRunner(session, config_loader, io_adapter, ChatServeDriver())
+        runner = ServeRunner(session, config_loader, io_adapter, ChatServeDriver())
         try:
-            agent = await runner.start()
-            agent.step = failing_step  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+            runtime = await runner.start()
+            runtime.run_turn = failing_turn  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
             runner.serve()
             await runner.wait()
         finally:

@@ -5,7 +5,7 @@ from typing import Any, ClassVar
 
 from pydantic_ai import ModelMessage, ModelRequest, RunContext, UserPromptPart
 
-from arox.core.llm_base import LLMBaseAgent
+from arox.core.agent_runtime import AgentRuntime
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, tool
 from arox.plugins.slots import PERSISTENT_CONTEXT, RUN_SUBAGENT
 
@@ -29,8 +29,8 @@ class CompactEvent(CommandEvent):
 
 
 class CompactionPlugin(Plugin):
-    def __init__(self, agent: LLMBaseAgent):
-        super().__init__(agent)
+    def __init__(self, runtime: AgentRuntime):
+        super().__init__(runtime)
         self._last_total_tokens = 0
         self._cached_threshold_resolved = False
         self._cached_threshold_value = None
@@ -38,7 +38,7 @@ class CompactionPlugin(Plugin):
         self._compaction_instructions = ""
 
     def _resolve_token_threshold(self) -> int | None:
-        """Resolve effective token threshold for the agent's current model.
+        """Resolve effective token threshold for the runtime's current model.
 
         Order of precedence: model-level `compaction_threshold`, then global
         `compaction_threshold`. Float values in (0, 1] are treated as a ratio
@@ -47,18 +47,18 @@ class CompactionPlugin(Plugin):
         if self._cached_threshold_resolved:
             return self._cached_threshold_value
 
-        agent = self.agent
-        model_cfg = agent.model_config
+        runtime = self.runtime
+        model_cfg = runtime.model_config
         threshold: int | float | None = None
         if model_cfg is not None and model_cfg.compaction_threshold is not None:
             threshold = model_cfg.compaction_threshold
         else:
-            threshold = agent.config.compaction_threshold
+            threshold = runtime.config.compaction_threshold
 
         resolved_val = None
         if threshold is not None:
             if isinstance(threshold, float) and 0 < threshold <= 1:
-                max_tokens = (agent.model_params or {}).get("max_tokens")
+                max_tokens = (runtime.model_params or {}).get("max_tokens")
                 if max_tokens:
                     resolved_val = int(threshold * max_tokens)
             else:
@@ -85,11 +85,11 @@ class CompactionPlugin(Plugin):
         return "Conversation history compaction requested."
 
     async def handle_compact(self, event: CompactEvent):
-        agent = self.agent
-        messages_to_compact = list(agent.message_history)
+        runtime = self.runtime
+        messages_to_compact = list(runtime.message_history)
 
         if not messages_to_compact:
-            await agent.agent_io.send("No history to compact.")
+            await runtime.agent_io.send("No history to compact.")
             return
 
         compacted_messages = await self._compact(
@@ -112,14 +112,14 @@ class CompactionPlugin(Plugin):
     ) -> None:
         """Record a ``compaction`` event.
 
-        ``step_boundary`` indicates if the compaction is inside one agent step.
+        ``step_boundary`` indicates if the compaction is inside one runtime turn.
         """
-        agent = self.agent
-        agent.run_info.llm_context_id = str(uuid.uuid4())
-        agent.session.record_compaction(
+        runtime = self.runtime
+        runtime.run_info.llm_context_id = str(uuid.uuid4())
+        runtime.session.record_compaction(
             compacted,
             step_boundary,
-            agent.run_info.llm_context_id,
+            runtime.run_info.llm_context_id,
             previous_messages=previous_messages,
         )
 
@@ -138,7 +138,7 @@ class CompactionPlugin(Plugin):
             if threshold is None:
                 return messages
 
-            context_tokens = self.agent.run_info.context_tokens
+            context_tokens = self.runtime.run_info.context_tokens
             if context_tokens <= threshold:
                 return messages
 
@@ -155,7 +155,7 @@ class CompactionPlugin(Plugin):
         from pydantic_ai._agent_graph import _first_new_message_index
 
         if ctx.run_id:
-            self.agent.new_message_index = _first_new_message_index(
+            self.runtime.new_message_index = _first_new_message_index(
                 messages,
                 ctx.run_id,
                 resumed_request=None,
@@ -166,14 +166,14 @@ class CompactionPlugin(Plugin):
     async def _compact(
         self, messages: list[ModelMessage], extra_instructions: str = ""
     ) -> list[ModelMessage]:
-        agent = self.agent
+        runtime = self.runtime
 
         if not messages:
             return messages
 
-        agent_config = agent.config.agent.get(COMPACTION_AGENT_NAME)
+        agent_config = runtime.config.agent.get(COMPACTION_AGENT_NAME)
         if not agent_config:
-            await agent.agent_io.send(
+            await runtime.agent_io.send(
                 "Compaction agent not configured; skipping compaction."
             )
             logger.warning(
@@ -190,14 +190,14 @@ class CompactionPlugin(Plugin):
         if extra_instructions:
             prompt = f"{prompt}\n\nAdditional instructions: {extra_instructions}"
 
-        await agent.agent_io.send(
+        await runtime.agent_io.send(
             "Context size is large. Compacting conversation history..."
         )
 
         def setup_compaction_subagent(subagent: Any) -> None:
             subagent.message_history = messages.copy()
 
-        summary = await agent.invoke_slot(
+        summary = await runtime.invoke_slot(
             RUN_SUBAGENT,
             COMPACTION_AGENT_NAME,
             prompt,
@@ -214,8 +214,8 @@ class CompactionPlugin(Plugin):
         compacted_messages: list[ModelMessage] = [new_request]
 
         # Add persistent context (e.g. agents.md)
-        for persistent_messages in await agent.invoke_slot(PERSISTENT_CONTEXT) or []:
+        for persistent_messages in await runtime.invoke_slot(PERSISTENT_CONTEXT) or []:
             compacted_messages.extend(persistent_messages)
 
-        await agent.agent_io.send("Conversation history compacted successfully.")
+        await runtime.agent_io.send("Conversation history compacted successfully.")
         return compacted_messages

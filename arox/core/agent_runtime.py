@@ -37,6 +37,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models import infer_model
 
 from arox import utils
+from arox.core._pydantic_ai_hack import infer_provider
 from arox.core.config import AgentConfig, Config, ConfigLoader
 from arox.core.io import (
     AbstractIOAdapter,
@@ -61,18 +62,16 @@ from arox.core.slot import (
 from arox.core.types import ServerIdMapping, SessionTreeUpdate, UserInput
 from arox.plugins.slots import SYSTEM_PROMPT
 
-from ._pydantic_ai_hack import infer_provider
-
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class AgentDeps:
     agent_io: IOEndpoint
-    agent: "LLMBaseAgent"
+    runtime: "AgentRuntime"
 
 
-class LLMBaseAgent(IOHost):
+class AgentRuntime(IOHost):
     def __init__(
         self,
         parent_config_loader: ConfigLoader,
@@ -108,7 +107,7 @@ class LLMBaseAgent(IOHost):
         )
         capabilities.append(self.builtin_hooks)
 
-        self.pydantic_agent = Agent[AgentDeps, str](
+        self._pydantic_agent = Agent[AgentDeps, str](
             self.model,
             instructions=self.system_prompt,
             capabilities=capabilities,
@@ -519,7 +518,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
     ) -> AgentRunResult[str]:
         """Run a single LLM inference with fallback model handling.
 
-        Stateless w.r.t. the agent's own message_history / agent_session: the
+        Stateless w.r.t. the runtime's own message history/session: the
         caller passes the already-composed ``user_prompt`` and message_history
         in and decides what to do with the result. If an exception occurs, it is
         captured in the returned AgentRunResult's metadata under the "exception" key.
@@ -534,14 +533,14 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                     )
 
                 self.run_info.run_id = str(uuid.uuid4())
-                result = await self.pydantic_agent.run(
+                result = await self._pydantic_agent.run(
                     user_prompt,
                     model=self.model,
                     event_stream_handler=self.handle_event,
                     model_settings=ModelSettings(**self.model_params),
                     message_history=message_history,
                     usage_limits=UsageLimits(request_limit=self.request_limit),
-                    deps=AgentDeps(agent_io=self.agent_io, agent=self),
+                    deps=AgentDeps(agent_io=self.agent_io, runtime=self),
                 )
 
                 if isinstance(result.output, ModelAPIError):
@@ -558,7 +557,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 
         return result
 
-    async def step(
+    async def run_turn(
         self,
         user_input: UserInput | str | None = None,
     ) -> AgentRunResult[str]:

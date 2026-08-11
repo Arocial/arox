@@ -5,9 +5,9 @@ from typing import Any, Protocol
 
 from pydantic_ai import AgentRunResult
 
+from arox.core.agent_runtime import AgentRuntime
 from arox.core.config import ConfigLoader
 from arox.core.io import AbstractIOAdapter
-from arox.core.llm_base import LLMBaseAgent
 from arox.core.session import AgentSession
 from arox.core.types import UserInput
 
@@ -26,16 +26,16 @@ class SessionRunner(ABC):
         self.session = session
         self.config_loader = config_loader
         self.io_adapter = io_adapter
-        self.runtime: LLMBaseAgent | None = None
+        self.runtime: AgentRuntime | None = None
 
-    async def start(self) -> LLMBaseAgent:
+    async def start(self) -> AgentRuntime:
         async with self.session._runner_lock:
             if self.session.runner is not None:
                 if self.session.runner is self and self.runtime is not None:
                     return self.runtime
                 raise RuntimeError("Session is already active.")
 
-            runtime = LLMBaseAgent(
+            runtime = AgentRuntime(
                 parent_config_loader=self.config_loader,
                 io_adapter=self.io_adapter,
                 session=self.session,
@@ -77,7 +77,7 @@ class SessionRunner(ABC):
         """Stop all execution and release the runtime."""
 
 
-class TaskRunner(SessionRunner):
+class TaskSessionRunner(SessionRunner):
     def __init__(
         self,
         session: AgentSession,
@@ -91,7 +91,7 @@ class TaskRunner(SessionRunner):
     def current_task(self) -> asyncio.Task[AgentRunResult[str]] | None:
         return self._task
 
-    def run(
+    def start_turn(
         self, user_input: UserInput | str | None = None
     ) -> asyncio.Task[AgentRunResult[str]]:
         if self.runtime is None:
@@ -102,7 +102,7 @@ class TaskRunner(SessionRunner):
         async def execute() -> AgentRunResult[str]:
             try:
                 assert self.runtime is not None
-                return await self.runtime.step(user_input)
+                return await self.runtime.run_turn(user_input)
             finally:
                 if self._task is task:
                     self._task = None
@@ -133,10 +133,10 @@ class TaskRunner(SessionRunner):
 
 
 class ServeDriver(Protocol):
-    async def serve(self, runner: "ServingRunner") -> None: ...
+    async def serve(self, runner: "ServeRunner") -> None: ...
 
 
-class ServingRunner(SessionRunner):
+class ServeRunner(SessionRunner):
     def __init__(
         self,
         session: AgentSession,
@@ -199,7 +199,7 @@ class ServingRunner(SessionRunner):
         task.add_done_callback(log_failure)
         return task
 
-    def run_turn(
+    def start_turn(
         self, user_input: UserInput | str | None = None
     ) -> asyncio.Task[AgentRunResult[str]]:
         if self.runtime is None:
@@ -210,7 +210,7 @@ class ServingRunner(SessionRunner):
         async def execute() -> AgentRunResult[str]:
             try:
                 assert self.runtime is not None
-                return await self.runtime.step(user_input)
+                return await self.runtime.run_turn(user_input)
             finally:
                 if self._turn_task is task:
                     self._turn_task = None

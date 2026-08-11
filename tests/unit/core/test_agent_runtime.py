@@ -12,10 +12,10 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
+from arox.core.agent_runtime import AgentRuntime
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter, RequestEvent
-from arox.core.llm_base import LLMBaseAgent
-from arox.core.runner import TaskRunner
+from arox.core.runner import TaskSessionRunner
 from arox.core.session import AgentSession
 from arox.plugins.core import SetModelEvent
 
@@ -26,14 +26,14 @@ class _StubIOAdapter(AbstractIOAdapter):
 
 
 @asynccontextmanager
-async def _managed_runtime(agent, config_loader, io_adapter):
-    runner = SimpleNamespace(runtime=agent)
-    agent.session.runner = runner
+async def _managed_runtime(runtime, config_loader, io_adapter):
+    runner = SimpleNamespace(runtime=runtime)
+    runtime.session.runner = runner
     try:
-        async with agent:
-            yield agent
+        async with runtime:
+            yield runtime
     finally:
-        agent.session.runner = None
+        runtime.session.runner = None
 
 
 @pytest.mark.asyncio
@@ -77,7 +77,7 @@ skills = ["skill1"]
 
     io_adapter = _StubIOAdapter()
 
-    agent = LLMBaseAgent(
+    runtime = AgentRuntime(
         config_loader,
         io_adapter=io_adapter,
         session=AgentSession(
@@ -86,9 +86,9 @@ skills = ["skill1"]
         ),
     )
 
-    async with _managed_runtime(agent, config_loader, agent.io_adapter):
-        assert "skill1" in agent.skill_catalog
-    assert "skill2" not in agent.skill_catalog
+    async with _managed_runtime(runtime, config_loader, runtime.io_adapter):
+        assert "skill1" in runtime.skill_catalog
+    assert "skill2" not in runtime.skill_catalog
 
 
 @pytest.mark.asyncio
@@ -132,7 +132,7 @@ skills = "skill2"
 
     io_adapter = _StubIOAdapter()
 
-    agent = LLMBaseAgent(
+    runtime = AgentRuntime(
         config_loader,
         io_adapter=io_adapter,
         session=AgentSession(
@@ -141,9 +141,9 @@ skills = "skill2"
         ),
     )
 
-    async with _managed_runtime(agent, config_loader, agent.io_adapter):
-        assert "skill1" not in agent.skill_catalog
-    assert "skill2" in agent.skill_catalog
+    async with _managed_runtime(runtime, config_loader, runtime.io_adapter):
+        assert "skill1" not in runtime.skill_catalog
+    assert "skill2" in runtime.skill_catalog
 
 
 @pytest.mark.asyncio
@@ -186,7 +186,7 @@ system_prompt = "Hi there."
 
     io_adapter = _StubIOAdapter()
 
-    agent = LLMBaseAgent(
+    runtime = AgentRuntime(
         config_loader,
         io_adapter=io_adapter,
         session=AgentSession(
@@ -195,9 +195,9 @@ system_prompt = "Hi there."
         ),
     )
 
-    async with _managed_runtime(agent, config_loader, agent.io_adapter):
-        assert "skill1" in agent.skill_catalog
-    assert "skill2" in agent.skill_catalog
+    async with _managed_runtime(runtime, config_loader, runtime.io_adapter):
+        assert "skill1" in runtime.skill_catalog
+    assert "skill2" in runtime.skill_catalog
 
 
 @pytest.mark.asyncio
@@ -219,7 +219,7 @@ system_prompt = "Hi."
 
     received: list[RequestEvent] = []
 
-    agent = LLMBaseAgent(
+    runtime = AgentRuntime(
         config_loader,
         io_adapter=_StubIOAdapter(),
         session=AgentSession(path=["dummy"], agent_name="test_agent"),
@@ -228,11 +228,11 @@ system_prompt = "Hi."
     async def handler(event):
         received.append(event)
 
-    agent.register_request_handler(CustomEvent, handler)
+    runtime.register_request_handler(CustomEvent, handler)
 
-    async with _managed_runtime(agent, config_loader, agent.io_adapter):
+    async with _managed_runtime(runtime, config_loader, runtime.io_adapter):
         ev = CustomEvent()
-        await agent.adapter_io.send(ev)
+        await runtime.adapter_io.send(ev)
 
     assert received == [ev]
 
@@ -251,34 +251,34 @@ system_prompt = "Hi."
         cli_args={"workspace": str(tmp_path)},
     )
 
-    agent = LLMBaseAgent(
+    runtime = AgentRuntime(
         config_loader,
         io_adapter=_StubIOAdapter(),
         session=AgentSession(path=["dummy"], agent_name="test_agent"),
     )
 
     calls: list[str] = []
-    original_set_model = agent.set_model
+    original_set_model = runtime.set_model
 
     def spy(ref):
         calls.append(ref)
         original_set_model(ref)
 
-    agent.set_model = spy  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+    runtime.set_model = spy  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
-    async with _managed_runtime(agent, config_loader, agent.io_adapter):
+    async with _managed_runtime(runtime, config_loader, runtime.io_adapter):
         calls.clear()
-        agent.register_request_handler(
-            SetModelEvent, lambda e: agent.set_model(e.model_ref)
+        runtime.register_request_handler(
+            SetModelEvent, lambda e: runtime.set_model(e.model_ref)
         )
-        await agent.adapter_io.send(SetModelEvent(model_ref="test"))
+        await runtime.adapter_io.send(SetModelEvent(model_ref="test"))
 
     assert calls == ["test"]
-    assert agent.model_ref == "test"
+    assert runtime.model_ref == "test"
 
 
 def test_build_skill_catalog():
-    assert LLMBaseAgent._build_skill_catalog({}) == ""
+    assert AgentRuntime._build_skill_catalog({}) == ""
 
     skills = {
         "test_skill": {
@@ -288,7 +288,7 @@ def test_build_skill_catalog():
         }
     }
 
-    catalog = LLMBaseAgent._build_skill_catalog(skills)
+    catalog = AgentRuntime._build_skill_catalog(skills)
     assert "<available_skills>" in catalog
     assert "<name>test_skill</name>" in catalog
     assert "<description>A test skill</description>" in catalog
@@ -310,7 +310,7 @@ request_limit = 1
 request_limit_prompt = "Check your progress and continue."
 """)
     config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
-    agent = LLMBaseAgent(
+    runtime = AgentRuntime(
         config_loader,
         io_adapter=_StubIOAdapter(),
         session=AgentSession(path=["dummy"], agent_name="test_agent"),
@@ -322,7 +322,7 @@ request_limit_prompt = "Check your progress and continue."
         tool_executions += 1
         return "pong"
 
-    agent.add_local_tool(ping)
+    runtime.add_local_tool(ping)
     requests = []
 
     async def stream_function(messages, info):
@@ -332,15 +332,15 @@ request_limit_prompt = "Check your progress and continue."
         else:
             yield "done"
 
-    async with _managed_runtime(agent, config_loader, agent.io_adapter):
-        with agent.pydantic_agent.override(
+    async with _managed_runtime(runtime, config_loader, runtime.io_adapter):
+        with runtime._pydantic_agent.override(
             model=FunctionModel(stream_function=stream_function)
         ):
-            result = await agent.step("start")
+            result = await runtime.run_turn("start")
 
     assert result.output == "done"
-    assert agent.session.result == "done"
-    assert agent.session.error is None
+    assert runtime.session.result == "done"
+    assert runtime.session.error is None
     assert len(requests) == 2
     assert tool_executions == 1
     parts = [part for message in result.all_messages() for part in message.parts]
@@ -369,26 +369,26 @@ system_prompt = "Hi."
     io_adapter = _StubIOAdapter()
     session = AgentSession(path=["test-session-id"], agent_name="test_agent")
 
-    agent = LLMBaseAgent(
+    runtime = AgentRuntime(
         config_loader,
         io_adapter=io_adapter,
         session=session,
     )
 
-    assert agent.uuid == session.id == "test-session-id"
+    assert runtime.uuid == session.id == "test-session-id"
     assert session.runner is None
     assert session.is_active is False
-    assert not hasattr(agent, "status")
-    assert agent.uuid not in io_adapter.hosts
+    assert not hasattr(runtime, "status")
+    assert runtime.uuid not in io_adapter.hosts
 
-    async with _managed_runtime(agent, config_loader, io_adapter):
-        assert session.agent is agent
+    async with _managed_runtime(runtime, config_loader, io_adapter):
+        assert session.runtime is runtime
         assert session.is_active is True
-        assert agent.uuid in io_adapter.hosts
+        assert runtime.uuid in io_adapter.hosts
 
     assert session.runner is None
     assert session.is_active is False
-    assert agent.uuid not in io_adapter.hosts
+    assert runtime.uuid not in io_adapter.hosts
 
 
 @pytest.mark.asyncio
@@ -401,7 +401,7 @@ model_ref = "test"
 [agent.test_agent]
 system_prompt = "Hi."
 """)
-    agent = LLMBaseAgent(
+    runtime = AgentRuntime(
         app_setup(cli_args={"workspace": str(tmp_path)}),
         io_adapter=_StubIOAdapter(),
         session=AgentSession(path=["managed-task"], agent_name="test_agent"),
@@ -409,22 +409,24 @@ system_prompt = "Hi."
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def blocking_step(user_input=None):
+    async def blocking_turn(user_input=None):
         started.set()
         await release.wait()
         return user_input
 
-    agent.step = blocking_step  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+    runtime.run_turn = blocking_turn  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
-    runner = TaskRunner(agent.session, agent.config_loader, agent.io_adapter)
-    runner.runtime = agent
-    agent.session.runner = runner
-    async with agent:
-        task = runner.run("work")
+    runner = TaskSessionRunner(
+        runtime.session, runtime.config_loader, runtime.io_adapter
+    )
+    runner.runtime = runtime
+    runtime.session.runner = runner
+    async with runtime:
+        task = runner.start_turn("work")
         await started.wait()
         assert runner.current_task is task
         with pytest.raises(RuntimeError, match="already running"):
-            runner.run("duplicate")
+            runner.start_turn("duplicate")
         with pytest.raises(TimeoutError):
             await runner.wait(0.01)
         assert runner.current_task is task
@@ -432,7 +434,7 @@ system_prompt = "Hi."
         assert task.cancelled()
         assert runner.current_task is None
         assert not await runner.cancel()
-    agent.session.runner = None
+    runtime.session.runner = None
 
 
 @pytest.mark.asyncio
@@ -449,20 +451,20 @@ system_prompt = "Hi."
     io_adapter = _StubIOAdapter()
     session = AgentSession(path=["test-session-err"], agent_name="test_agent")
 
-    agent = LLMBaseAgent(
+    runtime = AgentRuntime(
         config_loader,
         io_adapter=io_adapter,
         session=session,
     )
 
     with pytest.raises(RuntimeError, match="something broke"):
-        async with _managed_runtime(agent, config_loader, io_adapter):
+        async with _managed_runtime(runtime, config_loader, io_adapter):
             raise RuntimeError("something broke")
 
     assert session.runner is None
     assert session.events[-1].event_type == "error"
     assert "RuntimeError: something broke" in session.events[-1].error
-    assert agent.uuid not in io_adapter.hosts
+    assert runtime.uuid not in io_adapter.hosts
 
 
 @pytest.mark.asyncio
@@ -481,20 +483,20 @@ system_prompt = "Hi."
     io_adapter = _StubIOAdapter()
     session = AgentSession(path=["test-session-cancel"], agent_name="test_agent")
 
-    agent = LLMBaseAgent(
+    runtime = AgentRuntime(
         config_loader,
         io_adapter=io_adapter,
         session=session,
     )
 
     with pytest.raises(asyncio.CancelledError):
-        async with _managed_runtime(agent, config_loader, io_adapter):
+        async with _managed_runtime(runtime, config_loader, io_adapter):
             raise asyncio.CancelledError()
 
     assert session.runner is None
     assert session.events[-1].event_type == "error"
     assert session.events[-1].error == "Task interrupted."
-    assert agent.uuid not in io_adapter.hosts
+    assert runtime.uuid not in io_adapter.hosts
 
 
 @pytest.mark.asyncio
@@ -514,11 +516,11 @@ system_prompt = "Hi."
         agent_name="test_agent",
     )
 
-    runner = TaskRunner(session, config_loader, io_adapter)
-    agent = await runner.start()
+    runner = TaskSessionRunner(session, config_loader, io_adapter)
+    runtime = await runner.start()
     try:
-        assert agent.uuid == "child-session-id"
-        assert agent.session is session
-        assert agent.name == "test_agent"
+        assert runtime.uuid == "child-session-id"
+        assert runtime.session is session
+        assert runtime.name == "test_agent"
     finally:
         await runner.stop()

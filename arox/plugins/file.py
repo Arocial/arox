@@ -26,7 +26,7 @@ from arox.plugins.slots import (
 from arox.utils import DEFAULT_READ_LIMIT, truncate_content
 
 if TYPE_CHECKING:
-    from arox.core.llm_base import LLMBaseAgent
+    from arox.core.agent_runtime import AgentRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -52,9 +52,9 @@ class FileAddEvent(CommandEvent):
 
 
 class FilePlugin(Plugin):
-    def __init__(self, agent: "LLMBaseAgent"):
-        super().__init__(agent)
-        self.workspace = agent.workspace
+    def __init__(self, runtime: "AgentRuntime"):
+        super().__init__(runtime)
+        self.workspace = runtime.workspace
         self._pending_text_files: dict[str, str] = {}
         self._pending_binary_files: dict[str, bytes] = {}
         self.session_files = []
@@ -63,8 +63,8 @@ class FilePlugin(Plugin):
         self._initialize_context()
 
     def on_load(self):
-        self.agent.provide_slot(AGENT_INFO, self.get_info)
-        self.agent.provide_slot(PERSISTENT_CONTEXT, self.get_persistent_context)
+        self.runtime.provide_slot(AGENT_INFO, self.get_info)
+        self.runtime.provide_slot(PERSISTENT_CONTEXT, self.get_persistent_context)
 
     def _initialize_context(self):
         self._pending_text_files = {}
@@ -78,7 +78,7 @@ class FilePlugin(Plugin):
             if item.is_file():
                 try:
                     content = "".join(self._read_text(name))
-                    if not self.agent.session.initialized:
+                    if not self.runtime.session.initialized:
                         self._pending_text_files[name] = content
                     self.persistent_files[name] = content
                     self._add_to_session(name)
@@ -103,7 +103,7 @@ class FilePlugin(Plugin):
 
     async def candidates(self):
         provided_files = []
-        for files in await self.agent.invoke_slot(PROJECT_FILES) or []:
+        for files in await self.runtime.invoke_slot(PROJECT_FILES) or []:
             if files:
                 provided_files.extend(files)
 
@@ -146,7 +146,9 @@ class FilePlugin(Plugin):
                     self._pending_text_files[file_path] = "".join(lines)
                 self._add_to_session(path)
             except Exception as e:
-                await self.agent.agent_io.send(f"Error reading file {file_path}: {e!s}")
+                await self.runtime.agent_io.send(
+                    f"Error reading file {file_path}: {e!s}"
+                )
 
     def consume_pending(self) -> tuple[dict[str, str], dict[str, bytes]]:
         text_files = self._pending_text_files
@@ -493,7 +495,7 @@ class FilePlugin(Plugin):
 
     async def handle_file_add(self, event: "FileAddEvent"):
         if not event.files:
-            await self.agent.agent_io.send("Please specify files.")
+            await self.runtime.agent_io.send("Please specify files.")
             return
         await self.read_by_user(event.files)
 

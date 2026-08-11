@@ -6,14 +6,14 @@ from pydantic_ai import ModelMessage
 from arox.core.slot import FirstSlot, ListSlot
 
 if TYPE_CHECKING:
-    from arox.core.llm_base import LLMBaseAgent
+    from arox.core.agent_runtime import AgentRuntime
 
 # Slot for getting project files
 PROJECT_FILES = ListSlot[Callable[[], list[str]], list[str]](
     "project_files", "Provides a list of tracked project files"
 )
 
-SUBAGENTS = FirstSlot[Callable[..., list["LLMBaseAgent"]], list["LLMBaseAgent"]](
+SUBAGENTS = FirstSlot[Callable[..., list["AgentRuntime"]], list["AgentRuntime"]](
     "subagents",
     "Provides the list of subagents managed by the agent",
 )

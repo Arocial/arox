@@ -101,8 +101,8 @@ def tool(
 
 
 class CommandManager:
-    def __init__(self, agent):
-        self.agent = agent
+    def __init__(self, runtime):
+        self.runtime = runtime
         self.completion_router = CompletionRouter()
         self._handlers: dict[type[CommandEvent], Callable[[Any], Any]] = {}
         self._slash_map: dict[str, type[CommandEvent]] = {}
@@ -154,7 +154,7 @@ class CommandManager:
             logger.warning("Command not found: /%s", name)
             return None
         try:
-            self.agent.session.record_command(name, arg)
+            self.runtime.session.record_command(name, arg)
             event = event_cls.from_slash(name, arg)
             if event is not None and not isinstance(event, CommandEvent):
                 logger.warning(
@@ -226,8 +226,8 @@ class CommandManager:
 
 
 class Plugin:
-    def __init__(self, agent):
-        self.agent = agent
+    def __init__(self, runtime):
+        self.runtime = runtime
         self.config: dict[str, Any] = {}
 
     def configure(self, config: dict[str, Any]) -> None:
@@ -235,18 +235,18 @@ class Plugin:
         self.config = dict(config)
 
     async def on_start(self) -> None:
-        """Resource hook called when the agent starts (sets up the context stack)."""
+        """Resource hook called when the runtime starts (sets up the context stack)."""
 
     async def on_stop(self) -> None:
-        """Resource hook called when the agent stops (torn down in reverse order)."""
+        """Resource hook called when the runtime stops (torn down in reverse order)."""
 
     def on_load(self) -> None:
-        """Wire the plugin into the agent after construction.
+        """Wire the plugin into the runtime after construction.
 
         Called once after the plugin is constructed and its :meth:`commands`
         are registered (see :func:`load_plugins`). Override to register
-        push-style slot providers via ``self.agent.provide_slot(slot, handler)``
-        or to perform any other one-time agent wiring.
+        push-style slot providers via ``self.runtime.provide_slot(slot, handler)``
+        or to perform any other one-time runtime wiring.
         """
 
     def commands(self) -> Sequence[CommandSpec]:
@@ -299,25 +299,27 @@ class Plugin:
         return messages
 
 
-def load_plugins(agent) -> list[Plugin]:
-    """Instantiate and wire up the plugins configured for ``agent``.
+def load_plugins(runtime) -> list[Plugin]:
+    """Instantiate and wire up the plugins configured for ``runtime``.
 
-    For each plugin class in ``agent.agent_config.plugins``: import and
+    For each plugin class in ``runtime.agent_config.plugins``: import and
     construct it, register its slash commands, then call
     :meth:`Plugin.on_load` so it can wire up slot providers and any other
-    one-time agent hooks. Tools and capabilities are gathered separately by
-    the agent from :meth:`Plugin.capabilities`.
+    one-time runtime hooks. Tools and capabilities are gathered separately by
+    the runtime from :meth:`Plugin.capabilities`.
     """
     from arox import utils
 
     plugins: list[Plugin] = []
-    for plugin_path in agent.agent_config.plugins:
+    for plugin_path in runtime.agent_config.plugins:
         plugin_cls = utils.import_class(plugin_path, group="arox.plugins")
-        plugin = plugin_cls(agent)
-        plugin.configure(agent.agent_config.plugin_config.get(plugin_path, {}))
+        plugin = plugin_cls(runtime)
+        plugin.configure(runtime.agent_config.plugin_config.get(plugin_path, {}))
         plugins.append(plugin)
 
         for spec in plugin.commands():
-            agent.command_manager.register(spec.event_cls, spec.handler, spec.completer)
+            runtime.command_manager.register(
+                spec.event_cls, spec.handler, spec.completer
+            )
         plugin.on_load()
     return plugins

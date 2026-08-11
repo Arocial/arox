@@ -10,7 +10,7 @@ from arox.core.plugin import CommandEvent, CommandSpec, Plugin
 from arox.plugins.slots import PROJECT_FILES
 
 if TYPE_CHECKING:
-    from arox.core.llm_base import LLMBaseAgent
+    from arox.core.agent_runtime import AgentRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +22,13 @@ class AddFileListEvent(CommandEvent):
 
 
 class RepoPlugin(Plugin):
-    def __init__(self, agent: "LLMBaseAgent"):
-        super().__init__(agent)
-        self.workspace = agent.workspace
+    def __init__(self, runtime: "AgentRuntime"):
+        super().__init__(runtime)
+        self.workspace = runtime.workspace
         self._pending_project_file_list = False
 
         # Register as a provider for "project_files"
-        self.agent.provide_slot(PROJECT_FILES, self._get_tracked_files)
+        self.runtime.provide_slot(PROJECT_FILES, self._get_tracked_files)
 
     def _get_tracked_files(self):
         try:

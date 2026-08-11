@@ -32,7 +32,7 @@ from arox.core.io import (
     IOEndpoint,
     IOHost,
 )
-from arox.core.runner import ServingRunner, TaskRunner
+from arox.core.runner import ServeRunner, TaskSessionRunner
 
 logger = logging.getLogger(__name__)
 
@@ -84,10 +84,10 @@ class CommandCompleter(Completer):
     """
 
     def __init__(
-        self, completion_router: "CompletionRouter", *, agent: Any | None = None
+        self, completion_router: "CompletionRouter", *, runtime: Any | None = None
     ):
         self.completion_router = completion_router
-        self.agent = agent
+        self.runtime = runtime
 
     def get_completions(self, document, complete_event):
         # Async-only completer; prompt-toolkit drives ``get_completions_async``
@@ -98,7 +98,7 @@ class CommandCompleter(Completer):
         text = document.text
         if not text or text[0] not in ("/", "@"):
             return
-        req = parse_request(text, cursor=document.cursor_position, agent=self.agent)
+        req = parse_request(text, cursor=document.cursor_position, runtime=self.runtime)
         for item in await self.completion_router.complete(req):
             start, _end = item.replace_range or req.current_token_range
             # start_position is relative to the cursor; document.cursor_position
@@ -127,7 +127,7 @@ class TextIOAdapter(AbstractIOAdapter):
                 merged_router.merge(cmd_mgr.completion_router)
 
         main_host = list(self.hosts.values())[0] if self.hosts else host
-        completer = CommandCompleter(merged_router, agent=main_host)
+        completer = CommandCompleter(merged_router, runtime=main_host)
         self.user_input = UserInputGenerator(
             completer=completer,
             input=self.user_input.input,
@@ -140,22 +140,22 @@ class TextIOAdapter(AbstractIOAdapter):
         def sigint_handler(signum, frame):
             logger.info("Received SIGINT, cancelling current step...")
             for host in self.hosts.values():
-                if isinstance(host.session.runner, ServingRunner):
+                if isinstance(host.session.runner, ServeRunner):
                     loop.create_task(host.session.runner.cancel_turn())
-                elif isinstance(host.session.runner, TaskRunner):
+                elif isinstance(host.session.runner, TaskSessionRunner):
                     loop.create_task(host.session.runner.cancel())
 
             async def _cancel_all_subagents():
-                from arox.core.llm_base import LLMBaseAgent
+                from arox.core.agent_runtime import AgentRuntime
                 from arox.plugins.slots import SUBAGENTS
 
                 for h in self.hosts.values():
-                    if isinstance(h, LLMBaseAgent):
-                        for agent in await h.invoke_slot(SUBAGENTS) or []:
-                            if isinstance(agent.session.runner, ServingRunner):
-                                await agent.session.runner.cancel_turn()
-                            elif isinstance(agent.session.runner, TaskRunner):
-                                await agent.session.runner.cancel()
+                    if isinstance(h, AgentRuntime):
+                        for runtime in await h.invoke_slot(SUBAGENTS) or []:
+                            if isinstance(runtime.session.runner, ServeRunner):
+                                await runtime.session.runner.cancel_turn()
+                            elif isinstance(runtime.session.runner, TaskSessionRunner):
+                                await runtime.session.runner.cancel()
 
             loop.create_task(_cancel_all_subagents())
 
@@ -207,7 +207,7 @@ class TextIOAdapter(AbstractIOAdapter):
             if event.pending_exception is not None:
                 print(f"⚠️ An error occurred: {event.pending_exception}")
             if event.request_normal_input:
-                agent = await self._find_agent(adapter_io)
+                runtime = await self._find_host(adapter_io)
                 while True:
                     try:
                         line = await self.user_input()
@@ -215,8 +215,8 @@ class TextIOAdapter(AbstractIOAdapter):
                         user_input = None
                         await self._flush_stdin()
                         break
-                    if line.startswith("/") and agent is not None:
-                        cmd_reply = await agent.command_manager.try_handle_slash(line)
+                    if line.startswith("/") and runtime is not None:
+                        cmd_reply = await runtime.command_manager.try_handle_slash(line)
                         if cmd_reply is not None and cmd_reply.output:
                             print(cmd_reply.output)
                         continue

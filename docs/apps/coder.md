@@ -4,13 +4,13 @@ The **Coder** app is the primary application built on top of the Arox framework.
 
 ## Overview
 
-The Coder app runs the "coder" session through a `ServingRunner` and `ChatServeDriver`, configured with plugins including context compaction.
+The Coder app runs the "coder" session through a `ServeRunner` and `ChatServeDriver`, configured with plugins including context compaction.
 
 ## Architecture
 
 The Coder app consists of the following components:
 
-- **Main Agent (`coder`)**: An `LLMBaseAgent` runtime that interacts through the chat driver. It has tools for reading and writing files, executing shell commands, and interacting with the codebase.
+- **Main Agent (`coder`)**: An `AgentRuntime` runtime that interacts through the chat driver. It has tools for reading and writing files, executing shell commands, and interacting with the codebase.
 - **Compaction Plugin**: A plugin attached to the main agent that summarizes long technical conversations (manually via `/compact` or automatically when the context grows past a threshold) to manage the context window size and improve LLM performance.
 
 ## Features

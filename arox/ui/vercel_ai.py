@@ -35,9 +35,9 @@ from arox.core.chat import (
 from arox.core.completion import parse_request
 from arox.core.config import ConfigLoader
 from arox.core.io import AbstractIOAdapter, IOEndpoint
-from arox.core.llm_base import ServerIdMapping, SessionTreeUpdate
-from arox.core.runner import ServingRunner, TaskRunner
+from arox.core.runner import ServeRunner, TaskSessionRunner
 from arox.core.session import AgentSession
+from arox.core.types import ServerIdMapping, SessionTreeUpdate
 
 if TYPE_CHECKING:
     from arox.core.session import SessionManager
@@ -320,9 +320,9 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     async def _apply_input(self, target, payload: dict) -> dict:
         if payload.get("cancel"):
             runner = target.session.runner
-            if isinstance(runner, ServingRunner):
+            if isinstance(runner, ServeRunner):
                 await runner.cancel_turn()
-            elif isinstance(runner, TaskRunner):
+            elif isinstance(runner, TaskSessionRunner):
                 await runner.cancel()
             return {"status": "cancelled"}
 
@@ -454,7 +454,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             text = f"/{command} {q or ''}"
         else:
             text = f"/{q or ''}"
-        req = parse_request(text, agent=target)
+        req = parse_request(text, runtime=target)
         results = await target.command_manager.completion_router.complete(req)
 
         items = [
@@ -560,7 +560,7 @@ class VercelStreamServer:
         session = await self._resolve_root_session(session_id)
         if session.is_active:
             raise HTTPException(status_code=409, detail="Session is already active.")
-        runner = ServingRunner(
+        runner = ServeRunner(
             session, self.config_loader, self.io_adapter, ChatServeDriver()
         )
         await runner.start_serving()

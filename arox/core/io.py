@@ -160,17 +160,17 @@ class AbstractIOAdapter(ABC):
     async def register_host(self, host: "IOHost"):
         self.hosts[host.uuid] = host
 
-    async def _find_agent(self, adapter_io: IOEndpoint):
-        """Locate the agent that owns ``adapter_io`` across registered hosts."""
+    async def _find_host(self, adapter_io: IOEndpoint):
+        """Locate the runtime that owns ``adapter_io`` across registered hosts."""
         for host in self.hosts.values():
             if host.adapter_io is adapter_io:
                 return host
             if hasattr(host, "invoke_slot"):
                 from arox.plugins.slots import SUBAGENTS
 
-                for agent in await host.invoke_slot(SUBAGENTS) or []:
-                    if agent.adapter_io is adapter_io:
-                        return agent
+                for runtime in await host.invoke_slot(SUBAGENTS) or []:
+                    if runtime.adapter_io is adapter_io:
+                        return runtime
         return None
 
     async def _process_io(self, adapter_io: IOEndpoint):
@@ -195,7 +195,7 @@ class AbstractIOAdapter(ABC):
 class IOHost:
     """Owns one side of an :func:`create_io_channel` pair and a receive loop.
 
-    Subclasses (currently :class:`LLMBaseAgent`)
+    Subclasses (currently :class:`AgentRuntime`)
     add their own domain on top: tool execution, command handling, etc.
     The base just wires the channel, drives ``io_adapter._process_io`` for
     the adapter side, and dispatches inbound :class:`RequestEvent` to

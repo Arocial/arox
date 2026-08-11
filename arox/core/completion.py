@@ -47,7 +47,7 @@ class CompletionRequest:
     tokens: list[str] = field(default_factory=list)
     current_token: str = ""
     current_token_range: tuple[int, int] = (0, 0)
-    agent: Any | None = None
+    runtime: Any | None = None
 
 
 def parse_request(
@@ -55,7 +55,7 @@ def parse_request(
     cursor: int | None = None,
     *,
     triggers: tuple[str, ...] = ("/", "@"),
-    agent: Any | None = None,
+    runtime: Any | None = None,
 ) -> CompletionRequest:
     """Build a :class:`CompletionRequest` from raw input text.
 
@@ -87,7 +87,7 @@ def parse_request(
         tokens=tokens,
         current_token=current_token,
         current_token_range=(start, end),
-        agent=agent,
+        runtime=runtime,
     )
 
 

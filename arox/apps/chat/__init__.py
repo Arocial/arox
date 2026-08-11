@@ -10,7 +10,7 @@ os.environ["FASTMCP_LOG_ENABLED"] = "false"
 
 from arox.core.app import app_setup
 from arox.core.chat import ChatServeDriver
-from arox.core.runner import ServingRunner
+from arox.core.runner import ServeRunner
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ def main(profile: str | None = None):
                 session.manager = session_manager
 
             async with session_manager, io_adapter:
-                runner = ServingRunner(
+                runner = ServeRunner(
                     session, config_loader, io_adapter, ChatServeDriver()
                 )
                 try:

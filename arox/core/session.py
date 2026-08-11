@@ -204,7 +204,7 @@ class AgentSession(Session):
         return self.id
 
     @property
-    def agent(self) -> Any:
+    def runtime(self) -> Any:
         return self.runner.runtime if self.runner is not None else None
 
     @property

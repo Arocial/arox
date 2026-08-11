@@ -3,8 +3,8 @@ import logging
 from dataclasses import dataclass
 
 from arox.core.io import ReplyEvent, RequestEvent
-from arox.core.llm_base import UserInput
-from arox.core.runner import ServingRunner
+from arox.core.runner import ServeRunner
+from arox.core.types import UserInput
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +26,8 @@ class ChatInputReply(UserInput, ReplyEvent):
 
 
 class ChatServeDriver:
-    async def serve(self, runner: ServingRunner) -> None:
-        """Start the agent with optional input generator"""
+    async def serve(self, runner: ServeRunner) -> None:
+        """Serve the runtime with an optional input generator"""
         runtime = runner.runtime
         assert runtime is not None
         pending_exception: BaseException | None = None
@@ -48,7 +48,7 @@ class ChatServeDriver:
 
             # 5. Execute the step
             try:
-                result = await runner.run_turn(reply)
+                result = await runner.start_turn(reply)
 
                 if result and isinstance(result.output, Exception):
                     e = result.output

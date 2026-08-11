@@ -140,13 +140,13 @@ class ShellTask:
 
 
 class ShellPlugin(Plugin):
-    def __init__(self, agent):
-        super().__init__(agent)
-        self.workspace = self.agent.workspace.absolute()
+    def __init__(self, runtime):
+        super().__init__(runtime)
+        self.workspace = self.runtime.workspace.absolute()
         self._tasks: dict[str, ShellTask] = {}
 
     def on_load(self):
-        self.agent.provide_slot(AGENT_INFO, self._get_info)
+        self.runtime.provide_slot(AGENT_INFO, self._get_info)
 
     def _get_cmd(self, command: str) -> list[str]:
         shell_path = _select_shell()
@@ -218,7 +218,7 @@ class ShellPlugin(Plugin):
             pass
 
     def _session_output_dir(self) -> Path:
-        session = self.agent.session
+        session = self.runtime.session
         manager = session.manager
         if manager is None:
             raise RuntimeError("Agent session is not attached to a session manager")
@@ -287,7 +287,7 @@ class ShellPlugin(Plugin):
             )
             if task.notify_on_finish:
                 try:
-                    await self.agent.agent_io.send(
+                    await self.runtime.agent_io.send(
                         f"[bg {task.task_id}] task finished "
                         f"(exit {task.exit_code}, elapsed {task.elapsed():.1f}s)"
                     )
@@ -519,7 +519,7 @@ class ShellPlugin(Plugin):
             return f"Error creating command output file: {e!s}"
 
         if run_in_background:
-            await self.agent.agent_io.send(
+            await self.runtime.agent_io.send(
                 f"[bg {task.task_id}] task started: {description}  (pid {process.pid})"
             )
             return (
@@ -563,7 +563,7 @@ class ShellPlugin(Plugin):
                     f'- Terminate: kill_shell(task_id="{task.task_id}")',
                 ]
             )
-            await self.agent.agent_io.send(
+            await self.runtime.agent_io.send(
                 f"[{task.task_id}] promoted to background after {timeout}s"
             )
             return "\n".join(parts)

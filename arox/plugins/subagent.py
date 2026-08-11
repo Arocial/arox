@@ -6,11 +6,11 @@ from collections.abc import Awaitable, Callable
 from enum import StrEnum
 from typing import Any
 
-from arox.core.llm_base import (
-    LLMBaseAgent,
+from arox.core.agent_runtime import (
+    AgentRuntime,
 )
 from arox.core.plugin import Plugin, tool
-from arox.core.runner import TaskRunner
+from arox.core.runner import TaskSessionRunner
 from arox.core.session import (
     AgentRunInfo,
     AgentSession,
@@ -32,15 +32,15 @@ SubagentTask = AgentSession
 
 
 class SubagentPlugin(Plugin):
-    """Manage resumable child-agent tasks for an agent."""
+    """Manage resumable child-agent tasks for a runtime."""
 
-    def __init__(self, agent):
-        super().__init__(agent)
+    def __init__(self, runtime):
+        super().__init__(runtime)
         self.mode = SubagentMode.SIMPLE
         self.task_sessions: dict[str, AgentSession] = {}
         self._task_ids_by_name: dict[str, str] = {}
         self._task_ids_by_target: dict[str, str] = {}
-        self._active_delegations: dict[str, LLMBaseAgent] = {}
+        self._active_delegations: dict[str, AgentRuntime] = {}
         self._lock = asyncio.Lock()
 
         def get_subagents():
@@ -54,13 +54,13 @@ class SubagentPlugin(Plugin):
             return active
 
         def get_subagent_instructions() -> str:
-            subagent_names = self.agent.agent_config.subagents
+            subagent_names = self.runtime.agent_config.subagents
             if not subagent_names:
                 return ""
 
             descriptions = []
             for name in subagent_names:
-                agent_config = self.agent.config.agent.get(name)
+                agent_config = self.runtime.config.agent.get(name)
                 desc = (
                     agent_config.description
                     if agent_config and agent_config.description
@@ -90,9 +90,9 @@ class SubagentPlugin(Plugin):
                 + "\n".join(descriptions)
             )
 
-        self.agent.provide_slot(SUBAGENTS, get_subagents)
-        self.agent.provide_slot(SYSTEM_PROMPT, get_subagent_instructions)
-        self.agent.provide_slot(RUN_SUBAGENT, self._delegate_once)
+        self.runtime.provide_slot(SUBAGENTS, get_subagents)
+        self.runtime.provide_slot(SYSTEM_PROMPT, get_subagent_instructions)
+        self.runtime.provide_slot(RUN_SUBAGENT, self._delegate_once)
 
     def configure(self, config: dict[str, Any]) -> None:
         try:
@@ -102,7 +102,7 @@ class SubagentPlugin(Plugin):
         super().configure({**config, "mode": self.mode.value})
 
     async def on_start(self) -> None:
-        main_session = self.agent.session
+        main_session = self.runtime.session
         session_manager = main_session.manager if main_session else None
         if main_session is None or session_manager is None:
             return
@@ -147,14 +147,14 @@ class SubagentPlugin(Plugin):
         task_name: str | None = None,
         message: str | None = None,
     ) -> AgentSession:
-        workspace = str(self.agent.workspace) if self.agent.workspace else None
+        workspace = str(self.runtime.workspace) if self.runtime.workspace else None
 
-        if self.agent.session:
-            return self.agent.session.create_child_session(
+        if self.runtime.session:
+            return self.runtime.session.create_child_session(
                 agent_name=subagent_name,
                 workspace=workspace,
                 task_name=task_name,
-                target=f"/{self.agent.name}/{task_name}" if task_name else None,
+                target=f"/{self.runtime.name}/{task_name}" if task_name else None,
                 initial_message=message,
                 last_message=message,
             )
@@ -164,7 +164,7 @@ class SubagentPlugin(Plugin):
             agent_source="static",
             workspace=workspace,
             task_name=task_name,
-            target=f"/{self.agent.name}/{task_name}" if task_name else None,
+            target=f"/{self.runtime.name}/{task_name}" if task_name else None,
             initial_message=message,
             last_message=message,
             run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
@@ -185,7 +185,7 @@ class SubagentPlugin(Plugin):
         task_name: str,
         message: str,
         subagent_name: str,
-        on_subagent_created: Callable[[LLMBaseAgent], Awaitable[None] | None]
+        on_subagent_created: Callable[[AgentRuntime], Awaitable[None] | None]
         | None = None,
     ) -> AgentSession:
         async with self._lock:
@@ -198,7 +198,7 @@ class SubagentPlugin(Plugin):
                 raise ValueError(
                     f"Task '{task_name}' already exists. Use followup_task to continue it."
                 )
-            if subagent_name not in self.agent.agent_config.subagents:
+            if subagent_name not in self.runtime.agent_config.subagents:
                 raise ValueError(f"Agent '{subagent_name}' is not configured.")
             if (
                 sum(
@@ -207,11 +207,11 @@ class SubagentPlugin(Plugin):
                     if session.runner is not None
                     and session.runner.current_task is not None
                 )
-                >= self.agent.agent_config.max_parallel_subagents
+                >= self.runtime.agent_config.max_parallel_subagents
             ):
                 raise ValueError(
                     "Maximum parallel subagents reached: "
-                    f"{self.agent.agent_config.max_parallel_subagents}."
+                    f"{self.runtime.agent_config.max_parallel_subagents}."
                 )
 
             task_session = self._create_child_session(
@@ -226,16 +226,16 @@ class SubagentPlugin(Plugin):
 
             try:
                 await task_session.save()
-                if self.agent.session:
-                    await self.agent.session.save()
+                if self.runtime.session:
+                    await self.runtime.session.save()
             except BaseException:
                 self.task_sessions.pop(task_session.id, None)
                 self._task_ids_by_name.pop(task_name, None)
                 if task_session.target:
                     self._task_ids_by_target.pop(task_session.target, None)
-                if self.agent.session:
-                    await self.agent.session.manager.remove_child(
-                        self.agent.session, task_session
+                if self.runtime.session:
+                    await self.runtime.session.manager.remove_child(
+                        self.runtime.session, task_session
                     )
                 raise
 
@@ -249,8 +249,8 @@ class SubagentPlugin(Plugin):
                 self._task_ids_by_name.pop(task_name, None)
                 if task_session.target:
                     self._task_ids_by_target.pop(task_session.target, None)
-                await self.agent.session.manager.remove_child(
-                    self.agent.session, task_session
+                await self.runtime.session.manager.remove_child(
+                    self.runtime.session, task_session
                 )
                 raise
             return task_session
@@ -258,35 +258,35 @@ class SubagentPlugin(Plugin):
     async def _ensure_runner(
         self,
         task_session: AgentSession,
-        on_agent_created: Callable[[LLMBaseAgent], Awaitable[None] | None]
+        on_agent_created: Callable[[AgentRuntime], Awaitable[None] | None]
         | None = None,
-    ) -> TaskRunner:
+    ) -> TaskSessionRunner:
         runner = task_session.runner
         if runner is None:
-            runner = TaskRunner(
-                task_session, self.agent.config_loader, self.agent.io_adapter
+            runner = TaskSessionRunner(
+                task_session, self.runtime.config_loader, self.runtime.io_adapter
             )
             runtime = await runner.start()
             if on_agent_created is not None:
                 callback_result = on_agent_created(runtime)
                 if asyncio.iscoroutine(callback_result):
                     await callback_result
-        if not isinstance(runner, TaskRunner):
-            raise TypeError("Subagent session is not using a TaskRunner.")
+        if not isinstance(runner, TaskSessionRunner):
+            raise TypeError("Subagent session is not using a TaskSessionRunner.")
         return runner
 
     async def _execute_task(
         self,
         task_session: AgentSession,
         message: str,
-        on_agent_created: Callable[[LLMBaseAgent], Awaitable[None] | None]
+        on_agent_created: Callable[[AgentRuntime], Awaitable[None] | None]
         | None = None,
     ) -> str | None:
-        self.agent.session.record_subagent_call(task_session.agent_name, message)
-        await self.agent.broadcast_session_tree()
+        self.runtime.session.record_subagent_call(task_session.agent_name, message)
+        await self.runtime.broadcast_session_tree()
         runner = await self._ensure_runner(task_session, on_agent_created)
         try:
-            result = await runner.run(message)
+            result = await runner.start_turn(message)
             return result.output if isinstance(result.output, str) else None
         except asyncio.CancelledError:
             raise
@@ -302,16 +302,16 @@ class SubagentPlugin(Plugin):
         self,
         task_session: AgentSession,
         message: str,
-        on_agent_created: Callable[[LLMBaseAgent], Awaitable[None] | None]
+        on_agent_created: Callable[[AgentRuntime], Awaitable[None] | None]
         | None = None,
     ) -> asyncio.Task[Any]:
-        self.agent.session.record_subagent_call(task_session.agent_name, message)
+        self.runtime.session.record_subagent_call(task_session.agent_name, message)
         runner = await self._ensure_runner(task_session, on_agent_created)
-        task = runner.run(message)
+        task = runner.start_turn(message)
         task.add_done_callback(
-            lambda _: asyncio.create_task(self.agent.broadcast_session_tree())
+            lambda _: asyncio.create_task(self.runtime.broadcast_session_tree())
         )
-        asyncio.create_task(self.agent.broadcast_session_tree())
+        asyncio.create_task(self.runtime.broadcast_session_tree())
         return task
 
     def _format_task(
@@ -332,19 +332,19 @@ class SubagentPlugin(Plugin):
         self,
         subagent_name: str,
         task: str,
-        on_subagent_created: Callable[[LLMBaseAgent], Awaitable[None] | None]
+        on_subagent_created: Callable[[AgentRuntime], Awaitable[None] | None]
         | None = None,
     ) -> str:
-        if subagent_name not in self.agent.agent_config.subagents:
+        if subagent_name not in self.runtime.agent_config.subagents:
             raise ValueError(f"Agent type '{subagent_name}' is not configured.")
         task_session = self._create_child_session(subagent_name)
-        if self.agent.session:
-            await self.agent.session.save()
-        await self.agent.broadcast_session_tree()
+        if self.runtime.session:
+            await self.runtime.session.save()
+        await self.runtime.broadcast_session_tree()
 
         runtime_id: str | None = None
 
-        async def register_runtime(runtime: LLMBaseAgent) -> None:
+        async def register_runtime(runtime: AgentRuntime) -> None:
             nonlocal runtime_id
             runtime_id = runtime.uuid
             self._active_delegations[runtime.uuid] = runtime
@@ -361,7 +361,7 @@ class SubagentPlugin(Plugin):
                 self._active_delegations.pop(runtime_id, None)
             await self._close_runner(task_session)
             await task_session.save()
-            await self.agent.broadcast_session_tree()
+            await self.runtime.broadcast_session_tree()
 
     @tool(
         sequential=True,
@@ -406,10 +406,10 @@ class SubagentPlugin(Plugin):
                 if session.runner is not None
                 and session.runner.current_task is not None
             )
-            if running_task_count >= self.agent.agent_config.max_parallel_subagents:
+            if running_task_count >= self.runtime.agent_config.max_parallel_subagents:
                 raise ValueError(
                     "Maximum parallel subagents reached: "
-                    f"{self.agent.agent_config.max_parallel_subagents}."
+                    f"{self.runtime.agent_config.max_parallel_subagents}."
                 )
 
             await self._start_session_task(task_session, message)

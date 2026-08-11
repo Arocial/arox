@@ -5,8 +5,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from arox.core.agent_runtime import AgentRuntime
 from arox.core.config import AgentConfig, Config
-from arox.core.llm_base import LLMBaseAgent
 from arox.core.session import (
     AgentSession,
     FileSessionStore,
@@ -24,7 +24,7 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fake")
 
 
-class _FakeDynamicAgent(LLMBaseAgent):
+class _FakeDynamicAgent(AgentRuntime):
     def __init__(
         self,
         parent_config_loader,
@@ -41,7 +41,7 @@ class _FakeDynamicAgent(LLMBaseAgent):
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def step(self, user_input=None):
+    async def run_turn(self, user_input=None):
         task = str(user_input or "")
         self.session.result = None
         self.session.error = None
@@ -137,7 +137,7 @@ class _HostAgent:
 
 @pytest.fixture
 def agent_factory(tmp_path, monkeypatch):
-    monkeypatch.setattr("arox.core.runner.LLMBaseAgent", _FakeDynamicAgent)
+    monkeypatch.setattr("arox.core.runner.AgentRuntime", _FakeDynamicAgent)
     store = FileSessionStore()
     store.base_dir = tmp_path / "sessions"
 
@@ -240,8 +240,8 @@ async def test_spawn_and_wait_preserves_resumable_agent(agent_factory):
         result = await plugin.wait_agent(task_session.task_id)
 
         assert "task done: make a plan" in result
-        assert isinstance(task_session.agent, _FakeDynamicAgent)
-        assert task_session.runner.runtime is task_session.agent
+        assert isinstance(task_session.runtime, _FakeDynamicAgent)
+        assert task_session.runner.runtime is task_session.runtime
         assert len(main_agent.session.children) == 1
 
         child_session = await store.load_session(
@@ -271,7 +271,7 @@ async def test_spawn_callback_receives_retained_agent(agent_factory):
         await plugin.wait_agent(task_session.task_id)
 
         assert len(created_agents) == 1
-        assert isinstance(created_agents[0], LLMBaseAgent)
+        assert isinstance(created_agents[0], AgentRuntime)
         assert task_session.runner.runtime is created_agents[0]
     finally:
         await plugin.on_stop()

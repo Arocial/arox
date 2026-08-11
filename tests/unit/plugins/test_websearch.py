@@ -19,11 +19,11 @@ def _context(
     provider = {
         provider_name: ProviderConfig(disabled_native_tools=disabled_native_tools or [])
     }
-    agent = SimpleNamespace(
+    runtime = SimpleNamespace(
         provider_name=provider_name,
         config=Config(provider=provider),
     )
-    deps = SimpleNamespace(agent=agent)
+    deps = SimpleNamespace(runtime=runtime)
     return RunContext(
         deps=deps,
         model=TestModel(),

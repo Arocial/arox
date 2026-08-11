@@ -84,15 +84,15 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
                     f"⚠️ An error occurred: {event.pending_exception}"
                 )
             if event.request_normal_input:
-                agent = await self._find_agent(adapter_io)
+                runtime = await self._find_host(adapter_io)
                 while True:
                     line = await self.input_queue.get()
                     if (
                         isinstance(line, str)
                         and line.startswith("/")
-                        and agent is not None
+                        and runtime is not None
                     ):
-                        cmd_reply = await agent.command_manager.try_handle_slash(line)
+                        cmd_reply = await runtime.command_manager.try_handle_slash(line)
                         if cmd_reply is not None:
                             if cmd_reply.output:
                                 await self.send_message(cmd_reply.output)
