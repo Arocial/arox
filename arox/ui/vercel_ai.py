@@ -1,18 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
+import json
 import logging
+import os
+import secrets
 from pathlib import Path
 from typing import TYPE_CHECKING, override
-
-from pydantic_ai.ui.vercel_ai import VercelAIAdapter
-from pydantic_ai.ui.vercel_ai.request_types import UIMessage
-
-from arox.core.config import ConfigLoader
-
-if TYPE_CHECKING:
-    from arox.core.session import SessionManager
-
+from urllib.parse import parse_qs
 
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +21,9 @@ from pydantic_ai import (
     PartEndEvent,
     PartStartEvent,
 )
+from pydantic_ai.messages import ModelRequest, TextContent, UserPromptPart
+from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
+from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage, UIMessage
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from arox.core.chat import (
@@ -34,16 +33,14 @@ from arox.core.chat import (
     StepDoneEvent,
 )
 from arox.core.completion import parse_request
-from arox.core.io import (
-    AbstractIOAdapter,
-    IOEndpoint,
-)
-from arox.core.llm_base import (
-    ServerIdMapping,
-    SessionTreeUpdate,
-)
+from arox.core.config import ConfigLoader
+from arox.core.io import AbstractIOAdapter, IOEndpoint
+from arox.core.llm_base import ServerIdMapping, SessionTreeUpdate
 from arox.core.runner import ServingRunner, TaskRunner
 from arox.core.session import AgentSession
+
+if TYPE_CHECKING:
+    from arox.core.session import SessionManager
 
 
 async def build_session_view(session: AgentSession) -> SessionView:
@@ -80,9 +77,6 @@ class TokenAuthASGIMiddleware:
         if scope["type"] not in ("http", "websocket"):
             return await self.app(scope, receive, send)
 
-        import os
-        import secrets
-
         expected_token = os.environ.get("AROX_API_TOKEN")
         if not expected_token:
             return await self.app(scope, receive, send)
@@ -98,8 +92,6 @@ class TokenAuthASGIMiddleware:
             token = auth_header[7:].decode("utf-8")
         else:
             query_string = scope.get("query_string", b"").decode("utf-8")
-            from urllib.parse import parse_qs
-
             qs = parse_qs(query_string)
             if "token" in qs:
                 token = qs["token"][0]
@@ -121,12 +113,6 @@ logger = logging.getLogger(__name__)
 
 
 def build_state_history(messages: list) -> list[dict]:
-    import dataclasses
-    import json
-
-    from pydantic_ai.messages import ModelRequest, TextContent, UserPromptPart
-    from pydantic_ai.ui.vercel_ai._adapter import VercelAIAdapter
-
     from arox.core.types import USER_INPUT_ID_KEY
 
     wrapped_messages = []
@@ -233,10 +219,9 @@ class SessionView(BaseModel):
 class VercelStreamIOAdapter(AbstractIOAdapter):
     def __init__(self):
         super().__init__()
-        self.read_lock = asyncio.Lock()
         self.event_queues = {}
         self.pending_inputs: dict[IOEndpoint, ChatInputRequest] = {}
-        self.event_streams = {}
+        self.event_streams: dict[IOEndpoint, VercelAIEventStream] = {}
 
     @override
     async def handle_event(self, adapter_io: IOEndpoint, event):
@@ -247,24 +232,11 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         queue = self.event_queues.setdefault(adapter_io, asyncio.Queue())
         await queue.put((adapter_io, event))
 
-    async def drain_until_need_reply(self, adapter_io: IOEndpoint):
-        queue = self.event_queues.get(adapter_io)
-        if not queue:
-            return
-        try:
-            while True:
-                _adapter_io, event = await queue.get()
-                if isinstance(event, StepDoneEvent):
-                    break
-        except Exception as e:
-            logger.error(f"Error draining events: {e}")
-
     async def _event_messages(
         self,
         adapter_io: IOEndpoint,
         event,
         root_session: AgentSession,
-        target_session: AgentSession,
     ) -> list[dict]:
         messages: list[dict] = []
 
@@ -278,9 +250,6 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 FunctionToolResultEvent,
             ),
         ):
-            from pydantic_ai.ui.vercel_ai import VercelAIEventStream
-            from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage
-
             stream = self.event_streams.setdefault(
                 adapter_io,
                 VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
@@ -321,15 +290,14 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             }
             messages.append(frame)
 
-        else:
-            if isinstance(event, SessionTreeUpdate):
-                if event.session_id == root_session.id:
-                    messages.append(
-                        {
-                            "type": "cmd-session-tree",
-                            **((await build_session_view(root_session)).model_dump()),
-                        }
-                    )
+        elif isinstance(event, SessionTreeUpdate):
+            if event.session_id == root_session.id:
+                messages.append(
+                    {
+                        "type": "cmd-session-tree",
+                        **((await build_session_view(root_session)).model_dump()),
+                    }
+                )
 
         return messages
 
@@ -434,9 +402,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         async def pump_out():
             while True:
                 _io, event = await queue.get()
-                for msg in await self._event_messages(
-                    adapter_io, event, root_session, target_session
-                ):
+                for msg in await self._event_messages(adapter_io, event, root_session):
                     msg_str = str(msg)
                     if len(msg_str) > 1024:
                         msg_str = msg_str[:1024] + "... (truncated)"
@@ -455,7 +421,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     event = self.pending_inputs.get(adapter_io)
                     if event is not None:
                         for msg in await self._event_messages(
-                            adapter_io, event, root_session, target_session
+                            adapter_io, event, root_session
                         ):
                             await websocket.send_json(msg)
                     await websocket.send_json({"type": "ack", "status": "ok"})
@@ -578,19 +544,6 @@ class VercelStreamServer:
             return found
         raise HTTPException(status_code=404, detail="Session node not found.")
 
-    async def _start_root(self, session: AgentSession) -> None:
-        if session.is_active:
-            raise HTTPException(status_code=409, detail="Session is already active.")
-        runner = ServingRunner(
-            session, self.config_loader, self.io_adapter, ChatServeDriver()
-        )
-        await runner.start_serving()
-
-    async def _stop_root(self, session_id: str) -> AgentSession:
-        session = await self._resolve_root_session(session_id)
-        await self.session_manager.stop_tree(session)
-        return session
-
     async def create_session(self, request: CreateSessionRequest) -> SessionView:
         main_agent_name = self.config_loader.current_config.app.main_agent
         session = AgentSession(
@@ -601,16 +554,21 @@ class VercelStreamServer:
             manager=self.session_manager,
         )
         await session.save()
-        await self._start_root(session)
-        return await build_session_view(session)
+        return await self.start_session(session.id)
 
     async def start_session(self, session_id: str) -> SessionView:
         session = await self._resolve_root_session(session_id)
-        await self._start_root(session)
+        if session.is_active:
+            raise HTTPException(status_code=409, detail="Session is already active.")
+        runner = ServingRunner(
+            session, self.config_loader, self.io_adapter, ChatServeDriver()
+        )
+        await runner.start_serving()
         return await build_session_view(session)
 
     async def stop_session(self, session_id: str) -> SessionView:
-        session = await self._stop_root(session_id)
+        session = await self._resolve_root_session(session_id)
+        await self.session_manager.stop_tree(session)
         return await build_session_view(session)
 
     async def get_session(self, session_id: str) -> SessionView:
