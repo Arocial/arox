@@ -12,7 +12,7 @@ from arox.core.session import (
     FileSessionStore,
 )
 from arox.plugins.core import CorePlugin
-from arox.plugins.slots import SYSTEM_PROMPT
+from arox.plugins.slots import SUBAGENTS, SYSTEM_PROMPT
 from arox.plugins.subagent import (
     SubagentMode,
     SubagentPlugin,
@@ -194,6 +194,42 @@ async def test_simple_mode_exposes_only_delegate_and_waits_for_result(agent_fact
         )
         assert child_session is not None
     finally:
+        await plugin.on_stop()
+
+
+@pytest.mark.asyncio
+async def test_simple_mode_uses_registered_task_lifecycle(agent_factory):
+    create_agent, _store = agent_factory
+    main_agent = create_agent(max_parallel_subagents=1)
+    plugin = SubagentPlugin(main_agent)
+    delegation = asyncio.create_task(
+        plugin.delegate_task("block until released", "planner")
+    )
+
+    try:
+        while not plugin.task_sessions:
+            await asyncio.sleep(0.01)
+        task_session = next(iter(plugin.task_sessions.values()))
+        subagent = task_session.runner.runtime
+        assert isinstance(subagent, _FakeDynamicAgent)
+        await subagent.started.wait()
+
+        get_subagents = main_agent._slots[SUBAGENTS][0]
+        assert get_subagents() == [subagent]
+
+        with pytest.raises(ValueError, match="Maximum parallel"):
+            await plugin.delegate_task("second task", "reviewer")
+
+        subagent.release.set()
+        assert await delegation == "task done: block until released"
+        assert plugin.task_sessions == {}
+        assert get_subagents() == []
+    finally:
+        for task_session in plugin.task_sessions.values():
+            runtime = task_session.runtime
+            if isinstance(runtime, _FakeDynamicAgent):
+                runtime.release.set()
+        await asyncio.gather(delegation, return_exceptions=True)
         await plugin.on_stop()
 
 
