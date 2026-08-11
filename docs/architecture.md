@@ -16,8 +16,8 @@ The runner creates the common `LLMBaseAgent` runtime, initializes its plugins an
 
 Session handling is a core capability provided by `arox/core/session.py`:
 
-- **`AgentSession`** is event-sourced: instead of storing a static message list, it stores a sequence of `SessionEvent`s (`agent_step`, `compaction`, `reset`, …) and rebuilds `message_history` by replay. The main agent's `AgentSession` is the top-level session for a run (the one addressed by `session_id`); subagents keep their own `AgentSession`s nested beneath it. Every `LLMBaseAgent` is constructed with an `AgentSession`.
-- **`llm_context_id`** is a UUID tracking the current LLM context window, passed to providers (e.g. via headers) to leverage server-side caching. A `reset` or `compaction` event rolls it forward, signaling a new context.
+- **`AgentSession`** is the persistent source of truth for identity, task metadata, events, and segmented message history. Events retain audit metadata, while `message_history` and `archived_message_histories` store the messages used by the runtime and historical forks. The main agent's `AgentSession` is the top-level session for a run (the one addressed by `session_id`); subagents keep their own `AgentSession`s nested beneath it. Every `LLMBaseAgent` is constructed with an `AgentSession`.
+- **`llm_context_id`** is a UUID tracking the current LLM context window, passed to providers (e.g. via headers) to leverage server-side caching. Compaction rolls it forward, signaling a new context.
 - **`SessionManager`** and **`SessionStore`** (default `FileSessionStore`) persist sessions as JSON with age-based cleanup. Sessions are loaded and provided to agents upon initialization, and saved on exit; resume by passing `session_id` to the App. The `CorePlugin` now focuses on user commands like `/fork`.
 
 ## IO system
@@ -57,7 +57,7 @@ Built-in adapters:
     - `tools()` — Python functions exposed to the LLM (`@tool`). Arox also natively supports **MCP** tools via `fastmcp`, registered alongside local tools.
     - `commands()` — slash / control commands for the human. Plugins override `commands()` to return `CommandSpec(event_cls, handler, completer)` bindings that `CommandManager` dispatches. Commands run locally without calling the LLM, saving time and tokens.
     - `history_processor()` — async hook that modifies message history before each LLM call.
-- **Slots** (`arox/core/slot.py`): typed tokens for loose coupling, used for both pull and push patterns. Producers call `agent.provide_slot(slot, impl)`; consumers pull or push notifications with `await agent.invoke_slot(slot, ...)`. Built-in slots live in `arox/plugins/slots.py` (e.g. `SUBAGENTS`, `PERSISTENT_CONTEXT`, `AGENT_RESET`).
+- **Slots** (`arox/core/slot.py`): typed tokens for loose coupling, used for both pull and push patterns. Producers call `agent.provide_slot(slot, impl)`; consumers pull or push notifications with `await agent.invoke_slot(slot, ...)`. Built-in slots live in `arox/plugins/slots.py` (e.g. `SUBAGENTS`, `PERSISTENT_CONTEXT`).
 - **Skills**: Discovered automatically during configuration loading (`arox/core/config.py`) from `~/.config/arox/skills/` and `.agents/skills/` directories in the workspace and global paths. They are injected into the agent's system prompt as an XML catalog. `AgentConfig.skills` restricts which skills are visible to a given agent.
 
 ## Data flow

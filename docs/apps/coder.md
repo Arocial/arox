@@ -25,7 +25,6 @@ The Coder app consists of the following components:
   - `/model`: Switch the underlying LLM model.
   - `/invoke_tool`: Manually invoke a specific tool.
   - `/list_tools`: List all available tools.
-  - `/reset`: Reset the conversation history.
   - `/info`: Display information about the current agent and model.
   - `/compact`: Trigger conversation compaction manually.
 

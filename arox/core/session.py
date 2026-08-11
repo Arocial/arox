@@ -25,11 +25,6 @@ class SessionEvent(BaseModel):
     agent_name: str = ""
 
 
-class ResetEvent(SessionEvent):
-    event_type: Literal["reset"] = "reset"
-    llm_context_id: str = ""
-
-
 class StepEvent(SessionEvent):
     event_type: Literal["agent_step"] = "agent_step"
 
@@ -76,7 +71,6 @@ class CompactionEvent(SessionEvent):
 
 AnySessionEvent = Annotated[
     Union[
-        ResetEvent,
         StepEvent,
         CommandEvent,
         UserInputEvent,
@@ -267,14 +261,6 @@ class AgentSession(Session):
         if history_to_archive.messages:
             self.archived_message_histories.append(history_to_archive)
         self.message_history = MessageHistorySegment(messages=list(messages))
-
-    def record_reset(self, llm_context_id: str) -> None:
-        self.run_info.llm_context_id = llm_context_id
-        self.add_event(
-            ResetEvent(llm_context_id=llm_context_id, agent_name=self.agent_name)
-        )
-        self._start_message_history([])
-        self.metadata.pop("last_user_messages", None)
 
     def record_step(
         self,

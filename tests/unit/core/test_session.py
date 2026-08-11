@@ -216,34 +216,6 @@ class TestAgentSession:
         assert not forked.message_history.contains_user_input(second_input.id)
 
     @pytest.mark.asyncio
-    async def test_fork_uses_archived_history_after_reset(self):
-        agent_session = AgentSession(agent_name="main")
-        first_input, first_request = _user_turn("first")
-        agent_session.add_event(first_input)
-        first_messages = [
-            first_request,
-            ModelResponse(parts=[TextPart(content="r1")]),
-        ]
-        agent_session.record_step(first_messages)
-        second_input, second_request = _user_turn("second")
-        agent_session.add_event(second_input)
-        agent_session.record_step(
-            [
-                *first_messages,
-                second_request,
-                ModelResponse(parts=[TextPart(content="r2")]),
-            ]
-        )
-        agent_session.record_reset("ctx-reset")
-
-        forked = await agent_session.fork_at(second_input.id)
-
-        assert forked.message_history.messages == first_messages
-        assert forked.archived_message_histories == []
-        assert forked.message_history.contains_user_input(first_input.id)
-        assert not forked.message_history.contains_user_input(second_input.id)
-
-    @pytest.mark.asyncio
     async def test_fork_at_none_creates_empty(self):
         agent_session = AgentSession(agent_name="main", path=["parent", "main"])
         agent_session.owner = AgentSession(agent_name="newowner", path=["newowner"])
@@ -298,7 +270,7 @@ class TestAgentSession:
         agent_session.add_event(
             UserInputEvent(user_input=UserInput(input_content="hello"))
         )
-        agent_session.add_event(CommandEvent(command="/reset"))
+        agent_session.add_event(CommandEvent(command="/info"))
         agent_session.add_event(ErrorEvent(error="something"))
         assert agent_session.message_history.messages == []
 
@@ -319,13 +291,6 @@ class TestAgentSession:
             UserInput(input_content="third", server_message_id="id3")
         )
         assert agent_session.metadata["last_user_messages"] == ["world", "third"]
-
-        before_reset = [ModelRequest(parts=[UserPromptPart(content="before reset")])]
-        agent_session.replace_message_history(before_reset)
-        agent_session.record_reset("ctx1")
-        assert agent_session.message_history.messages == []
-        assert agent_session.archived_message_histories[-1].messages == before_reset
-        assert "last_user_messages" not in agent_session.metadata
 
     def test_first_class_task_fields(self):
         agent_session = AgentSession(

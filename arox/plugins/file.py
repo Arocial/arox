@@ -20,7 +20,6 @@ from arox.core.completion import CompletionItem, CompletionRequest
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, tool
 from arox.plugins.slots import (
     AGENT_INFO,
-    AGENT_RESET,
     PERSISTENT_CONTEXT,
     PROJECT_FILES,
 )
@@ -61,14 +60,13 @@ class FilePlugin(Plugin):
         self.session_files = []
         self.persistent_files: dict[str, str] = {}
 
-        self.reset()
+        self._initialize_context()
 
     def on_load(self):
         self.agent.provide_slot(AGENT_INFO, self.get_info)
         self.agent.provide_slot(PERSISTENT_CONTEXT, self.get_persistent_context)
-        self.agent.provide_slot(AGENT_RESET, self.reset)
 
-    def reset(self):
+    def _initialize_context(self):
         self._pending_text_files = {}
         self._pending_binary_files = {}
         self.session_files = []

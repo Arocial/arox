@@ -32,7 +32,7 @@ mode = "advanced"
   - Identity and hierarchy (`id`, `path`, `owner`, `children`).
   - Task metadata (`task_name`, `target`, `initial_message`, `last_message`, `result`, `error`).
   - Ephemeral execution presence via `session.runner`; runners are not persisted.
-  - Message history is persisted as segments on the session and is the runtime source of truth. Events store only audit metadata; user turns are located through the existing `server_message_id` carried in `UserInput.input_content`. Compaction archives the processor's original messages, including the current user request, while reset archives the active segment, so historical forks can locate and slice the appropriate messages without replaying events or duplicating message payloads or IDs.
+  - Message history is persisted as segments on the session and is the runtime source of truth. Events store only audit metadata; user turns are located through the existing `server_message_id` carried in `UserInput.input_content`. Compaction archives the processor's original messages, including the current user request, so historical forks can locate and slice the appropriate messages without replaying events or duplicating message payloads or IDs.
   - Agent sessions persist only the agent name; full `AgentConfig` is resolved dynamically. The user-facing `AgentSession` is the top-level session; child tasks nest beneath it.
 - **`LLMBaseAgent`** is an ephemeral runtime owning live/expensive resources (Pydantic AI agent, MCP clients, plugins, tools, IO channels).
   - It executes one turn through `step()` and does not own asyncio tasks.
@@ -68,6 +68,6 @@ IO is split into two layers: per-agent channels and app-level adapters.
   - methods decorated with `@tool` — Python functions exposed to the LLM; the decorator's `enabled` condition can make exposure depend on plugin configuration
   - `commands()` — slash commands for the human (`@command`)
   - `history_processor()` — async hook to modify message history before LLM calls
-- **`Slot`** (`arox/core/slot.py`): typed token for loose coupling between plugins/agents, used for both pull and push patterns. Producers call `agent.provide_slot(slot, impl)`; consumers pull or push notifications with `await agent.invoke_slot(slot, ...)`. Built-in slots are in `arox/plugins/slots.py` (e.g. `SUBAGENT`, `PERSISTENT_CONTEXT`, `AGENT_RESET`).
+- **`Slot`** (`arox/core/slot.py`): typed token for loose coupling between plugins/agents, used for both pull and push patterns. Producers call `agent.provide_slot(slot, impl)`; consumers pull or push notifications with `await agent.invoke_slot(slot, ...)`. Built-in slots are in `arox/plugins/slots.py` (e.g. `SUBAGENTS`, `PERSISTENT_CONTEXT`).
 - **Skills**: Discovered automatically during configuration loading (`arox/core/config.py`) from `~/.config/arox/skills/` and `.agents/skills/` directories in the workspace and global paths. They are injected into the agent's system prompt as an XML catalog. `AgentConfig.skills` restricts which are visible. `AgentConfig.default_skills` allows loading the content of specific skills directly into the system prompt.
 - **MCP**: each agent can connect to MCP servers through its `pydantic_ai` client, exposing remote tools alongside local ones.

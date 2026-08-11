@@ -246,8 +246,7 @@ class Plugin:
         Called once after the plugin is constructed and its :meth:`commands`
         are registered (see :func:`load_plugins`). Override to register
         push-style slot providers via ``self.agent.provide_slot(slot, handler)``
-        (reset, step, command, user input, errors, ...) or to perform any other
-        one-time agent wiring.
+        or to perform any other one-time agent wiring.
         """
 
     def commands(self) -> Sequence[CommandSpec]:

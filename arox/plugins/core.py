@@ -34,12 +34,6 @@ class InfoEvent(CommandEvent):
 
 
 @dataclass(kw_only=True)
-class ResetEvent(CommandEvent):
-    slashes: ClassVar[tuple[str, ...]] = ("reset",)
-    description: ClassVar[str] = "Reset chat history and chat files - /reset"
-
-
-@dataclass(kw_only=True)
 class ForkEvent(CommandEvent):
     slashes: ClassVar[tuple[str, ...]] = ("fork",)
     description: ClassVar[str] = (
@@ -88,7 +82,6 @@ class CorePlugin(Plugin):
         return [
             CommandSpec(SetModelEvent, self.handle_set_model, self.complete_model_ref),
             CommandSpec(InfoEvent, self.handle_info),
-            CommandSpec(ResetEvent, self.handle_reset),
             CommandSpec(ForkEvent, self.handle_fork, self.complete_fork),
             CommandSpec(SkillEvent, self.handle_skill, self.complete_skill),
         ]
@@ -122,11 +115,6 @@ class CorePlugin(Plugin):
             if info:
                 lines.append(info)
         return "\n".join(lines)
-
-    async def handle_reset(self, event: ResetEvent) -> str:
-        self._pending_skills = []
-        await self.agent.reset()
-        return "Reset complete."
 
     async def complete_fork(self, req: CompletionRequest):
         session = self.agent.session

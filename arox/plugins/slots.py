@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import ModelMessage
 
-from arox.core.slot import DiscardSlot, FirstSlot, ListSlot
+from arox.core.slot import FirstSlot, ListSlot
 
 if TYPE_CHECKING:
     from arox.core.llm_base import LLMBaseAgent
@@ -36,13 +36,4 @@ PERSISTENT_CONTEXT = ListSlot[Callable[[], list[ModelMessage]], list[ModelMessag
 # Slot for providing additional system prompt fragments
 SYSTEM_PROMPT = ListSlot[Callable[[], str], str](
     "system_prompt", "Provides additional system prompt fragments"
-)
-
-
-# --- Push slots (handlers invoked by agent.notify) ---
-
-# Emitted after the agent's message history and llm_context_id are cleared.
-AGENT_RESET = DiscardSlot[Callable[[], Any]](
-    "agent_reset",
-    "The agent's conversational state was reset",
 )

@@ -80,7 +80,7 @@ async def plugin(tmp_path):
     agent = MockAgent(tmp_path)
     p = agent.register(ShellPlugin(agent))
     yield p
-    await p._reset()
+    await p.on_stop()
 
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell semantics")
@@ -418,14 +418,12 @@ async def test_shell_state_unknown_shell(plugin):
 
 
 @pytest.mark.asyncio
-async def test_reset_kills_all_backgrounds(plugin):
+async def test_on_stop_kills_all_backgrounds(plugin):
     await plugin.shell(command="sleep 30", description="long", run_in_background=True)
     await plugin.shell(command="sleep 30", description="long2", run_in_background=True)
     assert len(plugin._tasks) == 2
 
-    from arox.plugins.slots import AGENT_RESET
-
-    await plugin.agent.invoke_slot(AGENT_RESET)
+    await plugin.on_stop()
     assert plugin._tasks == {}
 
 

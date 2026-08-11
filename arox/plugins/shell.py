@@ -15,7 +15,7 @@ from typing import BinaryIO
 
 from arox.core.app import get_original_env_copy
 from arox.core.plugin import Plugin, tool
-from arox.plugins.slots import AGENT_INFO, AGENT_RESET
+from arox.plugins.slots import AGENT_INFO
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,6 @@ class ShellPlugin(Plugin):
 
     def on_load(self):
         self.agent.provide_slot(AGENT_INFO, self._get_info)
-        self.agent.provide_slot(AGENT_RESET, self._reset)
 
     def _get_cmd(self, command: str) -> list[str]:
         shell_path = _select_shell()
@@ -711,7 +710,7 @@ class ShellPlugin(Plugin):
             f"(exit code {task.process.returncode}, elapsed {task.elapsed():.1f}s)"
         )
 
-    async def _reset(self) -> None:
+    async def on_stop(self) -> None:
         drains = []
         for task_id in list(self._tasks):
             task = self._tasks.pop(task_id)

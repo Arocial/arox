@@ -59,10 +59,7 @@ from arox.core.slot import (
     Provider as SlotProvider,
 )
 from arox.core.types import ServerIdMapping, SessionTreeUpdate, UserInput
-from arox.plugins.slots import (
-    AGENT_RESET,
-    SYSTEM_PROMPT,
-)
+from arox.plugins.slots import SYSTEM_PROMPT
 
 from ._pydantic_ai_hack import infer_provider
 
@@ -617,11 +614,3 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
             raise
         finally:
             await self.session.save()
-
-    async def reset(self):
-        self.session.initialized = False
-        self.run_info = AgentRunInfo()
-        self.run_info.llm_context_id = str(uuid.uuid4())
-        await self.invoke_slot(AGENT_RESET)
-        self.session.record_reset(self.run_info.llm_context_id)
-        self.session.initialized = True
