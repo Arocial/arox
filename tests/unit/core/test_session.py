@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import RLock
 from types import SimpleNamespace
 
 import pytest
@@ -229,6 +230,16 @@ class TestAgentSession:
         # owner taken from the path; a fresh id is minted (located by nesting)
         assert forked.path[:-1] == agent_session.owner.path
         assert forked.id != agent_session.id
+
+    @pytest.mark.asyncio
+    async def test_fork_does_not_copy_active_runner(self):
+        runner = SimpleNamespace(lock=RLock())
+        agent_session = AgentSession(agent_name="main", runner=runner)
+
+        forked = await agent_session.fork_at(None)
+
+        assert agent_session.runner is runner
+        assert forked.runner is None
 
     @pytest.mark.asyncio
     async def test_fork_at_missing_event_raises(self):

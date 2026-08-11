@@ -390,34 +390,31 @@ class AgentSession(Session):
             forked_from = (self.path, event_id)
 
         manager_ref = self.manager
-        owner_ref = self.owner
-        self.manager = None
-        self.owner = None
-        try:
-            new_session = self.model_copy(
-                deep=True,
-                update={
-                    "path": [*owner.path, str(uuid.uuid4())]
-                    if owner
-                    else [str(uuid.uuid4())],
-                    "events": events,
-                    "archived_message_histories": archived_message_histories,
-                    "message_history": message_history,
-                    "forked_from": forked_from,
-                    "children": [],
-                    "task_name": None,
-                    "target": None,
-                    "initial_message": None,
-                    "last_message": None,
-                    "result": None,
-                    "error": None,
-                    "manager": manager_ref,
-                    "owner": owner,
-                },
-            )
-        finally:
-            self.manager = manager_ref
-            self.owner = owner_ref
+        copy_source = self.model_copy(
+            update={"manager": None, "owner": None, "runner": None}
+        )
+        new_session = copy_source.model_copy(
+            deep=True,
+            update={
+                "path": [*owner.path, str(uuid.uuid4())]
+                if owner
+                else [str(uuid.uuid4())],
+                "events": events,
+                "archived_message_histories": archived_message_histories,
+                "message_history": message_history,
+                "forked_from": forked_from,
+                "children": [],
+                "task_name": None,
+                "target": None,
+                "initial_message": None,
+                "last_message": None,
+                "result": None,
+                "error": None,
+                "manager": manager_ref,
+                "owner": owner,
+                "runner": None,
+            },
+        )
         new_session.run_info.llm_context_id = str(uuid.uuid4())
 
         if owner:
