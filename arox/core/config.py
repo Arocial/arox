@@ -91,7 +91,6 @@ class AgentConfig(BaseModel):
     model_params: dict[str, Any] = Field(default_factory=dict)
     model_prompt: dict[str, str] = Field(default_factory=dict)
     subagents: list[str] = Field(default_factory=list)
-    max_parallel_subagents: int = Field(default=4, ge=1, le=32)
 
 
 class AppConfig(BaseModel):

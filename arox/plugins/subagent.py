@@ -23,10 +23,6 @@ class SubagentMode(StrEnum):
     ADVANCED = "advanced"
 
 
-# Backwards compatibility alias
-SubagentTask = AgentSession
-
-
 class SubagentPlugin(Plugin):
     """Manage resumable child-agent tasks for a runtime."""
 
@@ -201,13 +197,6 @@ class SubagentPlugin(Plugin):
                 )
             if subagent_name not in self.runtime.agent_config.subagents:
                 raise ValueError(f"Agent '{subagent_name}' is not configured.")
-            if self._running_task_count() >= (
-                self.runtime.agent_config.max_parallel_subagents
-            ):
-                raise ValueError(
-                    "Maximum parallel subagents reached: "
-                    f"{self.runtime.agent_config.max_parallel_subagents}."
-                )
 
             task_session = self._create_child_session(
                 subagent_name,
@@ -227,13 +216,6 @@ class SubagentPlugin(Plugin):
                 await self._discard_task_session(task_session)
                 raise
             return task_session
-
-    def _running_task_count(self) -> int:
-        return sum(
-            1
-            for session in self.task_sessions.values()
-            if session.runner is not None and session.runner.current_task is not None
-        )
 
     async def _ensure_runner(
         self,
@@ -354,13 +336,6 @@ class SubagentPlugin(Plugin):
             if runner is not None and runner.current_task is not None:
                 raise ValueError(
                     f"Agent task '{task_session.target}' is already running."
-                )
-            if self._running_task_count() >= (
-                self.runtime.agent_config.max_parallel_subagents
-            ):
-                raise ValueError(
-                    "Maximum parallel subagents reached: "
-                    f"{self.runtime.agent_config.max_parallel_subagents}."
                 )
 
             await self._start_session_task(task_session, message)

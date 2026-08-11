@@ -69,8 +69,6 @@ class _HostAgent:
         self,
         session: AgentSession,
         store: FileSessionStore,
-        *,
-        max_parallel_subagents: int = 4,
     ):
         from arox.core.session import SessionManager
 
@@ -101,7 +99,6 @@ class _HostAgent:
                 "main": AgentConfig(
                     plugins=[],
                     subagents=["planner", "reviewer"],
-                    max_parallel_subagents=max_parallel_subagents,
                 ),
                 "planner": AgentConfig(description="Plans work"),
                 "reviewer": AgentConfig(description="Reviews code"),
@@ -141,13 +138,9 @@ def agent_factory(tmp_path, monkeypatch):
     store = FileSessionStore()
     store.base_dir = tmp_path / "sessions"
 
-    def create(*, max_parallel_subagents: int = 4):
+    def create():
         session = AgentSession(path=["main-session"], agent_name="main")
-        return _HostAgent(
-            session,
-            store,
-            max_parallel_subagents=max_parallel_subagents,
-        )
+        return _HostAgent(session, store)
 
     return create, store
 
@@ -200,7 +193,7 @@ async def test_simple_mode_exposes_only_delegate_and_waits_for_result(agent_fact
 @pytest.mark.asyncio
 async def test_simple_mode_uses_registered_task_lifecycle(agent_factory):
     create_agent, _store = agent_factory
-    main_agent = create_agent(max_parallel_subagents=1)
+    main_agent = create_agent()
     plugin = SubagentPlugin(main_agent)
     delegation = asyncio.create_task(
         plugin.delegate_task("block until released", "planner")
@@ -216,9 +209,9 @@ async def test_simple_mode_uses_registered_task_lifecycle(agent_factory):
 
         get_subagents = main_agent._slots[SUBAGENTS][0]
         assert get_subagents() == [subagent]
-
-        with pytest.raises(ValueError, match="Maximum parallel"):
-            await plugin.delegate_task("second task", "reviewer")
+        assert await plugin.delegate_task("second task", "reviewer") == (
+            "task done: second task"
+        )
 
         subagent.release.set()
         assert await delegation == "task done: block until released"
@@ -226,9 +219,9 @@ async def test_simple_mode_uses_registered_task_lifecycle(agent_factory):
         assert get_subagents() == []
     finally:
         for task_session in plugin.task_sessions.values():
-            runtime = task_session.runtime
-            if isinstance(runtime, _FakeDynamicAgent):
-                runtime.release.set()
+            runner = task_session.runner
+            if runner is not None and isinstance(runner.runtime, _FakeDynamicAgent):
+                runner.runtime.release.set()
         await asyncio.gather(delegation, return_exceptions=True)
         await plugin.on_stop()
 
@@ -437,9 +430,9 @@ async def test_list_agents_filters_and_summarizes_results(agent_factory):
 
 
 @pytest.mark.asyncio
-async def test_spawn_validates_name_type_and_parallel_limit(agent_factory):
+async def test_spawn_validates_name_type_and_duplicate_task(agent_factory):
     create_agent, _store = agent_factory
-    main_agent = create_agent(max_parallel_subagents=1)
+    main_agent = create_agent()
     plugin = _advanced_plugin(main_agent)
 
     try:
@@ -455,8 +448,9 @@ async def test_spawn_validates_name_type_and_parallel_limit(agent_factory):
         assert isinstance(first_task_session.runner.runtime, _FakeDynamicAgent)
         await first_task_session.runner.runtime.started.wait()
 
-        with pytest.raises(ValueError, match="Maximum parallel"):
-            await plugin.spawn_agent("second_task", "task", "reviewer")
+        await plugin.spawn_agent("second_task", "task", "reviewer")
+        second_result = await plugin.wait_agent("second_task")
+        assert "task done: task" in second_result
         with pytest.raises(ValueError, match="already exists"):
             await plugin.spawn_agent("first_task", "task", "planner")
 
