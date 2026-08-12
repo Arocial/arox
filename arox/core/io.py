@@ -153,30 +153,6 @@ def create_io_channel() -> tuple[IOEndpoint, IOEndpoint]:
 
 
 class AbstractIOAdapter(ABC):
-    def __init__(self):
-        self.hosts: dict[str, Any] = {}
-        self._tg: asyncio.TaskGroup = asyncio.TaskGroup()
-
-    async def register_host(self, host: "IOHost"):
-        self.hosts[host.uuid] = host
-
-    async def unregister_host(self, host: "IOHost") -> None:
-        """Remove a host previously registered with this adapter."""
-        self.hosts.pop(host.uuid, None)
-
-    async def _find_host(self, adapter_io: IOEndpoint):
-        """Locate the runtime that owns ``adapter_io`` across registered hosts."""
-        for host in self.hosts.values():
-            if host.adapter_io is adapter_io:
-                return host
-            if hasattr(host, "invoke_slot"):
-                from arox.plugins.slots import SUBAGENTS
-
-                for runtime in await host.invoke_slot(SUBAGENTS) or []:
-                    if runtime.adapter_io is adapter_io:
-                        return runtime
-        return None
-
     async def _process_io(self, adapter_io: IOEndpoint):
         try:
             while True:

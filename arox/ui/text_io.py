@@ -32,7 +32,6 @@ from arox.core.completion import CompletionRouter, parse_request
 from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
-    IOHost,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,17 +124,11 @@ class TextIOAdapter(AbstractIOAdapter):
         """Bind the app-level action for Ctrl+C in the foreground UI."""
         self.interrupt_handler = handler
 
-    async def register_host(self, host: "IOHost"):
-        await super().register_host(host)
-
-        merged_router = CompletionRouter()
-        for h in self.hosts.values():
-            cmd_mgr = getattr(h, "command_manager", None)
-            if cmd_mgr is not None:
-                merged_router.merge(cmd_mgr.completion_router)
-
-        main_host = list(self.hosts.values())[0] if self.hosts else host
-        completer = CommandCompleter(merged_router, runtime=main_host)
+    def _bind_completion_runtime(self, runtime: Any) -> None:
+        completer = CommandCompleter(
+            runtime.command_manager.completion_router,
+            runtime=runtime,
+        )
         self.user_input = UserInputGenerator(
             completer=completer,
             input=self.user_input.input,
@@ -202,6 +195,8 @@ class TextIOAdapter(AbstractIOAdapter):
             )
         elif isinstance(event, ChatInputRequest):
             user_input: str | None = None
+            if event.runtime is not None:
+                self._bind_completion_runtime(event.runtime)
             if event.pending_exception is not None:
                 print(f"⚠️ An error occurred: {event.pending_exception}")
             if event.request_normal_input:

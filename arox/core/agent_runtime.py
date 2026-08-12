@@ -248,7 +248,6 @@ class AgentRuntime(IOHost):
         if self.session.runner is None or self.session.runner.runtime is not self:
             raise RuntimeError("Agent runtime must be started through a SessionRunner.")
         await super().__aenter__()
-        await self.io_adapter.register_host(self)
 
         if self.mcp_client:
             await self._stack.enter_async_context(self.mcp_client)
@@ -270,7 +269,6 @@ class AgentRuntime(IOHost):
             try:
                 await super().__aexit__(exc_type, exc_val, exc_tb)
             finally:
-                await self.io_adapter.unregister_host(self)
                 await self.session.save()
 
     def add_local_tool(self, func, **kwargs):

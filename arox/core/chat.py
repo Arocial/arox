@@ -17,6 +17,7 @@ class StepDoneEvent:
 class ChatInputRequest(RequestEvent):
     request_normal_input: bool = True
     pending_exception: BaseException | None = None
+    runtime: object | None = None
 
 
 @dataclass
@@ -34,7 +35,7 @@ class ChatServeDriver:
 
         while True:
             # 1. Prepare the event for this round
-            input_request = ChatInputRequest()
+            input_request = ChatInputRequest(runtime=runtime)
 
             if pending_exception:
                 input_request.pending_exception = pending_exception

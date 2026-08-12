@@ -82,17 +82,8 @@ class _HostAgent:
         async def _fake_process_io(adapter_io):
             pass
 
-        async def _fake_register_host(host):
-            self.io_adapter.hosts[host.uuid] = host
-
-        async def _fake_unregister_host(host):
-            self.io_adapter.hosts.pop(host.uuid, None)
-
         self.io_adapter = SimpleNamespace(
             _process_io=_fake_process_io,
-            register_host=_fake_register_host,
-            unregister_host=_fake_unregister_host,
-            hosts={},
         )
         self.agent_io = SimpleNamespace(send=AsyncMock())
         self.workspace = None

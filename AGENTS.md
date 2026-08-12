@@ -50,7 +50,7 @@ mode = "advanced"
 IO is split into two layers: per-agent channels and app-level adapters.
 
 - **Per-agent channel** (`arox/core/io.py`): `create_io_channel()` returns a pair of `IOEndpoint` instances backed by two in-memory streams. Every runtime holds its own `agent_io: IOEndpoint` and uses `send` / `receive` to talk to the UI — both the main runtime and each subagent runtime have independent channels, so their output can be routed/rendered separately. `RequestEvent` / `ReplyEvent` provide request/reply correlation on top of `send` / `receive`.
-- **App-level adapter** (`arox/ui/`, base `AbstractIOAdapter`): one adapter per App. It registers runtime hosts, consumes each runtime's adapter-side `IOEndpoint`, and renders events to the concrete UI. Available adapters:
+- **App-level adapter** (`arox/ui/`, base `AbstractIOAdapter`): one adapter per App. Each runtime's `IOHost` starts an adapter-side consumer for its paired `IOEndpoint`; the adapter renders those events to the concrete UI. Available adapters:
   - `TextIOAdapter` — rich terminal via `prompt-toolkit`
   - `VercelStreamIOAdapter` — web frontend via Vercel AI SDK (FastAPI/SSE)
   - `TelegramIOAdapter`, `FeishuIOAdapter` — chat bots
