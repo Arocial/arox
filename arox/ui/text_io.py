@@ -205,21 +205,11 @@ class TextIOAdapter(AbstractIOAdapter):
             if event.pending_exception is not None:
                 print(f"⚠️ An error occurred: {event.pending_exception}")
             if event.request_normal_input:
-                runtime = await self._find_host(adapter_io)
-                while True:
-                    try:
-                        line = await self.user_input()
-                    except (EOFError, KeyboardInterrupt):
-                        user_input = None
-                        await self._flush_stdin()
-                        break
-                    if line.startswith("/") and runtime is not None:
-                        cmd_reply = await runtime.command_manager.try_handle_slash(line)
-                        if cmd_reply is not None and cmd_reply.output:
-                            print(cmd_reply.output)
-                        continue
-                    user_input = line
-                    break
+                try:
+                    user_input = await self.user_input()
+                except (EOFError, KeyboardInterrupt):
+                    user_input = None
+                    await self._flush_stdin()
             await adapter_io.send(
                 ChatInputReply(
                     req_id=event.req_id,

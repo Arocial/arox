@@ -84,19 +84,8 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
                     f"⚠️ An error occurred: {event.pending_exception}"
                 )
             if event.request_normal_input:
-                runtime = await self._find_host(adapter_io)
                 while True:
                     line = await self.input_queue.get()
-                    if (
-                        isinstance(line, str)
-                        and line.startswith("/")
-                        and runtime is not None
-                    ):
-                        cmd_reply = await runtime.command_manager.try_handle_slash(line)
-                        if cmd_reply is not None:
-                            if cmd_reply.output:
-                                await self.send_message(cmd_reply.output)
-                            continue
                     user_input = line
                     break
             await adapter_io.send(

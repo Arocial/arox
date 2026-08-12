@@ -46,6 +46,16 @@ class ChatServeDriver:
             if reply.is_abort(input_request):
                 break
 
+            text_input = reply.text_content
+            if text_input and text_input.startswith("/"):
+                command_reply = await runtime.command_manager.try_handle_slash(
+                    text_input
+                )
+                if command_reply is not None:
+                    if command_reply.output:
+                        await runtime.agent_io.send(command_reply.output)
+                    continue
+
             # 5. Execute the step
             try:
                 result = await runner.start_turn(reply)

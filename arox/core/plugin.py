@@ -173,8 +173,8 @@ class CommandManager:
 
         Returns the :class:`CommandReply` on success, or ``None`` if ``line``
         is not a slash command or could not be parsed (e.g. unknown command).
-        Shared entry point for IO adapters that need to intercept slash
-        commands typed into a normal input field.
+        Shared entry point for chat/control-flow drivers that need to handle
+        slash commands before dispatching normal input to the agent.
         """
         if not line.startswith("/"):
             return None

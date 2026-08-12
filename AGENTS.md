@@ -61,7 +61,7 @@ IO is split into two layers: per-agent channels and app-level adapters.
 - **`AgentRuntime`** (`arox/core/agent_runtime.py`): the single LLM runtime. Owns inference, plugins, tools, MCP clients, IO channels, and single-turn `run_turn()` execution.
 - **`TaskSessionRunner`** (`arox/core/runner.py`): manages resumable task turns.
 - **`ServeRunner`** (`arox/core/runner.py`): manages the long-lived interaction loop and its current turn.
-- **`ChatServeDriver`** (`arox/core/chat.py`): implements the chat request/reply loop.
+- **`ChatServeDriver`** (`arox/core/chat.py`): implements the chat request/reply loop and handles slash commands from normal user input before starting an LLM turn.
 
 **Extension points**
 - **`Plugin`** (`arox/core/plugin.py`): primary extension unit. A plugin declares:

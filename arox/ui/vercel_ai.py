@@ -307,16 +307,6 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             return
         await target.agent_io.send(output)
 
-    async def _reissue_pending_input(self, target) -> None:
-        """Re-emit the current pending ChatInputRequest so the client sees a
-        fresh ``data-input-request``. Used after handling a command that did
-        not consume the agent's pending input."""
-        event = self.pending_inputs.get(target.adapter_io)
-        if event is None:
-            return
-        queue = self.event_queues.setdefault(target.adapter_io, asyncio.Queue())
-        await queue.put((target.adapter_io, event))
-
     async def _apply_input(self, target, payload: dict) -> dict:
         if payload.get("cancel"):
             runner = target.session.runner
@@ -358,22 +348,8 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 client_message_id=reply_metadata.get("client_message_id"),
             )
 
-            text_input = chat_input_reply.text_content
-
-            # Intercept slash commands typed into the app so they don't
-            # round-trip through the LLM. Mirrors the structured "command"
-            # branch above and TextIOAdapter's slash handling.
-            if text_input and text_input.startswith("/"):
-                cmd_reply = await target.command_manager.try_handle_slash(text_input)
-                if cmd_reply is not None:
-                    await self._render_command_output(target, cmd_reply.output)
-                    # The agent is still blocked on its current ChatInputRequest;
-                    # re-emit it so the client can submit again.
-                    await self._reissue_pending_input(target)
-                    return {"status": "ok", "output": cmd_reply.output}
-
-            await target.adapter_io.send(chat_input_reply)
             self.pending_inputs.pop(target.adapter_io, None)
+            await target.adapter_io.send(chat_input_reply)
             return {"status": "ok"}
 
         return {"status": "noop"}

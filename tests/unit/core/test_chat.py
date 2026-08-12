@@ -2,7 +2,9 @@ import asyncio
 import signal
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from prompt_toolkit.input import create_pipe_input
@@ -11,7 +13,8 @@ from pydantic_ai import ToolCallPart
 from pydantic_ai.models.test import TestModel
 
 from arox.core.app import app_setup
-from arox.core.chat import ChatServeDriver
+from arox.core.chat import ChatInputReply, ChatInputRequest, ChatServeDriver
+from arox.core.plugin import CommandReply
 from arox.core.runner import ServeRunner
 from arox.core.session import AgentSession
 from arox.ui.text_io import TextIOAdapter, UserInputGenerator
@@ -20,6 +23,74 @@ from arox.ui.text_io import TextIOAdapter, UserInputGenerator
 def multiply(a: int, b: int) -> int:
     """calculate a * b"""
     return a * b
+
+
+class FakeAgentIO:
+    def __init__(self, inputs: list[str | None]):
+        self.inputs = iter(inputs)
+        self.events: list[object] = []
+
+    async def send(self, event):
+        self.events.append(event)
+        if isinstance(event, ChatInputRequest):
+            return ChatInputReply(
+                req_id=event.req_id,
+                input_content=next(self.inputs),
+            )
+        return None
+
+
+@pytest.mark.asyncio
+async def test_chat_driver_handles_slash_commands_before_starting_turn():
+    agent_io = FakeAgentIO(["/info", None])
+    command_manager = SimpleNamespace(
+        try_handle_slash=AsyncMock(return_value=CommandReply(req_id="", output="info"))
+    )
+    runtime = SimpleNamespace(agent_io=agent_io, command_manager=command_manager)
+    start_turn = AsyncMock()
+    runner = cast(
+        ServeRunner,
+        SimpleNamespace(
+            runtime=runtime,
+            start_turn=start_turn,
+            session=SimpleNamespace(record_turn_error=AsyncMock()),
+        ),
+    )
+
+    await ChatServeDriver().serve(runner)
+
+    command_manager.try_handle_slash.assert_awaited_once_with("/info")
+    start_turn.assert_not_awaited()
+    requests = [
+        event for event in agent_io.events if isinstance(event, ChatInputRequest)
+    ]
+    assert len(requests) == 2
+    assert "info" in agent_io.events
+
+
+@pytest.mark.asyncio
+async def test_chat_driver_sends_unknown_slash_commands_to_the_agent():
+    agent_io = FakeAgentIO(["/unknown", None])
+    command_manager = SimpleNamespace(try_handle_slash=AsyncMock(return_value=None))
+    runtime = SimpleNamespace(agent_io=agent_io, command_manager=command_manager)
+    start_turn = AsyncMock(return_value=SimpleNamespace(output="done"))
+    runner = cast(
+        ServeRunner,
+        SimpleNamespace(
+            runtime=runtime,
+            start_turn=start_turn,
+            session=SimpleNamespace(record_turn_error=AsyncMock()),
+        ),
+    )
+
+    await ChatServeDriver().serve(runner)
+
+    command_manager.try_handle_slash.assert_awaited_once_with("/unknown")
+    start_turn.assert_awaited_once()
+    await_args = start_turn.await_args
+    assert await_args is not None
+    reply = await_args.args[0]
+    assert reply.text_content == "/unknown"
 
 
 @pytest.mark.asyncio
