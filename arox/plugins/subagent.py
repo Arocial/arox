@@ -114,10 +114,9 @@ class SubagentPlugin(Plugin):
             self._register_task_session(child_session)
 
     async def on_stop(self) -> None:
-        await asyncio.gather(
-            *(self._close_runner(session) for session in self.task_sessions.values()),
-            return_exceptions=True,
-        )
+        session_manager = self.runtime.session.manager
+        if session_manager is not None:
+            await session_manager.stop_descendants(self.runtime.session)
 
     @staticmethod
     async def _close_runner(task_session: AgentSession) -> None:
@@ -369,7 +368,7 @@ class SubagentPlugin(Plugin):
         """Interrupt a running agent turn while preserving its session for follow-up."""
         task_session = self._resolve_task(target)
         runner = task_session.runner
-        if runner is None or not await runner.cancel():
+        if runner is None or not await runner.cancel_turn():
             return "Agent is not running.\n" + self._format_task(task_session, False)
         return "Agent interrupted.\n" + self._format_task(task_session, False)
 

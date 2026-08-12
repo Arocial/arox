@@ -85,9 +85,13 @@ class _HostAgent:
         async def _fake_register_host(host):
             self.io_adapter.hosts[host.uuid] = host
 
+        async def _fake_unregister_host(host):
+            self.io_adapter.hosts.pop(host.uuid, None)
+
         self.io_adapter = SimpleNamespace(
             _process_io=_fake_process_io,
             register_host=_fake_register_host,
+            unregister_host=_fake_unregister_host,
             hosts={},
         )
         self.agent_io = SimpleNamespace(send=AsyncMock())
@@ -473,7 +477,9 @@ async def test_on_start_restores_task_without_process_state(agent_factory):
     assert isinstance(first_task_session.runner.runtime, _FakeDynamicAgent)
     await first_task_session.runner.runtime.started.wait()
 
-    restored_main = _HostAgent(first_main.session, store)
+    restored_session = await store.load_session(first_main.session.path)
+    assert isinstance(restored_session, AgentSession)
+    restored_main = _HostAgent(restored_session, store)
     restored_plugin = _advanced_plugin(restored_main)
     try:
         await restored_plugin.on_start()

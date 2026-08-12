@@ -510,13 +510,20 @@ class SessionManager:
                 self._sessions.pop(cached_path, None)
 
     async def stop_all(self) -> None:
-        """Stop every live root tree managed by this instance."""
-        roots = [
+        """Stop every active tree, including children whose root is inactive."""
+        active_sessions = [
             session
             for session in self._sessions.values()
-            if isinstance(session, AgentSession)
-            and session.is_active
-            and len(session.path) == 1
+            if isinstance(session, AgentSession) and session.is_active
+        ]
+        active_paths = {tuple(session.path) for session in active_sessions}
+        roots = [
+            session
+            for session in active_sessions
+            if not any(
+                tuple(session.path[:depth]) in active_paths
+                for depth in range(1, len(session.path))
+            )
         ]
         await asyncio.gather(
             *(self.stop_tree(session) for session in roots),
@@ -574,11 +581,15 @@ class SessionManager:
         return None
 
     async def stop_tree(self, root: Session) -> None:
-        for child in await self.children_of(root):
-            await self.stop_tree(child)
+        await self.stop_descendants(root)
         if isinstance(root, AgentSession):
             if root.runner is not None:
                 await root.runner.stop()
+
+    async def stop_descendants(self, root: Session) -> None:
+        """Stop all active descendants in child-first order, preserving root."""
+        for child in await self.children_of(root):
+            await self.stop_tree(child)
 
     async def delete_tree(self, root: Session) -> None:
         await self.stop_tree(root)

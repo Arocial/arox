@@ -66,7 +66,9 @@ class _MockAgent:
             pass
 
         self.io_adapter = SimpleNamespace(
-            register_host=AsyncMock(), _process_io=_fake_process_io
+            register_host=AsyncMock(),
+            unregister_host=AsyncMock(),
+            _process_io=_fake_process_io,
         )
 
         self._stack = contextlib.AsyncExitStack()

@@ -270,8 +270,7 @@ class AgentRuntime(IOHost):
             try:
                 await super().__aexit__(exc_type, exc_val, exc_tb)
             finally:
-                if hasattr(self.io_adapter, "hosts"):
-                    self.io_adapter.hosts.pop(self.uuid, None)
+                await self.io_adapter.unregister_host(self)
                 await self.session.save()
 
     def add_local_tool(self, func, **kwargs):

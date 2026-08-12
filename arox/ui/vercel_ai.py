@@ -35,7 +35,7 @@ from arox.core.chat import (
 from arox.core.completion import parse_request
 from arox.core.config import ConfigLoader
 from arox.core.io import AbstractIOAdapter, IOEndpoint
-from arox.core.runner import ServeRunner, TaskSessionRunner
+from arox.core.runner import ServeRunner
 from arox.core.session import AgentSession
 from arox.core.types import ServerIdMapping, SessionTreeUpdate
 
@@ -320,10 +320,8 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     async def _apply_input(self, target, payload: dict) -> dict:
         if payload.get("cancel"):
             runner = target.session.runner
-            if isinstance(runner, ServeRunner):
+            if runner is not None:
                 await runner.cancel_turn()
-            elif isinstance(runner, TaskSessionRunner):
-                await runner.cancel()
             return {"status": "cancelled"}
 
         cmd = payload.get("command")
@@ -487,7 +485,8 @@ class VercelStreamServer:
 
         @asynccontextmanager
         async def lifespan(app: FastAPI):
-            async with self.session_manager, self.io_adapter:
+            # Stop all session runtimes before closing their shared IO adapter.
+            async with self.io_adapter, self.session_manager:
                 yield
 
         self.app = FastAPI(lifespan=lifespan)

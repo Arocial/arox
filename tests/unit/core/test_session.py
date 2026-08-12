@@ -2,6 +2,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic_ai.messages import (
@@ -714,3 +715,18 @@ class TestFileSessionStore:
         assert loaded.children == []
         assert await manager.resolve(child.id, loaded) is None
         assert await store.load_session(child.path) is None
+
+    @pytest.mark.asyncio
+    async def test_stop_all_stops_active_child_when_root_is_inactive(self, store):
+        manager = SessionManager(store)
+        manager.register_session_type(AgentSession)
+        root = AgentSession(agent_name="main", path=["root"], manager=manager)
+        child = root.create_child_session("worker", task_name="child")
+        child_runner = SimpleNamespace(stop=AsyncMock())
+        child.runner = child_runner
+        manager._track(root)
+        manager._track(child, root)
+
+        await manager.stop_all()
+
+        child_runner.stop.assert_awaited_once()

@@ -73,6 +73,10 @@ class SessionRunner(ABC):
                 self.session.runner = None
 
     @abstractmethod
+    async def cancel_turn(self) -> bool:
+        """Cancel the current turn while keeping the runtime active."""
+
+    @abstractmethod
     async def stop(self) -> None:
         """Stop all execution and release the runtime."""
 
@@ -119,7 +123,7 @@ class TaskSessionRunner(SessionRunner):
             return await asyncio.shield(task)
         return await asyncio.wait_for(asyncio.shield(task), timeout)
 
-    async def cancel(self) -> bool:
+    async def cancel_turn(self) -> bool:
         task = self._task
         if task is None or task.done():
             return False
@@ -128,7 +132,7 @@ class TaskSessionRunner(SessionRunner):
         return True
 
     async def stop(self) -> None:
-        await self.cancel()
+        await self.cancel_turn()
         await self._stop_runtime()
 
 

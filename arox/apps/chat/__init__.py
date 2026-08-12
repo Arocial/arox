@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import sys
+from typing import cast
 from pathlib import Path
 
 # Disable fastmcp custom logging
@@ -140,10 +141,15 @@ def main(profile: str | None = None):
             else:
                 session.manager = session_manager
 
-            async with session_manager, io_adapter:
+            # Stop all session runtimes before closing their shared IO adapter.
+            async with io_adapter, session_manager:
                 runner = ServeRunner(
                     session, config_loader, io_adapter, ChatServeDriver()
                 )
+                if args.ui == "text":
+                    cast("TextIOAdapter", io_adapter).set_interrupt_handler(
+                        runner.cancel_turn
+                    )
                 try:
                     main_agent = await runner.start()
                     if args.session:

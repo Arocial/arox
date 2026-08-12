@@ -430,10 +430,10 @@ system_prompt = "Hi."
         with pytest.raises(TimeoutError):
             await runner.wait(0.01)
         assert runner.current_task is task
-        assert await runner.cancel()
+        assert await runner.cancel_turn()
         assert task.cancelled()
         assert runner.current_task is None
-        assert not await runner.cancel()
+        assert not await runner.cancel_turn()
     runtime.session.runner = None
 
 

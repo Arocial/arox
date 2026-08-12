@@ -160,6 +160,10 @@ class AbstractIOAdapter(ABC):
     async def register_host(self, host: "IOHost"):
         self.hosts[host.uuid] = host
 
+    async def unregister_host(self, host: "IOHost") -> None:
+        """Remove a host previously registered with this adapter."""
+        self.hosts.pop(host.uuid, None)
+
     async def _find_host(self, adapter_io: IOEndpoint):
         """Locate the runtime that owns ``adapter_io`` across registered hosts."""
         for host in self.hosts.values():

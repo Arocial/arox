@@ -1,6 +1,8 @@
 import asyncio
+import inspect
 import logging
 import signal
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, override
 
@@ -32,7 +34,6 @@ from arox.core.io import (
     IOEndpoint,
     IOHost,
 )
-from arox.core.runner import ServeRunner, TaskSessionRunner
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,13 @@ class TextIOAdapter(AbstractIOAdapter):
     def __init__(self):
         super().__init__()
         self.user_input: UserInputGenerator = UserInputGenerator()
+        self.interrupt_handler: Callable[[], Awaitable[object] | object] | None = None
+
+    def set_interrupt_handler(
+        self, handler: Callable[[], Awaitable[object] | object] | None
+    ) -> None:
+        """Bind the app-level action for Ctrl+C in the foreground UI."""
+        self.interrupt_handler = handler
 
     async def register_host(self, host: "IOHost"):
         await super().register_host(host)
@@ -139,25 +147,15 @@ class TextIOAdapter(AbstractIOAdapter):
 
         def sigint_handler(signum, frame):
             logger.info("Received SIGINT, cancelling current step...")
-            for host in self.hosts.values():
-                if isinstance(host.session.runner, ServeRunner):
-                    loop.create_task(host.session.runner.cancel_turn())
-                elif isinstance(host.session.runner, TaskSessionRunner):
-                    loop.create_task(host.session.runner.cancel())
+            if self.interrupt_handler is None:
+                return
+            result = self.interrupt_handler()
+            if inspect.isawaitable(result):
 
-            async def _cancel_all_subagents():
-                from arox.core.agent_runtime import AgentRuntime
-                from arox.plugins.slots import SUBAGENTS
+                async def await_interrupt() -> None:
+                    await result
 
-                for h in self.hosts.values():
-                    if isinstance(h, AgentRuntime):
-                        for runtime in await h.invoke_slot(SUBAGENTS) or []:
-                            if isinstance(runtime.session.runner, ServeRunner):
-                                await runtime.session.runner.cancel_turn()
-                            elif isinstance(runtime.session.runner, TaskSessionRunner):
-                                await runtime.session.runner.cancel()
-
-            loop.create_task(_cancel_all_subagents())
+                loop.create_task(await_interrupt())
 
         self.original_sigint_handler = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, sigint_handler)
