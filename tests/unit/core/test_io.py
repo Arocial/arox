@@ -8,7 +8,6 @@ from arox.core.io import (
     IOHost,
     ReplyEvent,
     RequestEvent,
-    create_io_channel,
 )
 
 
@@ -44,9 +43,14 @@ async def _drain(endpoint, on_event):
         await on_event(event)
 
 
+def _create_test_channel():
+    host = IOHost(_RecordingAdapter())
+    return host.agent_io, host.adapter_io
+
+
 @pytest.mark.asyncio
 async def test_request_reply_agent_to_adapter():
-    agent_io, adapter_io = create_io_channel()
+    agent_io, adapter_io = _create_test_channel()
     async with agent_io, adapter_io:
         adapter_inbox: asyncio.Queue = asyncio.Queue()
         agent_inbox: asyncio.Queue = asyncio.Queue()
@@ -74,7 +78,7 @@ async def test_request_reply_agent_to_adapter():
 
 @pytest.mark.asyncio
 async def test_request_reply_adapter_to_agent():
-    agent_io, adapter_io = create_io_channel()
+    agent_io, adapter_io = _create_test_channel()
     async with agent_io, adapter_io:
         adapter_inbox: asyncio.Queue = asyncio.Queue()
         agent_inbox: asyncio.Queue = asyncio.Queue()
@@ -105,7 +109,7 @@ async def test_fire_and_forget_send_returns_none():
     class Plain:
         value: int = 0
 
-    agent_io, adapter_io = create_io_channel()
+    agent_io, adapter_io = _create_test_channel()
     async with agent_io, adapter_io:
         result = await adapter_io.send(Plain(value=42))
         assert result is None
@@ -120,7 +124,7 @@ async def test_unknown_reply_is_dropped():
     class Plain:
         pass
 
-    agent_io, adapter_io = create_io_channel()
+    agent_io, adapter_io = _create_test_channel()
     async with agent_io, adapter_io:
         await adapter_io.send(_Pong(req_id="ghost", payload=""))
         await adapter_io.send(Plain())
@@ -130,7 +134,7 @@ async def test_unknown_reply_is_dropped():
 
 @pytest.mark.asyncio
 async def test_send_cancelled_clears_pending():
-    agent_io, adapter_io = create_io_channel()
+    agent_io, adapter_io = _create_test_channel()
     async with agent_io, adapter_io:
         ping = _Ping(payload="x")
         send_task = asyncio.create_task(agent_io.send(ping))
@@ -147,6 +151,9 @@ async def test_send_cancelled_clears_pending():
 async def test_io_host_owns_adapter_event_loop_and_cleanup():
     adapter = _RecordingAdapter()
     host = IOHost(adapter)
+
+    assert host.agent_io.host is host
+    assert host.adapter_io.host is host
 
     async with host:
         await host.agent_io.send("hello")

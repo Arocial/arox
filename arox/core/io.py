@@ -98,8 +98,9 @@ class _BaseIOEndpoint:
 class IOEndpoint(_BaseIOEndpoint):
     _SYNTHETIC_INDEX_MIN = -(2**31)
 
-    def __init__(self, tx, rx):
+    def __init__(self, tx, rx, *, host: "IOHost"):
         super().__init__(tx, rx)
+        self.host = host
         self._synthetic_index = 0
 
     def _next_synthetic_index(self) -> int:
@@ -145,10 +146,13 @@ class IOEndpoint(_BaseIOEndpoint):
         return await self._receive()
 
 
-def create_io_channel() -> tuple[IOEndpoint, IOEndpoint]:
+def create_io_channel(host: "IOHost") -> tuple[IOEndpoint, IOEndpoint]:
     agent_tx, adapter_rx = create_memory_object_stream[Any](math.inf)
     adapter_tx, agent_rx = create_memory_object_stream[Any](math.inf)
-    return IOEndpoint(agent_tx, agent_rx), IOEndpoint(adapter_tx, adapter_rx)
+    return (
+        IOEndpoint(agent_tx, agent_rx, host=host),
+        IOEndpoint(adapter_tx, adapter_rx, host=host),
+    )
 
 
 class AbstractIOAdapter(ABC):
@@ -178,7 +182,7 @@ class IOHost:
 
     def __init__(self, io_adapter: "AbstractIOAdapter"):
         self.uuid: str = str(uuid.uuid4())
-        self.agent_io, self.adapter_io = create_io_channel()
+        self.agent_io, self.adapter_io = create_io_channel(self)
         self.io_adapter = io_adapter
         self._stack = contextlib.AsyncExitStack()
         self._request_handlers: dict[type[RequestEvent], Callable[[Any], Any]] = {}

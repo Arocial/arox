@@ -213,7 +213,7 @@ class TextIOAdapter(AbstractIOAdapter):
             if event.pending_exception is not None:
                 print(f"⚠️ An error occurred: {event.pending_exception}")
             if event.request_normal_input:
-                input_generator = self._user_input_for(adapter_io, event.runtime)
+                input_generator = self._user_input_for(adapter_io, adapter_io.host)
                 try:
                     user_input = await input_generator()
                 except (EOFError, KeyboardInterrupt):

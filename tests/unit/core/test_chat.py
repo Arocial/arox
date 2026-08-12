@@ -65,7 +65,6 @@ async def test_chat_driver_handles_slash_commands_before_starting_turn():
         event for event in agent_io.events if isinstance(event, ChatInputRequest)
     ]
     assert len(requests) == 2
-    assert all(request.runtime is runtime for request in requests)
     assert "info" in agent_io.events
 
 
