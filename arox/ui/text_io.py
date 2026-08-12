@@ -147,11 +147,8 @@ class TextIOAdapter(AbstractIOAdapter):
         self.user_inputs[adapter_io] = user_input
         return user_input
 
-    async def _process_io(self, adapter_io: IOEndpoint):
-        try:
-            await super()._process_io(adapter_io)
-        finally:
-            self.user_inputs.pop(adapter_io, None)
+    async def on_endpoint_closed(self, adapter_io: IOEndpoint) -> None:
+        self.user_inputs.pop(adapter_io, None)
 
     async def __aenter__(self):
         loop = asyncio.get_running_loop()

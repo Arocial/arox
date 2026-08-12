@@ -62,11 +62,9 @@ class _MockAgent:
         self.session = AgentSession(agent_name="main")
         self.workspace = "fake-workspace"
 
-        async def _fake_process_io(adapter_io):
-            pass
-
         self.io_adapter = SimpleNamespace(
-            _process_io=_fake_process_io,
+            handle_event=AsyncMock(),
+            on_endpoint_closed=AsyncMock(),
         )
 
         self._stack = contextlib.AsyncExitStack()

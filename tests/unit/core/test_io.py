@@ -3,7 +3,13 @@ from dataclasses import dataclass
 
 import pytest
 
-from arox.core.io import ReplyEvent, RequestEvent, create_io_channel
+from arox.core.io import (
+    AbstractIOAdapter,
+    IOHost,
+    ReplyEvent,
+    RequestEvent,
+    create_io_channel,
+)
 
 
 @dataclass
@@ -14,6 +20,18 @@ class _Ping(RequestEvent):
 @dataclass
 class _Pong(ReplyEvent):
     payload: str = ""
+
+
+class _RecordingAdapter(AbstractIOAdapter):
+    def __init__(self):
+        self.events: asyncio.Queue = asyncio.Queue()
+        self.closed_endpoints = []
+
+    async def handle_event(self, adapter_io, event):
+        await self.events.put((adapter_io, event))
+
+    async def on_endpoint_closed(self, adapter_io):
+        self.closed_endpoints.append(adapter_io)
 
 
 async def _drain(endpoint, on_event):
@@ -123,3 +141,20 @@ async def test_send_cancelled_clears_pending():
         with pytest.raises(asyncio.CancelledError):
             await send_task
         assert ping.req_id not in agent_io._pending
+
+
+@pytest.mark.asyncio
+async def test_io_host_owns_adapter_event_loop_and_cleanup():
+    adapter = _RecordingAdapter()
+    host = IOHost(adapter)
+
+    async with host:
+        await host.agent_io.send("hello")
+        endpoint, start_event = await asyncio.wait_for(adapter.events.get(), timeout=1)
+        _, end_event = await asyncio.wait_for(adapter.events.get(), timeout=1)
+
+        assert endpoint is host.adapter_io
+        assert start_event.part.content == "hello"
+        assert end_event.part.content == "hello"
+
+    assert adapter.closed_endpoints == [host.adapter_io]

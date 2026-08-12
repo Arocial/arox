@@ -44,8 +44,7 @@ class _BaseIOEndpoint:
 
     Reply correlation relies on someone calling :meth:`_receive`
     concurrently with senders awaiting their requests; in the agent runtime
-    this is the adapter event loop and the adapter's ``_process_io`` task
-    respectively.
+    these are the event loops owned by :class:`IOHost`.
     """
 
     def __init__(self, tx, rx):
@@ -153,16 +152,11 @@ def create_io_channel() -> tuple[IOEndpoint, IOEndpoint]:
 
 
 class AbstractIOAdapter(ABC):
-    async def _process_io(self, adapter_io: IOEndpoint):
-        try:
-            while True:
-                event = await adapter_io.receive()
-                await self.handle_event(adapter_io, event)
-        except (EndOfStream, ClosedResourceError):
-            pass
-
     @abstractmethod
     async def handle_event(self, adapter_io: IOEndpoint, event: Any):
+        pass
+
+    async def on_endpoint_closed(self, adapter_io: IOEndpoint) -> None:
         pass
 
     async def __aenter__(self):
@@ -177,9 +171,9 @@ class IOHost:
 
     Subclasses (currently :class:`AgentRuntime`)
     add their own domain on top: tool execution, command handling, etc.
-    The base just wires the channel, drives ``io_adapter._process_io`` for
-    the adapter side, and dispatches inbound :class:`RequestEvent` to
-    handlers registered via :meth:`register_request_handler`.
+    The base wires the channel, owns both endpoint event loops, and dispatches
+    inbound :class:`RequestEvent` instances to handlers registered via
+    :meth:`register_request_handler`.
     """
 
     def __init__(self, io_adapter: "AbstractIOAdapter"):
@@ -202,7 +196,17 @@ class IOHost:
         """
         self._request_handlers[event_type] = handler
 
-    async def _receive_loop(self) -> None:
+    async def _adapter_event_loop(self) -> None:
+        try:
+            while True:
+                event = await self.adapter_io.receive()
+                await self.io_adapter.handle_event(self.adapter_io, event)
+        except (EndOfStream, ClosedResourceError):
+            return
+        finally:
+            await self.io_adapter.on_endpoint_closed(self.adapter_io)
+
+    async def _host_event_loop(self) -> None:
         while True:
             try:
                 event = await self.agent_io.receive()
@@ -239,10 +243,10 @@ class IOHost:
     async def __aenter__(self):
         self._tg = asyncio.TaskGroup()
         await self._stack.enter_async_context(self._tg)
-        self._tg.create_task(self.io_adapter._process_io(self.adapter_io))
         await self._stack.enter_async_context(self.agent_io)
         await self._stack.enter_async_context(self.adapter_io)
-        self._tg.create_task(self._receive_loop())
+        self._tg.create_task(self._adapter_event_loop())
+        self._tg.create_task(self._host_event_loop())
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):

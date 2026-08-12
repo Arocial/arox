@@ -79,11 +79,9 @@ class _HostAgent:
         self.session_manager.register_session_type(AgentSession)
         session.manager = self.session_manager
 
-        async def _fake_process_io(adapter_io):
-            pass
-
         self.io_adapter = SimpleNamespace(
-            _process_io=_fake_process_io,
+            handle_event=AsyncMock(),
+            on_endpoint_closed=AsyncMock(),
         )
         self.agent_io = SimpleNamespace(send=AsyncMock())
         self.workspace = None
