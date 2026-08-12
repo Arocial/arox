@@ -3,8 +3,8 @@ import asyncio
 import logging
 import os
 import sys
+from contextlib import AsyncExitStack
 from pathlib import Path
-from typing import cast
 
 # Disable fastmcp custom logging
 os.environ["FASTMCP_LOG_ENABLED"] = "false"
@@ -146,18 +146,22 @@ def main(profile: str | None = None):
                 runner = ServeRunner(
                     session, config_loader, io_adapter, ChatServeDriver()
                 )
-                if args.ui == "text":
-                    cast("TextIOAdapter", io_adapter).set_interrupt_handler(
-                        runner.cancel_turn
-                    )
                 try:
-                    main_agent = await runner.start()
-                    if args.session:
-                        await main_agent.agent_io.send(
-                            f"Session restored: {args.session}"
-                        )
-                    runner.serve()
-                    await runner.wait()
+                    async with AsyncExitStack() as interrupt_stack:
+                        if args.ui == "text":
+                            from arox.apps.chat.interrupt import SignalInterruptHandler
+
+                            await interrupt_stack.enter_async_context(
+                                SignalInterruptHandler(runner.cancel_turn)
+                            )
+
+                        main_agent = await runner.start()
+                        if args.session:
+                            await main_agent.agent_io.send(
+                                f"Session restored: {args.session}"
+                            )
+                        runner.serve()
+                        await runner.wait()
                 finally:
                     await runner.stop()
 

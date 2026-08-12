@@ -1,8 +1,5 @@
 import asyncio
-import inspect
 import logging
-import signal
-from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, override
 
@@ -118,13 +115,6 @@ class TextIOAdapter(AbstractIOAdapter):
         self.input = input
         self.output = output
         self.user_inputs: dict[IOEndpoint, UserInputGenerator] = {}
-        self.interrupt_handler: Callable[[], Awaitable[object] | object] | None = None
-
-    def set_interrupt_handler(
-        self, handler: Callable[[], Awaitable[object] | object] | None
-    ) -> None:
-        """Bind the app-level action for Ctrl+C in the foreground UI."""
-        self.interrupt_handler = handler
 
     def _user_input_for(
         self, adapter_io: IOEndpoint, runtime: Any | None
@@ -149,28 +139,6 @@ class TextIOAdapter(AbstractIOAdapter):
 
     async def on_endpoint_closed(self, adapter_io: IOEndpoint) -> None:
         self.user_inputs.pop(adapter_io, None)
-
-    async def __aenter__(self):
-        loop = asyncio.get_running_loop()
-
-        def sigint_handler(signum, frame):
-            logger.info("Received SIGINT, cancelling current step...")
-            if self.interrupt_handler is None:
-                return
-            result = self.interrupt_handler()
-            if inspect.isawaitable(result):
-
-                async def await_interrupt() -> None:
-                    await result
-
-                loop.create_task(await_interrupt())
-
-        self.original_sigint_handler = signal.getsignal(signal.SIGINT)
-        signal.signal(signal.SIGINT, sigint_handler)
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        signal.signal(signal.SIGINT, self.original_sigint_handler)
 
     async def _flush_stdin(self):
         import sys

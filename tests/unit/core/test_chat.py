@@ -1,6 +1,3 @@
-import asyncio
-import signal
-from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -116,23 +113,6 @@ async def test_text_adapter_keeps_one_user_input_per_channel():
     assert isinstance(second_completer, CommandCompleter)
     assert first_completer.runtime is first_runtime
     assert second_completer.runtime is second_runtime
-
-
-@pytest.mark.asyncio
-async def test_text_sigint_only_invokes_bound_foreground_handler():
-    io_adapter = TextIOAdapter()
-    interrupted = asyncio.Event()
-
-    async def interrupt_foreground():
-        interrupted.set()
-
-    io_adapter.set_interrupt_handler(interrupt_foreground)
-
-    async with io_adapter:
-        handler = cast(Callable[[int, Any], Any], signal.getsignal(signal.SIGINT))
-        assert callable(handler)
-        handler(signal.SIGINT, None)
-        await asyncio.wait_for(interrupted.wait(), timeout=1)
 
 
 @pytest.mark.asyncio
