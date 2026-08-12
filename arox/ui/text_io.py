@@ -113,9 +113,11 @@ class CommandCompleter(Completer):
 
 
 class TextIOAdapter(AbstractIOAdapter):
-    def __init__(self):
+    def __init__(self, *, input=None, output=None):
         super().__init__()
-        self.user_input: UserInputGenerator = UserInputGenerator()
+        self.input = input
+        self.output = output
+        self.user_inputs: dict[IOEndpoint, UserInputGenerator] = {}
         self.interrupt_handler: Callable[[], Awaitable[object] | object] | None = None
 
     def set_interrupt_handler(
@@ -124,16 +126,32 @@ class TextIOAdapter(AbstractIOAdapter):
         """Bind the app-level action for Ctrl+C in the foreground UI."""
         self.interrupt_handler = handler
 
-    def _bind_completion_runtime(self, runtime: Any) -> None:
-        completer = CommandCompleter(
-            runtime.command_manager.completion_router,
-            runtime=runtime,
-        )
-        self.user_input = UserInputGenerator(
+    def _user_input_for(
+        self, adapter_io: IOEndpoint, runtime: Any | None
+    ) -> UserInputGenerator:
+        user_input = self.user_inputs.get(adapter_io)
+        if user_input is not None:
+            return user_input
+
+        completer = None
+        if runtime is not None:
+            completer = CommandCompleter(
+                runtime.command_manager.completion_router,
+                runtime=runtime,
+            )
+        user_input = UserInputGenerator(
             completer=completer,
-            input=self.user_input.input,
-            output=self.user_input.output,
+            input=self.input,
+            output=self.output,
         )
+        self.user_inputs[adapter_io] = user_input
+        return user_input
+
+    async def _process_io(self, adapter_io: IOEndpoint):
+        try:
+            await super()._process_io(adapter_io)
+        finally:
+            self.user_inputs.pop(adapter_io, None)
 
     async def __aenter__(self):
         loop = asyncio.get_running_loop()
@@ -195,13 +213,12 @@ class TextIOAdapter(AbstractIOAdapter):
             )
         elif isinstance(event, ChatInputRequest):
             user_input: str | None = None
-            if event.runtime is not None:
-                self._bind_completion_runtime(event.runtime)
             if event.pending_exception is not None:
                 print(f"⚠️ An error occurred: {event.pending_exception}")
             if event.request_normal_input:
+                input_generator = self._user_input_for(adapter_io, event.runtime)
                 try:
-                    user_input = await self.user_input()
+                    user_input = await input_generator()
                 except (EOFError, KeyboardInterrupt):
                     user_input = None
                     await self._flush_stdin()

@@ -17,7 +17,7 @@ from arox.core.chat import ChatInputReply, ChatInputRequest, ChatServeDriver
 from arox.core.plugin import CommandReply
 from arox.core.runner import ServeRunner
 from arox.core.session import AgentSession
-from arox.ui.text_io import TextIOAdapter, UserInputGenerator
+from arox.ui.text_io import CommandCompleter, TextIOAdapter
 
 
 def multiply(a: int, b: int) -> int:
@@ -95,6 +95,31 @@ async def test_chat_driver_sends_unknown_slash_commands_to_the_agent():
 
 
 @pytest.mark.asyncio
+async def test_text_adapter_keeps_one_user_input_per_channel():
+    io_adapter = TextIOAdapter(output=DummyOutput())
+    first_io = object()
+    second_io = object()
+    first_runtime = SimpleNamespace(
+        command_manager=SimpleNamespace(completion_router=SimpleNamespace())
+    )
+    second_runtime = SimpleNamespace(
+        command_manager=SimpleNamespace(completion_router=SimpleNamespace())
+    )
+
+    first = io_adapter._user_input_for(cast(Any, first_io), first_runtime)
+    assert io_adapter._user_input_for(cast(Any, first_io), second_runtime) is first
+    second = io_adapter._user_input_for(cast(Any, second_io), second_runtime)
+
+    assert second is not first
+    first_completer = first.session.completer
+    second_completer = second.session.completer
+    assert isinstance(first_completer, CommandCompleter)
+    assert isinstance(second_completer, CommandCompleter)
+    assert first_completer.runtime is first_runtime
+    assert second_completer.runtime is second_runtime
+
+
+@pytest.mark.asyncio
 async def test_text_sigint_only_invokes_bound_foreground_handler():
     io_adapter = TextIOAdapter()
     interrupted = asyncio.Event()
@@ -131,11 +156,8 @@ system_prompt = "Hi there."
         "\x04",
     ]
     with create_pipe_input() as pipe_input:
-        user_input = UserInputGenerator(input=pipe_input, output=DummyOutput())
-
-        io_adapter = TextIOAdapter()
+        io_adapter = TextIOAdapter(input=pipe_input, output=DummyOutput())
         session = AgentSession(path=["dummy"], agent_name="dummy_chat")
-        io_adapter.user_input = user_input
 
         for msg in test_user_msg:
             pipe_input.send_text(msg)
