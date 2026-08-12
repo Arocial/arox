@@ -7,7 +7,7 @@ Arox is organized around a clear runtime hierarchy, a split IO system, and a sma
 An **App** is a runnable process (e.g. `arox-coder`) that owns a single **IO adapter** and activates an `AgentSession` through a `SessionRunner`.
 
 - Exactly one user-facing session driven by `ServeRunner` and `ChatServeDriver`.
-- Zero or more **subagents** — specialized agents run as resumable tasks by the `SubagentPlugin`. The main agent can spawn, wait for, interrupt, inspect, and continue these tasks through callable tools. Live subagent instances are also exposed through the `SUBAGENTS` slot for IO routing.
+- Zero or more **subagents** — specialized agents run as resumable tasks by the `SubagentPlugin`. The main agent can spawn, wait for, interrupt, inspect, and continue these tasks through callable tools.
 - A resolved `AppConfig` and `AgentConfig` (from `arox/core/config.py`), which names the main agent, its subagents, and their per-agent configuration.
 
 The runner creates the common `AgentRuntime`, initializes its plugins and IO resources, and owns all asyncio tasks. `TaskSessionRunner` manages resumable turns; `ServeRunner` manages a long-lived serve loop and its current turn separately.
@@ -57,7 +57,7 @@ Built-in adapters:
     - methods decorated with `@tool` — Python functions exposed to the LLM. Arox also supports **MCP** tools via `fastmcp`, registered alongside local tools.
     - `commands()` — slash / control commands for the human. Plugins override `commands()` to return `CommandSpec(event_cls, handler, completer)` bindings that `CommandManager` dispatches. Commands run locally without calling the LLM, saving time and tokens.
     - `history_processor()` — async hook that modifies message history before each LLM call.
-- **Slots** (`arox/core/slot.py`): typed tokens for loose coupling, used for both pull and push patterns. Producers call `runtime.provide_slot(slot, impl)`; consumers pull or push notifications with `await runtime.invoke_slot(slot, ...)`. Built-in slots live in `arox/plugins/slots.py` (e.g. `SUBAGENTS`, `PERSISTENT_CONTEXT`).
+- **Slots** (`arox/core/slot.py`): typed tokens for loose coupling, used for both pull and push patterns. Producers call `runtime.provide_slot(slot, impl)`; consumers pull or push notifications with `await runtime.invoke_slot(slot, ...)`. Built-in slots live in `arox/plugins/slots.py` (e.g. `RUN_SUBAGENT`, `PERSISTENT_CONTEXT`).
 - **Skills**: Discovered automatically during configuration loading (`arox/core/config.py`) from `~/.config/arox/skills/` and `.agents/skills/` directories in the workspace and global paths. They are injected into the agent's system prompt as an XML catalog. `AgentConfig.skills` restricts which skills are visible to a given agent.
 
 ## Data flow

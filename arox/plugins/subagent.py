@@ -11,7 +11,7 @@ from arox.core.agent_runtime import (
 from arox.core.plugin import Plugin, tool
 from arox.core.runner import TaskSessionRunner
 from arox.core.session import AgentSession
-from arox.plugins.slots import RUN_SUBAGENT, SUBAGENTS, SYSTEM_PROMPT
+from arox.plugins.slots import RUN_SUBAGENT, SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -33,13 +33,6 @@ class SubagentPlugin(Plugin):
         self._task_ids_by_name: dict[str, str] = {}
         self._task_ids_by_target: dict[str, str] = {}
         self._lock = asyncio.Lock()
-
-        def get_subagents():
-            return [
-                session.runner.runtime
-                for session in self.task_sessions.values()
-                if session.runner is not None and session.runner.runtime is not None
-            ]
 
         def get_subagent_instructions() -> str:
             subagent_names = self.runtime.agent_config.subagents
@@ -78,7 +71,6 @@ class SubagentPlugin(Plugin):
                 + "\n".join(descriptions)
             )
 
-        self.runtime.provide_slot(SUBAGENTS, get_subagents)
         self.runtime.provide_slot(SYSTEM_PROMPT, get_subagent_instructions)
         self.runtime.provide_slot(RUN_SUBAGENT, self._delegate_once)
 

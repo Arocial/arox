@@ -12,7 +12,7 @@ from arox.core.session import (
     FileSessionStore,
 )
 from arox.plugins.core import CorePlugin
-from arox.plugins.slots import SUBAGENTS, SYSTEM_PROMPT
+from arox.plugins.slots import SYSTEM_PROMPT
 from arox.plugins.subagent import (
     SubagentMode,
     SubagentPlugin,
@@ -209,8 +209,6 @@ async def test_simple_mode_uses_registered_task_lifecycle(agent_factory):
         assert isinstance(subagent, _FakeDynamicAgent)
         await subagent.started.wait()
 
-        get_subagents = main_agent._slots[SUBAGENTS][0]
-        assert get_subagents() == [subagent]
         assert await plugin.delegate_task("second task", "reviewer") == (
             "task done: second task"
         )
@@ -218,7 +216,6 @@ async def test_simple_mode_uses_registered_task_lifecycle(agent_factory):
         subagent.release.set()
         assert await delegation == "task done: block until released"
         assert plugin.task_sessions == {}
-        assert get_subagents() == []
     finally:
         for task_session in plugin.task_sessions.values():
             runner = task_session.runner
