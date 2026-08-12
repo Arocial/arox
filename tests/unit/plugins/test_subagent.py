@@ -79,9 +79,18 @@ class _HostAgent:
         self.session_manager.register_session_type(AgentSession)
         session.manager = self.session_manager
 
+        def register_host(host):
+            self.io_adapter.hosts[host.uuid] = host
+
+        def unregister_host(host):
+            self.io_adapter.hosts.pop(host.uuid, None)
+
         self.io_adapter = SimpleNamespace(
             handle_event=AsyncMock(),
             on_endpoint_closed=AsyncMock(),
+            register_host=register_host,
+            unregister_host=unregister_host,
+            hosts={},
         )
         self.agent_io = SimpleNamespace(send=AsyncMock())
         self.workspace = None

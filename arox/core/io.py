@@ -156,6 +156,15 @@ def create_io_channel(host: "IOHost") -> tuple[IOEndpoint, IOEndpoint]:
 
 
 class AbstractIOAdapter(ABC):
+    def __init__(self):
+        self.hosts: dict[str, IOHost] = {}
+
+    def register_host(self, host: "IOHost") -> None:
+        self.hosts[host.uuid] = host
+
+    def unregister_host(self, host: "IOHost") -> None:
+        self.hosts.pop(host.uuid, None)
+
     @abstractmethod
     async def handle_event(self, adapter_io: IOEndpoint, event: Any):
         pass
@@ -251,7 +260,9 @@ class IOHost:
         await self._stack.enter_async_context(self.adapter_io)
         self._tg.create_task(self._adapter_event_loop())
         self._tg.create_task(self._host_event_loop())
+        self.io_adapter.register_host(self)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
+        self.io_adapter.unregister_host(self)
         await self._stack.aclose()

@@ -379,13 +379,16 @@ system_prompt = "Hi."
     assert session.runner is None
     assert session.is_active is False
     assert not hasattr(runtime, "status")
+    assert runtime.uuid not in io_adapter.hosts
 
     async with _managed_runtime(runtime, config_loader, io_adapter):
         assert session.runtime is runtime
         assert session.is_active is True
+        assert io_adapter.hosts[runtime.uuid] is runtime
 
     assert session.runner is None
     assert session.is_active is False
+    assert runtime.uuid not in io_adapter.hosts
 
 
 @pytest.mark.asyncio
@@ -461,6 +464,7 @@ system_prompt = "Hi."
     assert session.runner is None
     assert session.events[-1].event_type == "error"
     assert "RuntimeError: something broke" in session.events[-1].error
+    assert runtime.uuid not in io_adapter.hosts
 
 
 @pytest.mark.asyncio
@@ -492,6 +496,7 @@ system_prompt = "Hi."
     assert session.runner is None
     assert session.events[-1].event_type == "error"
     assert session.events[-1].error == "Task interrupted."
+    assert runtime.uuid not in io_adapter.hosts
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,7 @@ class _Pong(ReplyEvent):
 
 class _RecordingAdapter(AbstractIOAdapter):
     def __init__(self):
+        super().__init__()
         self.events: asyncio.Queue = asyncio.Queue()
         self.closed_endpoints = []
 
@@ -154,8 +155,10 @@ async def test_io_host_owns_adapter_event_loop_and_cleanup():
 
     assert host.agent_io.host is host
     assert host.adapter_io.host is host
+    assert host.uuid not in adapter.hosts
 
     async with host:
+        assert adapter.hosts[host.uuid] is host
         await host.agent_io.send("hello")
         endpoint, start_event = await asyncio.wait_for(adapter.events.get(), timeout=1)
         _, end_event = await asyncio.wait_for(adapter.events.get(), timeout=1)
@@ -165,3 +168,4 @@ async def test_io_host_owns_adapter_event_loop_and_cleanup():
         assert end_event.part.content == "hello"
 
     assert adapter.closed_endpoints == [host.adapter_io]
+    assert host.uuid not in adapter.hosts
