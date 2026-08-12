@@ -221,7 +221,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         super().__init__()
         self.event_queues = {}
         self.pending_inputs: dict[IOEndpoint, ChatInputRequest] = {}
-        self.event_streams: dict[IOEndpoint, VercelAIEventStream] = {}
+        self._pydanticai_vercel_streams: dict[IOEndpoint, VercelAIEventStream] = {}
 
     @override
     async def handle_event(self, adapter_io: IOEndpoint, event):
@@ -232,7 +232,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         queue = self.event_queues.setdefault(adapter_io, asyncio.Queue())
         await queue.put((adapter_io, event))
 
-    async def _event_messages(
+    async def _to_ui_messages(
         self,
         adapter_io: IOEndpoint,
         event,
@@ -250,7 +250,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 FunctionToolResultEvent,
             ),
         ):
-            stream = self.event_streams.setdefault(
+            stream = self._pydanticai_vercel_streams.setdefault(
                 adapter_io,
                 VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
             )
@@ -376,7 +376,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         async def pump_out():
             while True:
                 _io, event = await queue.get()
-                for msg in await self._event_messages(adapter_io, event, root_session):
+                for msg in await self._to_ui_messages(adapter_io, event, root_session):
                     msg_str = str(msg)
                     if len(msg_str) > 1024:
                         msg_str = msg_str[:1024] + "... (truncated)"
@@ -394,7 +394,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 if payload.get("resume"):
                     event = self.pending_inputs.get(adapter_io)
                     if event is not None:
-                        for msg in await self._event_messages(
+                        for msg in await self._to_ui_messages(
                             adapter_io, event, root_session
                         ):
                             await websocket.send_json(msg)
