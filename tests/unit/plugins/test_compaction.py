@@ -58,7 +58,7 @@ class _MockAgent:
             self.config.compaction_threshold = None  # type: ignore
 
         self.model_params = {}
-        self.agent_io = SimpleNamespace(send=self._send)
+        self.agent_ep = SimpleNamespace(send=self._send)
         self.session = AgentSession(agent_name="main")
         self.workspace = "fake-workspace"
 

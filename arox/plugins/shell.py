@@ -287,7 +287,7 @@ class ShellPlugin(Plugin):
             )
             if task.notify_on_finish:
                 try:
-                    await self.runtime.agent_io.send(
+                    await self.runtime.agent_ep.send(
                         f"[bg {task.task_id}] task finished "
                         f"(exit {task.exit_code}, elapsed {task.elapsed():.1f}s)"
                     )
@@ -519,7 +519,7 @@ class ShellPlugin(Plugin):
             return f"Error creating command output file: {e!s}"
 
         if run_in_background:
-            await self.runtime.agent_io.send(
+            await self.runtime.agent_ep.send(
                 f"[bg {task.task_id}] task started: {description}  (pid {process.pid})"
             )
             return (
@@ -563,7 +563,7 @@ class ShellPlugin(Plugin):
                     f'- Terminate: kill_shell(task_id="{task.task_id}")',
                 ]
             )
-            await self.runtime.agent_io.send(
+            await self.runtime.agent_ep.send(
                 f"[{task.task_id}] promoted to background after {timeout}s"
             )
             return "\n".join(parts)

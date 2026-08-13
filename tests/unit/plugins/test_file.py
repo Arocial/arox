@@ -19,7 +19,7 @@ def test():
 class MockAgent:
     def __init__(self, workspace):
         self.workspace = workspace
-        self.agent_io = None
+        self.agent_ep = None
         self._slots = {}
 
     def provide_slot(self, slot, provider):

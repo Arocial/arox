@@ -39,11 +39,11 @@ class FakeAgentIO:
 
 @pytest.mark.asyncio
 async def test_chat_driver_handles_slash_commands_before_starting_turn():
-    agent_io = FakeAgentIO(["/info", None])
+    agent_ep = FakeAgentIO(["/info", None])
     command_manager = SimpleNamespace(
         try_handle_slash=AsyncMock(return_value=CommandReply(req_id="", output="info"))
     )
-    runtime = SimpleNamespace(agent_io=agent_io, command_manager=command_manager)
+    runtime = SimpleNamespace(agent_ep=agent_ep, command_manager=command_manager)
     start_turn = AsyncMock()
     runner = cast(
         ServeRunner,
@@ -59,17 +59,17 @@ async def test_chat_driver_handles_slash_commands_before_starting_turn():
     command_manager.try_handle_slash.assert_awaited_once_with("/info")
     start_turn.assert_not_awaited()
     requests = [
-        event for event in agent_io.events if isinstance(event, ChatInputRequest)
+        event for event in agent_ep.events if isinstance(event, ChatInputRequest)
     ]
     assert len(requests) == 2
-    assert "info" in agent_io.events
+    assert "info" in agent_ep.events
 
 
 @pytest.mark.asyncio
 async def test_chat_driver_sends_unknown_slash_commands_to_the_agent():
-    agent_io = FakeAgentIO(["/unknown", None])
+    agent_ep = FakeAgentIO(["/unknown", None])
     command_manager = SimpleNamespace(try_handle_slash=AsyncMock(return_value=None))
-    runtime = SimpleNamespace(agent_io=agent_io, command_manager=command_manager)
+    runtime = SimpleNamespace(agent_ep=agent_ep, command_manager=command_manager)
     start_turn = AsyncMock(return_value=SimpleNamespace(output="done"))
     runner = cast(
         ServeRunner,

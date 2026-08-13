@@ -49,7 +49,7 @@ mode = "advanced"
 
 IO is split into two layers: per-agent channels and app-level adapters.
 
-- **Per-agent channel** (`arox/core/io.py`): `create_io_channel()` returns a pair of `IOEndpoint` instances backed by two in-memory streams. Every endpoint exposes its owning `IOHost` through `endpoint.host`, allowing adapter-side code to recover the runtime without copying it into events. Every runtime holds its own `agent_io: IOEndpoint` and uses `send` / `receive` to talk to the UI — both the main runtime and each subagent runtime have independent channels, so their output can be routed/rendered separately. `RequestEvent` / `ReplyEvent` provide request/reply correlation on top of `send` / `receive`.
+- **Per-agent channel** (`arox/core/io.py`): `create_io_channel()` returns a pair of `IOEndpoint` instances backed by two in-memory streams. Every endpoint exposes its owning `IOHost` through `endpoint.host`, allowing adapter-side code to recover the runtime without copying it into events. Every runtime holds its own `agent_ep: IOEndpoint` and uses `send` / `receive` to talk to the UI — both the main runtime and each subagent runtime have independent channels, so their output can be routed/rendered separately. `RequestEvent` / `ReplyEvent` provide request/reply correlation on top of `send` / `receive`.
 - **App-level adapter** (`arox/ui/`, base `AbstractIOAdapter`): one adapter per App. Each `IOHost` registers itself with the adapter for its active lifetime and owns the adapter-side consumer for its paired `IOEndpoint`; the adapter renders those events to the concrete UI. Available adapters:
   - `TextIOAdapter` — rich terminal via `prompt-toolkit`
   - `VercelStreamIOAdapter` — web frontend via Vercel AI SDK (FastAPI/SSE)

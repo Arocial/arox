@@ -30,7 +30,7 @@ class CaptureIO:
 class MockAgent:
     def __init__(self, workspace: Path):
         self.workspace = workspace
-        self.agent_io = CaptureIO()
+        self.agent_ep = CaptureIO()
         self._slots: dict = {}
         from arox.core.config import Config
         from arox.core.session import AgentSession, FileSessionStore, SessionManager

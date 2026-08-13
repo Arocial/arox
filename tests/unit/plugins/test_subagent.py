@@ -92,7 +92,7 @@ class _HostAgent:
             unregister_host=unregister_host,
             hosts={},
         )
-        self.agent_io = SimpleNamespace(send=AsyncMock())
+        self.agent_ep = SimpleNamespace(send=AsyncMock())
         self.workspace = None
         self._stack = contextlib.AsyncExitStack()
         self._slots = {}

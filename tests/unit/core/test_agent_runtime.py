@@ -21,7 +21,7 @@ from arox.plugins.core import SetModelEvent
 
 
 class _StubIOAdapter(AbstractIOAdapter):
-    async def handle_event(self, adapter_io, event):
+    async def handle_event(self, adapter_ep, event):
         pass
 
 
@@ -232,7 +232,7 @@ system_prompt = "Hi."
 
     async with _managed_runtime(runtime, config_loader, runtime.io_adapter):
         ev = CustomEvent()
-        await runtime.adapter_io.send(ev)
+        await runtime.adapter_ep.send(ev)
 
     assert received == [ev]
 
@@ -271,7 +271,7 @@ system_prompt = "Hi."
         runtime.register_request_handler(
             SetModelEvent, lambda e: runtime.set_model(e.model_ref)
         )
-        await runtime.adapter_io.send(SetModelEvent(model_ref="test"))
+        await runtime.adapter_ep.send(SetModelEvent(model_ref="test"))
 
     assert calls == ["test"]
     assert runtime.model_ref == "test"

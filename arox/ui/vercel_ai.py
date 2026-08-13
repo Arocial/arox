@@ -224,17 +224,17 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         self._pydanticai_vercel_streams: dict[IOEndpoint, VercelAIEventStream] = {}
 
     @override
-    async def handle_event(self, adapter_io: IOEndpoint, event):
+    async def handle_event(self, adapter_ep: IOEndpoint, event):
         if isinstance(event, ChatInputRequest):
-            self.pending_inputs[adapter_io] = event
+            self.pending_inputs[adapter_ep] = event
         elif isinstance(event, StepDoneEvent):
-            self.pending_inputs.pop(adapter_io, None)
-        queue = self.event_queues.setdefault(adapter_io, asyncio.Queue())
-        await queue.put((adapter_io, event))
+            self.pending_inputs.pop(adapter_ep, None)
+        queue = self.event_queues.setdefault(adapter_ep, asyncio.Queue())
+        await queue.put((adapter_ep, event))
 
     async def _to_ui_messages(
         self,
-        adapter_io: IOEndpoint,
+        adapter_ep: IOEndpoint,
         event,
         root_session: AgentSession,
     ) -> list[dict]:
@@ -251,7 +251,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             ),
         ):
             stream = self._pydanticai_vercel_streams.setdefault(
-                adapter_io,
+                adapter_ep,
                 VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
             )
             async for chunk in stream.handle_event(event):
@@ -305,7 +305,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         """Stream a command's text output through the normal event pipeline."""
         if not output:
             return
-        await target.agent_io.send(output)
+        await target.agent_ep.send(output)
 
     async def _apply_input(self, target, payload: dict) -> dict:
         if payload.get("cancel"):
@@ -348,8 +348,8 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 client_message_id=reply_metadata.get("client_message_id"),
             )
 
-            self.pending_inputs.pop(target.adapter_io, None)
-            await target.adapter_io.send(chat_input_reply)
+            self.pending_inputs.pop(target.adapter_ep, None)
+            await target.adapter_ep.send(chat_input_reply)
             return {"status": "ok"}
 
         return {"status": "noop"}
@@ -368,15 +368,15 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         if runtime is None:
             await websocket.close(code=4009, reason="session runtime is not active")
             return
-        adapter_io = runtime.adapter_io
-        queue = self.event_queues.setdefault(adapter_io, asyncio.Queue())
+        adapter_ep = runtime.adapter_ep
+        queue = self.event_queues.setdefault(adapter_ep, asyncio.Queue())
 
         await websocket.accept()
 
         async def pump_out():
             while True:
                 _io, event = await queue.get()
-                for msg in await self._to_ui_messages(adapter_io, event, root_session):
+                for msg in await self._to_ui_messages(adapter_ep, event, root_session):
                     msg_str = str(msg)
                     if len(msg_str) > 1024:
                         msg_str = msg_str[:1024] + "... (truncated)"
@@ -392,10 +392,10 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 logger.info(f"WS IN: {payload_str}")
 
                 if payload.get("resume"):
-                    event = self.pending_inputs.get(adapter_io)
+                    event = self.pending_inputs.get(adapter_ep)
                     if event is not None:
                         for msg in await self._to_ui_messages(
-                            adapter_io, event, root_session
+                            adapter_ep, event, root_session
                         ):
                             await websocket.send_json(msg)
                     await websocket.send_json({"type": "ack", "status": "ok"})

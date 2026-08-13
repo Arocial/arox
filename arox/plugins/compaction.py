@@ -89,7 +89,7 @@ class CompactionPlugin(Plugin):
         messages_to_compact = list(runtime.message_history)
 
         if not messages_to_compact:
-            await runtime.agent_io.send("No history to compact.")
+            await runtime.agent_ep.send("No history to compact.")
             return
 
         compacted_messages = await self._compact(
@@ -173,7 +173,7 @@ class CompactionPlugin(Plugin):
 
         agent_config = runtime.config.agent.get(COMPACTION_AGENT_NAME)
         if not agent_config:
-            await runtime.agent_io.send(
+            await runtime.agent_ep.send(
                 "Compaction agent not configured; skipping compaction."
             )
             logger.warning(
@@ -190,7 +190,7 @@ class CompactionPlugin(Plugin):
         if extra_instructions:
             prompt = f"{prompt}\n\nAdditional instructions: {extra_instructions}"
 
-        await runtime.agent_io.send(
+        await runtime.agent_ep.send(
             "Context size is large. Compacting conversation history..."
         )
 
@@ -217,5 +217,5 @@ class CompactionPlugin(Plugin):
         for persistent_messages in await runtime.invoke_slot(PERSISTENT_CONTEXT) or []:
             compacted_messages.extend(persistent_messages)
 
-        await runtime.agent_io.send("Conversation history compacted successfully.")
+        await runtime.agent_ep.send("Conversation history compacted successfully.")
         return compacted_messages

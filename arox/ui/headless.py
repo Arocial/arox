@@ -27,7 +27,7 @@ class HeadlessIOAdapter(AbstractIOAdapter):
         self.error: BaseException | None = None
 
     @override
-    async def handle_event(self, adapter_io: IOEndpoint, event: Any):
+    async def handle_event(self, adapter_ep: IOEndpoint, event: Any):
         if isinstance(event, AgentRunResultEvent):
             output = event.result.output
             if output:
@@ -41,7 +41,7 @@ class HeadlessIOAdapter(AbstractIOAdapter):
                 self.error = event.pending_exception
             user_input = None if self._consumed else self.prompt
             self._consumed = True
-            await adapter_io.send(
+            await adapter_ep.send(
                 ChatInputReply(
                     req_id=event.req_id,
                     input_content=user_input,

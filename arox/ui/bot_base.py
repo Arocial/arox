@@ -41,11 +41,11 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
         return True
 
     @override
-    async def handle_event(self, adapter_io: IOEndpoint, event):
+    async def handle_event(self, adapter_ep: IOEndpoint, event):
         async with self.read_lock:
-            await self._handle_output(adapter_io, event)
+            await self._handle_output(adapter_ep, event)
 
-    async def _handle_output(self, adapter_io: IOEndpoint, event):
+    async def _handle_output(self, adapter_ep: IOEndpoint, event):
         if not await self.before_handle_output():
             return
 
@@ -88,7 +88,7 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
                     line = await self.input_queue.get()
                     user_input = line
                     break
-            await adapter_io.send(
+            await adapter_ep.send(
                 ChatInputReply(
                     req_id=event.req_id,
                     input_content=user_input,

@@ -26,7 +26,7 @@ IO is split into two layers: a per-agent channel and an app-level adapter.
 
 ### Per-agent channel
 
-Every runtime holds its own **`IOEndpoint`** (`runtime.agent_io`), created by `create_io_channel()` in `arox/core/io.py` together with a paired adapter-side `IOEndpoint`. Every endpoint exposes its owning `IOHost` through `endpoint.host`, so adapter code can recover the runtime without embedding it in individual events. Endpoints are backed by a pair of in-memory streams and expose `send` / `receive`. Because the main runtime and each subagent runtime have independent channels, their output can be routed, rendered, or stored independently. `RequestEvent` / `ReplyEvent` add request/reply correlation: passing a `RequestEvent` to `send` awaits the matching `ReplyEvent` and returns it.
+Every runtime holds its own **`IOEndpoint`** (`runtime.agent_ep`), created by `create_io_channel()` in `arox/core/io.py` together with a paired adapter-side `IOEndpoint`. Every endpoint exposes its owning `IOHost` through `endpoint.host`, so adapter code can recover the runtime without embedding it in individual events. Endpoints are backed by a pair of in-memory streams and expose `send` / `receive`. Because the main runtime and each subagent runtime have independent channels, their output can be routed, rendered, or stored independently. `RequestEvent` / `ReplyEvent` add request/reply correlation: passing a `RequestEvent` to `send` awaits the matching `ReplyEvent` and returns it.
 
 ### App-level adapter
 

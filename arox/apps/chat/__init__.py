@@ -157,7 +157,7 @@ def main(profile: str | None = None):
 
                         main_agent = await runner.start()
                         if args.session:
-                            await main_agent.agent_io.send(
+                            await main_agent.agent_ep.send(
                                 f"Session restored: {args.session}"
                             )
                         runner.serve()

@@ -166,10 +166,10 @@ class AbstractIOAdapter(ABC):
         self.hosts.pop(host.uuid, None)
 
     @abstractmethod
-    async def handle_event(self, adapter_io: IOEndpoint, event: Any):
+    async def handle_event(self, adapter_ep: IOEndpoint, event: Any):
         pass
 
-    async def on_endpoint_closed(self, adapter_io: IOEndpoint) -> None:
+    async def on_endpoint_closed(self, adapter_ep: IOEndpoint) -> None:
         pass
 
     async def __aenter__(self):
@@ -191,7 +191,7 @@ class IOHost:
 
     def __init__(self, io_adapter: "AbstractIOAdapter"):
         self.uuid: str = str(uuid.uuid4())
-        self.agent_io, self.adapter_io = create_io_channel(self)
+        self.agent_ep, self.adapter_ep = create_io_channel(self)
         self.io_adapter = io_adapter
         self._stack = contextlib.AsyncExitStack()
         self._request_handlers: dict[type[RequestEvent], Callable[[Any], Any]] = {}
@@ -212,17 +212,17 @@ class IOHost:
     async def _adapter_event_loop(self) -> None:
         try:
             while True:
-                event = await self.adapter_io.receive()
-                await self.io_adapter.handle_event(self.adapter_io, event)
+                event = await self.adapter_ep.receive()
+                await self.io_adapter.handle_event(self.adapter_ep, event)
         except (EndOfStream, ClosedResourceError):
             return
         finally:
-            await self.io_adapter.on_endpoint_closed(self.adapter_io)
+            await self.io_adapter.on_endpoint_closed(self.adapter_ep)
 
     async def _host_event_loop(self) -> None:
         while True:
             try:
-                event = await self.agent_io.receive()
+                event = await self.agent_ep.receive()
             except (EndOfStream, ClosedResourceError):
                 return
             if isinstance(event, RequestEvent):
@@ -232,7 +232,7 @@ class IOHost:
                         "No handler registered for RequestEvent %s",
                         type(event).__name__,
                     )
-                    await self.agent_io.send(ReplyEvent(req_id=event.req_id))
+                    await self.agent_ep.send(ReplyEvent(req_id=event.req_id))
                     continue
                 try:
                     result = handler(event)
@@ -240,9 +240,9 @@ class IOHost:
                         result = await result
                     if isinstance(result, ReplyEvent):
                         result.req_id = event.req_id
-                        await self.agent_io.send(result)
+                        await self.agent_ep.send(result)
                     else:
-                        await self.agent_io.send(ReplyEvent(req_id=event.req_id))
+                        await self.agent_ep.send(ReplyEvent(req_id=event.req_id))
                 except Exception:
                     logger.exception(
                         "Error handling RequestEvent %s", type(event).__name__
@@ -256,8 +256,8 @@ class IOHost:
     async def __aenter__(self):
         self._tg = asyncio.TaskGroup()
         await self._stack.enter_async_context(self._tg)
-        await self._stack.enter_async_context(self.agent_io)
-        await self._stack.enter_async_context(self.adapter_io)
+        await self._stack.enter_async_context(self.agent_ep)
+        await self._stack.enter_async_context(self.adapter_ep)
         self._tg.create_task(self._adapter_event_loop())
         self._tg.create_task(self._host_event_loop())
         self.io_adapter.register_host(self)

@@ -29,7 +29,7 @@ from arox.core.types import UserInput
 
 
 class _StubIOAdapter(AbstractIOAdapter):
-    async def handle_event(self, adapter_io, event):
+    async def handle_event(self, adapter_ep, event):
         pass
 
 

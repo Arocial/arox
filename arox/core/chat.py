@@ -41,7 +41,7 @@ class ChatServeDriver:
                 pending_exception = None
 
             # 2. Send the request and wait for the matching reply
-            reply: ChatInputReply = await runtime.agent_io.send(input_request)
+            reply: ChatInputReply = await runtime.agent_ep.send(input_request)
 
             if reply.is_abort(input_request):
                 break
@@ -53,7 +53,7 @@ class ChatServeDriver:
                 )
                 if command_reply is not None:
                     if command_reply.output:
-                        await runtime.agent_io.send(command_reply.output)
+                        await runtime.agent_ep.send(command_reply.output)
                     continue
 
             # 5. Execute the step
@@ -71,7 +71,7 @@ class ChatServeDriver:
                 if current_task is not None and current_task.cancelling():
                     raise
                 logger.info("Step cancelled.")
-                await runtime.agent_io.send("\n[Step cancelled]\n")
+                await runtime.agent_ep.send("\n[Step cancelled]\n")
 
             # 6. Send StepDoneEvent to indicate the step is finished
-            await runtime.agent_io.send(StepDoneEvent())
+            await runtime.agent_ep.send(StepDoneEvent())

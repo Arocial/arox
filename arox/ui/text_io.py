@@ -117,9 +117,9 @@ class TextIOAdapter(AbstractIOAdapter):
         self.user_inputs: dict[IOEndpoint, UserInputGenerator] = {}
 
     def _user_input_for(
-        self, adapter_io: IOEndpoint, runtime: Any | None
+        self, adapter_ep: IOEndpoint, runtime: Any | None
     ) -> UserInputGenerator:
-        user_input = self.user_inputs.get(adapter_io)
+        user_input = self.user_inputs.get(adapter_ep)
         if user_input is not None:
             return user_input
 
@@ -134,11 +134,11 @@ class TextIOAdapter(AbstractIOAdapter):
             input=self.input,
             output=self.output,
         )
-        self.user_inputs[adapter_io] = user_input
+        self.user_inputs[adapter_ep] = user_input
         return user_input
 
-    async def on_endpoint_closed(self, adapter_io: IOEndpoint) -> None:
-        self.user_inputs.pop(adapter_io, None)
+    async def on_endpoint_closed(self, adapter_ep: IOEndpoint) -> None:
+        self.user_inputs.pop(adapter_ep, None)
 
     async def _flush_stdin(self):
         import sys
@@ -151,7 +151,7 @@ class TextIOAdapter(AbstractIOAdapter):
         except (ImportError, Exception):
             pass
 
-    async def _handle_output(self, adapter_io: IOEndpoint, event):
+    async def _handle_output(self, adapter_ep: IOEndpoint, event):
         if isinstance(event, PartStartEvent):
             part = event.part
             if isinstance(part, (TextPart, ThinkingPart)):
@@ -181,13 +181,13 @@ class TextIOAdapter(AbstractIOAdapter):
             if event.pending_exception is not None:
                 print(f"⚠️ An error occurred: {event.pending_exception}")
             if event.request_normal_input:
-                input_generator = self._user_input_for(adapter_io, adapter_io.host)
+                input_generator = self._user_input_for(adapter_ep, adapter_ep.host)
                 try:
                     user_input = await input_generator()
                 except (EOFError, KeyboardInterrupt):
                     user_input = None
                     await self._flush_stdin()
-            await adapter_io.send(
+            await adapter_ep.send(
                 ChatInputReply(
                     req_id=event.req_id,
                     input_content=user_input,
@@ -197,5 +197,5 @@ class TextIOAdapter(AbstractIOAdapter):
             logger.debug(f"\nUnknown event type: {event.__class__.__name__}\n")
 
     @override
-    async def handle_event(self, adapter_io: IOEndpoint, event):
-        await self._handle_output(adapter_io, event)
+    async def handle_event(self, adapter_ep: IOEndpoint, event):
+        await self._handle_output(adapter_ep, event)

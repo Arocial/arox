@@ -146,7 +146,7 @@ class FilePlugin(Plugin):
                     self._pending_text_files[file_path] = "".join(lines)
                 self._add_to_session(path)
             except Exception as e:
-                await self.runtime.agent_io.send(
+                await self.runtime.agent_ep.send(
                     f"Error reading file {file_path}: {e!s}"
                 )
 
@@ -495,7 +495,7 @@ class FilePlugin(Plugin):
 
     async def handle_file_add(self, event: "FileAddEvent"):
         if not event.files:
-            await self.runtime.agent_io.send("Please specify files.")
+            await self.runtime.agent_ep.send("Please specify files.")
             return
         await self.read_by_user(event.files)
 

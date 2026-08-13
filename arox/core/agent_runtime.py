@@ -67,7 +67,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class AgentDeps:
-    agent_io: IOEndpoint
+    agent_ep: IOEndpoint
     runtime: "AgentRuntime"
 
 
@@ -119,7 +119,7 @@ class AgentRuntime(IOHost):
 
     async def broadcast_session_tree(self):
         info = SessionTreeUpdate(session_id=self.session.path[0])
-        await self.agent_io.send(info)
+        await self.agent_ep.send(info)
 
     def reload_config(self) -> Config:
         config = self.config_loader.reload()
@@ -177,7 +177,7 @@ class AgentRuntime(IOHost):
         self, ctx: RunContext["AgentDeps"], events: AsyncIterable[AgentStreamEvent]
     ):
         async for event in events:
-            await ctx.deps.agent_io.send(event)
+            await ctx.deps.agent_ep.send(event)
 
     def get_plugin(self, plugin_cls: type) -> Any | None:
         for plugin in self.plugins:
@@ -525,7 +525,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
             for model_ref in [primary_ref, *self.fallback_model_refs]:
                 if model_ref != self.model_ref:
                     self.set_model(model_ref)
-                    await self.agent_io.send(
+                    await self.agent_ep.send(
                         f"Primary model failed, falling back to {self.provider_model}"
                     )
 
@@ -537,7 +537,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                     model_settings=ModelSettings(**self.model_params),
                     message_history=message_history,
                     usage_limits=UsageLimits(request_limit=self.request_limit),
-                    deps=AgentDeps(agent_io=self.agent_io, runtime=self),
+                    deps=AgentDeps(agent_ep=self.agent_ep, runtime=self),
                 )
 
                 if isinstance(result.output, ModelAPIError):
@@ -574,7 +574,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
             if user_input.input_content is not None:
                 self.session.record_user_input(user_input)
                 if user_input.client_message_id:
-                    await self.agent_io.send(
+                    await self.agent_ep.send(
                         ServerIdMapping(
                             server_message_id=user_input.server_message_id,
                             client_message_id=user_input.client_message_id,
@@ -600,7 +600,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
             self.result = result
             output = result.output if isinstance(result.output, str) else None
             self.session.result = output
-            await self.agent_io.send(AgentRunResultEvent(result))
+            await self.agent_ep.send(AgentRunResultEvent(result))
             return result
         except asyncio.CancelledError:
             self.session.error = "Task interrupted."
