@@ -83,26 +83,9 @@ class SubagentPlugin(Plugin):
 
     async def on_start(self) -> None:
         main_session = self.runtime.session
-        session_manager = main_session.manager if main_session else None
-        if main_session is None or session_manager is None:
-            return
+        session_manager = main_session.manager
 
         for child_session in await session_manager.children_of(main_session):
-            if not isinstance(child_session, AgentSession):
-                continue
-
-            if child_session.task_name is None:
-                continue
-
-            if child_session.id in self.task_sessions or (
-                child_session.task_name
-                and child_session.task_name in self._task_ids_by_name
-            ):
-                logger.warning(
-                    "Ignoring duplicate restored subagent task %s",
-                    child_session.target,
-                )
-                continue
             self._register_task_session(child_session)
 
     async def on_stop(self) -> None:
@@ -114,23 +97,6 @@ class SubagentPlugin(Plugin):
     async def _close_runner(task_session: AgentSession) -> None:
         if task_session.runner is not None:
             await task_session.runner.stop()
-
-    def _create_child_session(
-        self,
-        subagent_name: str,
-        *,
-        task_name: str | None = None,
-        message: str | None = None,
-    ) -> AgentSession:
-        workspace = str(self.runtime.workspace) if self.runtime.workspace else None
-        return self.runtime.session.create_child_session(
-            agent_name=subagent_name,
-            workspace=workspace,
-            task_name=task_name,
-            target=f"/{self.runtime.name}/{task_name}" if task_name else None,
-            initial_message=message,
-            last_message=message,
-        )
 
     def _register_task_session(self, task_session: AgentSession) -> None:
         self.task_sessions[task_session.id] = task_session
@@ -189,10 +155,13 @@ class SubagentPlugin(Plugin):
             if subagent_name not in self.runtime.agent_config.subagents:
                 raise ValueError(f"Agent '{subagent_name}' is not configured.")
 
-            task_session = self._create_child_session(
-                subagent_name,
+            task_session = self.runtime.session.create_child_session(
+                agent_name=subagent_name,
+                workspace=self.runtime.workspace,
                 task_name=task_name,
-                message=message,
+                target=f"/{self.runtime.name}/{task_name}" if task_name else None,
+                initial_message=message,
+                last_message=message,
             )
             self._register_task_session(task_session)
 
@@ -224,8 +193,6 @@ class SubagentPlugin(Plugin):
                 callback_result = on_agent_created(runtime)
                 if asyncio.iscoroutine(callback_result):
                     await callback_result
-        if not isinstance(runner, TaskSessionRunner):
-            raise TypeError("Subagent session is not using a TaskSessionRunner.")
         return runner
 
     async def _start_session_task(
@@ -241,7 +208,7 @@ class SubagentPlugin(Plugin):
         task.add_done_callback(
             lambda _: asyncio.create_task(self.runtime.broadcast_session_tree())
         )
-        asyncio.create_task(self.runtime.broadcast_session_tree())
+        await self.runtime.broadcast_session_tree()
         return task
 
     def _format_task(
@@ -333,7 +300,7 @@ class SubagentPlugin(Plugin):
         return "Follow-up started.\n" + self._format_task(task_session, False)
 
     @tool(enabled=lambda plugin: plugin.mode is SubagentMode.ADVANCED)
-    async def wait_agent(self, target: str, timeout_seconds: float = 60) -> str:
+    async def wait_agent(self, target: str, timeout_seconds: float = 600) -> str:
         """Wait for an agent task and return its latest result.
 
         Timing out does not interrupt the task.

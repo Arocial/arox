@@ -434,6 +434,12 @@ system_prompt = "Hi."
         assert task.cancelled()
         assert runner.current_task is None
         assert not await runner.cancel_turn()
+
+        release.set()
+        completed_task = runner.start_turn("completed work")
+        assert await completed_task == "completed work"
+        assert runner.current_task is None
+        assert await runner.wait() == "completed work"
     runtime.session.runner = None
 
 

@@ -93,6 +93,8 @@ class TaskSessionRunner(SessionRunner):
 
     @property
     def current_task(self) -> asyncio.Task[AgentRunResult[str]] | None:
+        if self._task is None or self._task.done():
+            return None
         return self._task
 
     def start_turn(
@@ -104,12 +106,8 @@ class TaskSessionRunner(SessionRunner):
             raise RuntimeError("Session is already running.")
 
         async def execute() -> AgentRunResult[str]:
-            try:
-                assert self.runtime is not None
-                return await self.runtime.run_turn(user_input)
-            finally:
-                if self._task is task:
-                    self._task = None
+            assert self.runtime is not None
+            return await self.runtime.run_turn(user_input)
 
         task = asyncio.create_task(execute(), name=f"agent-turn:{self.session.id}")
         self._task = task
