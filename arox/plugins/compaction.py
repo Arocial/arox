@@ -7,7 +7,8 @@ from pydantic_ai import ModelMessage, ModelRequest, RunContext, UserPromptPart
 
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, tool
-from arox.plugins.slots import PERSISTENT_CONTEXT, RUN_SUBAGENT
+from arox.core.runner import TaskSessionRunner
+from arox.plugins.slots import PERSISTENT_CONTEXT
 
 logger = logging.getLogger(__name__)
 
@@ -194,15 +195,32 @@ class CompactionPlugin(Plugin):
             "Context size is large. Compacting conversation history..."
         )
 
-        def setup_compaction_subagent(subagent: Any) -> None:
-            subagent.message_history = messages.copy()
-
-        summary = await runtime.invoke_slot(
-            RUN_SUBAGENT,
-            COMPACTION_AGENT_NAME,
-            prompt,
-            on_subagent_created=setup_compaction_subagent,
+        compaction_session = runtime.session.create_child_session(
+            agent_name=COMPACTION_AGENT_NAME,
+            agent_source="compaction",
+            workspace=runtime.workspace,
+            initial_message=prompt,
+            last_message=prompt,
         )
+        runner = TaskSessionRunner(
+            compaction_session, runtime.config_loader, runtime.io_adapter
+        )
+        try:
+            await compaction_session.save()
+            await runtime.session.save()
+            compaction_runtime = await runner.start()
+            await runtime.broadcast_session_tree()
+            compaction_runtime.message_history = messages.copy()
+            runner.start_turn(prompt)
+            result = await runner.wait()
+            summary = result.output if result and isinstance(result.output, str) else ""
+        except Exception:
+            logger.exception("Compaction agent task failed")
+            summary = ""
+        finally:
+            await runner.stop()
+            await compaction_session.save()
+            await runtime.broadcast_session_tree()
 
         if not summary:
             logger.warning("Compaction returned no summary. Skipping.")

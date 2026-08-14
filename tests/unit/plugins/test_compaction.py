@@ -1,4 +1,3 @@
-import asyncio
 import contextlib
 from types import SimpleNamespace
 from typing import cast
@@ -33,11 +32,34 @@ class _FakeAgent:
         return SimpleNamespace(output=self._summary)
 
 
+class _FakeTaskSessionRunner:
+    def __init__(self, session, config_loader, io_adapter):
+        self.session = session
+        self.runtime = config_loader._compaction_agent
+        self._prompt = None
+
+    async def start(self):
+        self.runtime.session = self.session
+        return self.runtime
+
+    def start_turn(self, prompt):
+        self._prompt = prompt
+
+    async def wait(self):
+        return await self.runtime.run(self._prompt)
+
+    async def stop(self):
+        return None
+
+
 @pytest.fixture(autouse=True)
 def mock_env(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fake")
     monkeypatch.setattr("arox.core.agent_runtime.AgentRuntime.__aenter__", AsyncMock())
     monkeypatch.setattr("arox.core.agent_runtime.AgentRuntime.__aexit__", AsyncMock())
+    monkeypatch.setattr(
+        "arox.plugins.compaction.TaskSessionRunner", _FakeTaskSessionRunner
+    )
 
 
 class _MockAgent:
@@ -66,6 +88,7 @@ class _MockAgent:
             handle_event=AsyncMock(),
             on_endpoint_closed=AsyncMock(),
         )
+        self.config_loader = self
 
         self._stack = contextlib.AsyncExitStack()
 
@@ -89,16 +112,6 @@ class _MockAgent:
     async def invoke_slot(self, slot, *args, **kwargs):
         if slot is PERSISTENT_CONTEXT:
             return [self._persistent] if self._persistent else []
-        from arox.plugins.slots import RUN_SUBAGENT
-
-        if slot is RUN_SUBAGENT:
-            callback = kwargs.get("on_subagent_created")
-            if callback:
-                result = callback(self._compaction_agent)
-                if asyncio.iscoroutine(result):
-                    await result
-            result = await self._compaction_agent.run(args[1] if len(args) > 1 else "")
-            return result.output
         return None
 
 
@@ -175,6 +188,7 @@ async def test_auto_compaction_compacts_mid_tool_loop():
     out = await plugin.history_processor(_ctx(500), list(messages))
 
     # Everything collapsed into the summary; no leftover tool_return.
+    assert agent._compaction_agent.session.agent_source == "compaction"
     assert isinstance(out[0], ModelRequest)
     assert "SUMMARY" in _first_text(out[0])
     assert not any(

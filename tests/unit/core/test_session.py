@@ -363,6 +363,7 @@ class TestAgentSession:
 
         child = parent.create_child_session(
             agent_name="worker",
+            agent_source="subagent",
             task_name="sub_task",
             target="/main/sub_task",
             initial_message="do work",
@@ -374,13 +375,11 @@ class TestAgentSession:
         assert child.id in parent.children
         assert child.path == ["root-id", child.id]
         assert child.agent_name == "worker"
+        assert child.agent_source == "subagent"
         assert child.task_name == "sub_task"
         assert child.target == "/main/sub_task"
         assert child.initial_message == "do work"
         assert child.last_message == "do work"
-        assert child.workspace == str(tmp_path)
-        assert child.run_info.llm_context_id is not None
-        assert child.run_info.llm_context_id != parent.run_info.llm_context_id
         assert child.workspace == str(tmp_path)
         assert child.run_info.llm_context_id is not None
         assert child.run_info.llm_context_id != parent.run_info.llm_context_id

@@ -179,7 +179,7 @@ class MessageHistorySegment(BaseModel):
 class AgentSession(Session):
     session_type: str = "agent"
     agent_name: str
-    agent_source: Literal["static", "dynamic"] = "dynamic"
+    agent_source: str = "runtime"
     workspace: str | None = None
     task_name: str | None = None
     target: str | None = None
@@ -215,7 +215,7 @@ class AgentSession(Session):
         self,
         agent_name: str,
         *,
-        agent_source: Literal["static", "dynamic"] = "static",
+        agent_source: str = "child",
         workspace: Path | str | None = None,
         task_name: str | None = None,
         target: str | None = None,

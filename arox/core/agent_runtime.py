@@ -6,7 +6,7 @@ import uuid
 from collections.abc import AsyncIterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, overload
+from typing import Any, overload
 
 import fastmcp
 from anyio import ClosedResourceError, EndOfStream
@@ -152,10 +152,6 @@ class AgentRuntime(IOHost):
         if not agent_config:
             raise ValueError(f"Agent config for '{self.name}' not found")
         return agent_config
-
-    @property
-    def agent_source(self) -> Literal["static", "dynamic"]:
-        return self.session.agent_source
 
     @property
     def run_info(self) -> AgentRunInfo:

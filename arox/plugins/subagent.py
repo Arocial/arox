@@ -86,7 +86,8 @@ class SubagentPlugin(Plugin):
         session_manager = main_session.manager
 
         for child_session in await session_manager.children_of(main_session):
-            self._register_task_session(child_session)
+            if child_session.agent_source == "subagent":
+                self._register_task_session(child_session)
 
     async def on_stop(self) -> None:
         session_manager = self.runtime.session.manager
@@ -157,6 +158,7 @@ class SubagentPlugin(Plugin):
 
             task_session = self.runtime.session.create_child_session(
                 agent_name=subagent_name,
+                agent_source="subagent",
                 workspace=self.runtime.workspace,
                 task_name=task_name,
                 target=f"/{self.runtime.name}/{task_name}" if task_name else None,
