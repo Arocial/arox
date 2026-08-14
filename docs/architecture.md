@@ -10,7 +10,7 @@ An **App** is a runnable process (e.g. `arox-coder`) that owns a single **IO ada
 - Zero or more **subagents** — specialized agents run as resumable tasks by the `SubagentPlugin`. The main agent can spawn, wait for, interrupt, inspect, and continue these tasks through callable tools.
 - A resolved `AppConfig` and `AgentConfig` (from `arox/core/config.py`), which names the main agent, its subagents, and their per-agent configuration.
 
-The runner creates the common `AgentRuntime`, initializes its plugins and IO resources, and owns all asyncio tasks. `TaskSessionRunner` manages resumable turns; `ServeRunner` manages a long-lived serve loop and its current turn separately.
+The runner creates the common `AgentRuntime`, initializes its plugins and IO resources, and closes it through `start_runtime()` / `stop_runtime()` or async context management. `TaskRunner.run()` owns a resumable turn task; `ServeRunner.run()` owns the long-lived serve-loop task, while `ChatServeDriver` separately owns the current interaction task.
 
 ### Session management
 
@@ -47,8 +47,8 @@ Built-in adapters:
 ### Types
 
 - **`AgentRuntime`** (`arox/core/agent_runtime.py`) — the concrete ephemeral LLM runtime. Owns model inference via `pydantic_ai`, tool registration (local + MCP), plugins, IO resources, and turn hooks.
-- **`TaskSessionRunner`** (`arox/core/runner.py`) — owns task turn scheduling and cancellation.
-- **`ServeRunner`** (`arox/core/runner.py`) — owns serve-loop and current-turn scheduling.
+- **`TaskRunner`** (`arox/core/runner.py`) — owns the latest resumable turn task returned by `run()`.
+- **`ServeRunner`** (`arox/core/runner.py`) — owns the serve-loop task; `ChatServeDriver` owns and can cancel only the current interaction.
 - **`ChatServeDriver`** (`arox/core/chat.py`) — implements the chat request/reply protocol.
 
 ### Extension points

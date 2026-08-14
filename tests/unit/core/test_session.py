@@ -16,7 +16,7 @@ from pydantic_ai.messages import (
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter
-from arox.core.runner import TaskSessionRunner
+from arox.core.runner import TaskRunner
 from arox.core.session import (
     AgentSession,
     CommandEvent,
@@ -424,8 +424,8 @@ system_prompt = "Hello worker."
             agent_name="test_worker",
             path=["worker-session-id"],
         )
-        runner = TaskSessionRunner(session, config_loader, io_adapter)
-        runtime = await runner.start()
+        runner = TaskRunner(session, config_loader, io_adapter)
+        runtime = await runner.start_runtime()
         try:
             assert runtime.uuid == "worker-session-id"
             assert runtime.session is session
@@ -433,7 +433,7 @@ system_prompt = "Hello worker."
             assert runtime.name == "test_worker"
             assert type(runtime) is AgentRuntime
         finally:
-            await runner.stop()
+            await runner.stop_runtime()
 
     @pytest.mark.asyncio
     async def test_create_runtime_missing_config_raises(self, tmp_path, monkeypatch):
@@ -452,7 +452,7 @@ model_ref = "test"
         with pytest.raises(
             ValueError, match="Agent config for 'unconfigured_agent' not found"
         ):
-            await TaskSessionRunner(session, config_loader, io_adapter).start()
+            await TaskRunner(session, config_loader, io_adapter).start_runtime()
 
     @pytest.mark.asyncio
     async def test_agent_config_type_is_not_runtime_dispatch(
@@ -471,12 +471,12 @@ model_ref = "test"
         session = AgentSession(
             agent_name="broken_agent",
         )
-        runner = TaskSessionRunner(session, config_loader, io_adapter)
-        runtime = await runner.start()
+        runner = TaskRunner(session, config_loader, io_adapter)
+        runtime = await runner.start_runtime()
         try:
             assert type(runtime) is AgentRuntime
         finally:
-            await runner.stop()
+            await runner.stop_runtime()
 
 
 class TestFileSessionStore:
@@ -728,11 +728,11 @@ class TestFileSessionStore:
         manager.register_session_type(AgentSession)
         root = AgentSession(agent_name="main", path=["root"], manager=manager)
         child = await root.create_child_session("worker", task_name="child")
-        child_runner = SimpleNamespace(stop=AsyncMock())
+        child_runner = SimpleNamespace(stop_runtime=AsyncMock())
         child.runner = child_runner
         manager._track(root)
         manager._track(child, root)
 
         await manager.stop_all()
 
-        child_runner.stop.assert_awaited_once()
+        child_runner.stop_runtime.assert_awaited_once()

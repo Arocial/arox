@@ -131,7 +131,7 @@ main_agent = "coder"
         assert created.active
         active = await manager.resolve(created.id)
         assert isinstance(active, AgentSession)
-        assert active.runner.serve_task is not None
+        assert active.runner.task is not None
 
         stopped = await server.stop_session(created.id)
         assert not stopped.active

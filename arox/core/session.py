@@ -592,7 +592,7 @@ class SessionManager:
         await self.stop_descendants(root)
         if isinstance(root, AgentSession):
             if root.runner is not None:
-                await root.runner.stop()
+                await root.runner.stop_runtime()
 
     async def stop_descendants(self, root: Session) -> None:
         """Stop all active descendants in child-first order, preserving root."""

@@ -7,7 +7,7 @@ from pydantic_ai import ModelMessage, ModelRequest, RunContext, UserPromptPart
 
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, tool
-from arox.core.runner import TaskSessionRunner
+from arox.core.runner import TaskRunner
 from arox.plugins.slots import PERSISTENT_CONTEXT
 
 logger = logging.getLogger(__name__)
@@ -202,20 +202,20 @@ class CompactionPlugin(Plugin):
             initial_message=prompt,
             last_message=prompt,
         )
-        runner = TaskSessionRunner(
-            compaction_session, runtime.config_loader, runtime.io_adapter
-        )
         try:
-            compaction_runtime = await runner.start()
-            compaction_runtime.message_history = messages.copy()
-            runner.start_turn(prompt)
-            result = await runner.wait()
-            summary = result.output if result and isinstance(result.output, str) else ""
+            async with TaskRunner(
+                compaction_session, runtime.config_loader, runtime.io_adapter
+            ) as runner:
+                compaction_runtime = runner.runtime
+                assert compaction_runtime is not None
+                compaction_runtime.message_history = messages.copy()
+                result = await runner.run(prompt)
+                summary = (
+                    result.output if result and isinstance(result.output, str) else ""
+                )
         except Exception:
             logger.exception("Compaction agent task failed")
             summary = ""
-        finally:
-            await runner.stop()
 
         if not summary:
             logger.warning("Compaction returned no summary. Skipping.")

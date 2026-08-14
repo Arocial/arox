@@ -18,7 +18,7 @@ uv run mkdocs serve  # Serve docs at http://127.0.0.1:3420
 
 ### Hierarchy: App → AgentSession + SessionRunner
 
-An **App** is a runnable process that owns one `IOAdapter` and activates an `AgentSession` through a `SessionRunner`. `ServeRunner` owns the user-facing serve loop and `TaskSessionRunner` owns resumable subagent turns. Both create the same `AgentRuntime` implementation. Plugins are loaded in `AgentConfig.plugins` order and receive their settings from `AgentConfig.plugin_config`. The `SubagentPlugin` exposes synchronous delegation in `simple` mode and resumable task controls in `advanced` mode.
+An **App** is a runnable process that owns one `IOAdapter` and activates an `AgentSession` through a `SessionRunner`. `ServeRunner` owns the user-facing serve loop and `TaskRunner` owns resumable subagent turns. Both create the same `AgentRuntime` implementation. Plugins are loaded in `AgentConfig.plugins` order and receive their settings from `AgentConfig.plugin_config`. The `SubagentPlugin` exposes synchronous delegation in `simple` mode and resumable task controls in `advanced` mode.
 
 ```toml
 [agent.coder.plugin_config.subagent]
@@ -36,11 +36,11 @@ mode = "advanced"
   - Agent sessions persist only the agent name; full `AgentConfig` is resolved dynamically. The user-facing `AgentSession` is the top-level session; child tasks nest beneath it.
 - **`AgentRuntime`** is an ephemeral runtime owning live/expensive resources (Pydantic AI agent, MCP clients, plugins, tools, IO channels).
   - It executes one turn through `run_turn()` and does not own asyncio tasks.
-  - A `SessionRunner` creates, enters, and closes the runtime; startup is serialized through the session and failed initialization rolls back the runner binding.
+  - A `SessionRunner` creates, enters, and closes the runtime through `start_runtime()` / `stop_runtime()` and supports async context management; startup is serialized through the session and failed initialization rolls back the runner binding.
   - Child sessions are spawned via `parent_session.create_child_session(...)`.
   - Runtime identity matches `session.id` (`runtime.uuid == session.id`).
-  - `TaskSessionRunner.start_turn()` starts one turn; `wait()` and `cancel()` manage it while retaining the runtime for follow-ups.
-  - `ServeRunner` separately owns a long-lived serve task and the current turn task. `cancel_turn()` preserves the serve loop; `stop()` closes both tasks and the runtime.
+  - `TaskRunner.run()` starts one turn and returns its retained `asyncio.Task`; callers await, shield, time out, or cancel that task directly while the runtime remains available for follow-ups.
+  - `ServeRunner.run()` starts and returns the long-lived serve task without closing the runtime when the loop finishes. `ChatServeDriver` owns the current interaction task, and `ServeRunner.cancel_current_interaction()` cancels only that interaction while preserving the serve loop. `stop_runtime()` stops owned execution before closing the runtime.
   - `ChatServeDriver` implements the concrete request/reply protocol used by `ServeRunner`.
 - `SessionManager` coordinates with `SessionStore` (default `FileSessionStore`) and maintains one authoritative in-process Session identity map keyed by full path. Its tree API (`resolve`, `list_roots`, `children_of`, `walk`, `find`, `stop_tree`, `delete_tree`, and `remove_child`) transparently prefers cached/live instances over storage, while manager shutdown stops every live root tree before flushing pending saves.
 - Resuming is done via the `session_id` passed to the App. The `CorePlugin` provides the `/fork` command.
@@ -59,8 +59,8 @@ IO is split into two layers: per-agent channels and app-level adapters.
 
 **Types**
 - **`AgentRuntime`** (`arox/core/agent_runtime.py`): the single LLM runtime. Owns inference, plugins, tools, MCP clients, IO channels, and single-turn `run_turn()` execution.
-- **`TaskSessionRunner`** (`arox/core/runner.py`): manages resumable task turns.
-- **`ServeRunner`** (`arox/core/runner.py`): manages the long-lived interaction loop and its current turn.
+- **`TaskRunner`** (`arox/core/runner.py`): manages resumable task turns and retains the latest turn task.
+- **`ServeRunner`** (`arox/core/runner.py`): manages the long-lived serve loop; its driver owns interaction-level execution.
 - **`ChatServeDriver`** (`arox/core/chat.py`): implements the chat request/reply loop and handles slash commands from normal user input before starting an LLM turn.
 
 **Extension points**

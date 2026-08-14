@@ -15,7 +15,7 @@ from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter, RequestEvent
-from arox.core.runner import TaskSessionRunner
+from arox.core.runner import TaskRunner
 from arox.core.session import AgentSession
 from arox.plugins.core import SetModelEvent
 
@@ -416,30 +416,29 @@ system_prompt = "Hi."
 
     runtime.run_turn = blocking_turn  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
-    runner = TaskSessionRunner(
-        runtime.session, runtime.config_loader, runtime.io_adapter
-    )
+    runner = TaskRunner(runtime.session, runtime.config_loader, runtime.io_adapter)
     runner.runtime = runtime
     runtime.session.runner = runner
     async with runtime:
-        task = runner.start_turn("work")
+        task = runner.run("work")
         await started.wait()
-        assert runner.current_task is task
+        assert runner.task is task
         with pytest.raises(RuntimeError, match="already running"):
-            runner.start_turn("duplicate")
+            runner.run("duplicate")
         with pytest.raises(TimeoutError):
-            await runner.wait(0.01)
-        assert runner.current_task is task
-        assert await runner.cancel_turn()
+            await asyncio.wait_for(asyncio.shield(task), 0.01)
+        assert runner.task is task
+
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         assert task.cancelled()
-        assert runner.current_task is None
-        assert not await runner.cancel_turn()
+        assert runner.task is task
 
         release.set()
-        completed_task = runner.start_turn("completed work")
+        completed_task = runner.run("completed work")
         assert await completed_task == "completed work"
-        assert runner.current_task is None
-        assert await runner.wait() == "completed work"
+        assert runner.task is completed_task
+        assert await runner.task == "completed work"
     runtime.session.runner = None
 
 
@@ -522,11 +521,11 @@ system_prompt = "Hi."
         agent_name="test_agent",
     )
 
-    runner = TaskSessionRunner(session, config_loader, io_adapter)
-    runtime = await runner.start()
+    runner = TaskRunner(session, config_loader, io_adapter)
+    runtime = await runner.start_runtime()
     try:
         assert runtime.uuid == "child-session-id"
         assert runtime.session is session
         assert runtime.name == "test_agent"
     finally:
-        await runner.stop()
+        await runner.stop_runtime()

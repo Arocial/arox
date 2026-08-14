@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -43,21 +44,25 @@ async def test_chat_driver_handles_slash_commands_before_starting_turn():
     command_manager = SimpleNamespace(
         try_handle_slash=AsyncMock(return_value=CommandReply(req_id="", output="info"))
     )
-    runtime = SimpleNamespace(agent_ep=agent_ep, command_manager=command_manager)
-    start_turn = AsyncMock()
+    run_turn = AsyncMock()
+    runtime = SimpleNamespace(
+        agent_ep=agent_ep,
+        command_manager=command_manager,
+        run_turn=run_turn,
+        session=SimpleNamespace(id="chat"),
+    )
     runner = cast(
         ServeRunner,
         SimpleNamespace(
             runtime=runtime,
-            start_turn=start_turn,
             session=SimpleNamespace(record_turn_error=AsyncMock()),
         ),
     )
 
-    await ChatServeDriver().serve(runner)
+    await ChatServeDriver().run(runner)
 
     command_manager.try_handle_slash.assert_awaited_once_with("/info")
-    start_turn.assert_not_awaited()
+    run_turn.assert_not_awaited()
     requests = [
         event for event in agent_ep.events if isinstance(event, ChatInputRequest)
     ]
@@ -69,25 +74,63 @@ async def test_chat_driver_handles_slash_commands_before_starting_turn():
 async def test_chat_driver_sends_unknown_slash_commands_to_the_agent():
     agent_ep = FakeAgentIO(["/unknown", None])
     command_manager = SimpleNamespace(try_handle_slash=AsyncMock(return_value=None))
-    runtime = SimpleNamespace(agent_ep=agent_ep, command_manager=command_manager)
-    start_turn = AsyncMock(return_value=SimpleNamespace(output="done"))
+    run_turn = AsyncMock(return_value=SimpleNamespace(output="done"))
+    runtime = SimpleNamespace(
+        agent_ep=agent_ep,
+        command_manager=command_manager,
+        run_turn=run_turn,
+        session=SimpleNamespace(id="chat"),
+    )
     runner = cast(
         ServeRunner,
         SimpleNamespace(
             runtime=runtime,
-            start_turn=start_turn,
             session=SimpleNamespace(record_turn_error=AsyncMock()),
         ),
     )
 
-    await ChatServeDriver().serve(runner)
+    await ChatServeDriver().run(runner)
 
     command_manager.try_handle_slash.assert_awaited_once_with("/unknown")
-    start_turn.assert_awaited_once()
-    await_args = start_turn.await_args
+    run_turn.assert_awaited_once()
+    await_args = run_turn.await_args
     assert await_args is not None
     reply = await_args.args[0]
     assert reply.text_content == "/unknown"
+
+
+@pytest.mark.asyncio
+async def test_chat_driver_cancels_current_interaction_and_keeps_serving():
+    agent_ep = FakeAgentIO(["hello", None])
+    command_manager = SimpleNamespace(try_handle_slash=AsyncMock(return_value=None))
+    started = asyncio.Event()
+
+    async def blocking_turn(user_input):
+        started.set()
+        await asyncio.Event().wait()
+
+    runtime = SimpleNamespace(
+        agent_ep=agent_ep,
+        command_manager=command_manager,
+        run_turn=blocking_turn,
+        session=SimpleNamespace(id="chat"),
+    )
+    runner = cast(
+        ServeRunner,
+        SimpleNamespace(
+            runtime=runtime,
+            session=SimpleNamespace(record_turn_error=AsyncMock()),
+        ),
+    )
+    driver = ChatServeDriver()
+    serve_task = asyncio.create_task(driver.run(runner))
+
+    await started.wait()
+    assert await driver.cancel_current_interaction()
+    await serve_task
+
+    assert "\n[Step cancelled]\n" in agent_ep.events
+    assert not await driver.cancel_current_interaction()
 
 
 @pytest.mark.asyncio
@@ -144,15 +187,14 @@ system_prompt = "Hi there."
         test_model = TestModel(call_tools=["multiply"])
         async with io_adapter:
             runner = ServeRunner(session, config_loader, io_adapter, ChatServeDriver())
-            try:
-                runtime = await runner.start()
+            async with runner:
+                runtime = runner.runtime
+                assert runtime is not None
                 runtime.add_local_tool(multiply)
                 with runtime._pydantic_agent.override(model=test_model):
-                    runner.serve()
-                    await runner.wait()
-                    assert not session.is_active
-            finally:
-                await runner.stop()
+                    await runner.run()
+                    assert session.is_active
+            assert not session.is_active
 
         # Verify that the tool was called
         messages = runtime.message_history

@@ -338,7 +338,7 @@ async def test_wait_timeout_does_not_cancel_task(agent_factory):
     try:
         await plugin.spawn_agent("slow_review", "block until released", "reviewer")
         task_session = plugin._resolve_task("slow_review")
-        assert task_session.runner.current_task is not None
+        assert task_session.runner.task is not None
 
         # Wait for agent to start
         while task_session.runner is None:
@@ -350,8 +350,8 @@ async def test_wait_timeout_does_not_cancel_task(agent_factory):
         result = await plugin.wait_agent("slow_review", timeout_seconds=0.01)
 
         assert "Agent is still running." in result
-        assert task_session.runner.current_task is not None
-        assert not task_session.runner.current_task.cancelled()
+        assert task_session.runner.task is not None
+        assert not task_session.runner.task.cancelled()
 
         subagent.release.set()
         completed = await plugin.wait_agent("slow_review")

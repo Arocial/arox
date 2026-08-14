@@ -31,13 +31,11 @@ system_prompt = "Hi there."
     test_model = TestModel(custom_output_text="hello world")
     async with io_adapter:
         runner = ServeRunner(session, config_loader, io_adapter, ChatServeDriver())
-        try:
-            runtime = await runner.start()
+        async with runner:
+            runtime = runner.runtime
+            assert runtime is not None
             with runtime._pydantic_agent.override(model=test_model):
-                runner.serve()
-                await runner.wait()
-        finally:
-            await runner.stop()
+                await runner.run()
 
     captured = capsys.readouterr()
     assert "hello world" in captured.out
@@ -70,13 +68,11 @@ system_prompt = "Hi there."
 
     async with io_adapter:
         runner = ServeRunner(session, config_loader, io_adapter, ChatServeDriver())
-        try:
-            runtime = await runner.start()
+        async with runner:
+            runtime = runner.runtime
+            assert runtime is not None
             runtime.run_turn = failing_turn  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
-            runner.serve()
-            await runner.wait()
-        finally:
-            await runner.stop()
+            await runner.run()
 
     assert io_adapter.error is not None
     assert "step blew up" in str(io_adapter.error)

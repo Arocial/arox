@@ -35,7 +35,7 @@ from arox.core.chat import (
 from arox.core.completion import parse_request
 from arox.core.config import ConfigLoader
 from arox.core.io import AbstractIOAdapter, IOEndpoint
-from arox.core.runner import ServeRunner
+from arox.core.runner import ServeRunner, TaskRunner
 from arox.core.session import AgentSession
 from arox.core.types import ServerIdMapping, SessionTreeUpdate
 
@@ -310,8 +310,13 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     async def _apply_input(self, target, payload: dict) -> dict:
         if payload.get("cancel"):
             runner = target.session.runner
-            if runner is not None:
-                await runner.cancel_turn()
+            if isinstance(runner, ServeRunner):
+                await runner.cancel_current_interaction()
+            elif isinstance(runner, TaskRunner):
+                task = runner.task
+                if task is not None and not task.done():
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
             return {"status": "cancelled"}
 
         cmd = payload.get("command")
@@ -531,6 +536,16 @@ class VercelStreamServer:
         await self.session_manager.persist(session)
         return await self.start_session(session.id)
 
+    async def _supervise_runner(
+        self,
+        runner: ServeRunner,
+        serve_task: asyncio.Task[None],
+    ) -> None:
+        try:
+            await asyncio.gather(serve_task, return_exceptions=True)
+        finally:
+            await runner.stop_runtime()
+
     async def start_session(self, session_id: str) -> SessionView:
         session = await self._resolve_root_session(session_id)
         if session.is_active:
@@ -538,7 +553,12 @@ class VercelStreamServer:
         runner = ServeRunner(
             session, self.config_loader, self.io_adapter, ChatServeDriver()
         )
-        await runner.start_serving()
+        await runner.start_runtime()
+        serve_task = runner.run()
+        asyncio.create_task(
+            self._supervise_runner(runner, serve_task),
+            name=f"session-supervisor:{session.id}",
+        )
         return await build_session_view(session)
 
     async def stop_session(self, session_id: str) -> SessionView:

@@ -1,7 +1,7 @@
 import asyncio
 import logging
-from abc import ABC, abstractmethod
-from typing import Any, Protocol
+from types import TracebackType
+from typing import Protocol, Self
 
 from pydantic_ai import AgentRunResult
 
@@ -14,7 +14,7 @@ from arox.core.types import UserInput
 logger = logging.getLogger(__name__)
 
 
-class SessionRunner(ABC):
+class SessionRunner:
     """Own the ephemeral execution state attached to an AgentSession."""
 
     def __init__(
@@ -28,7 +28,29 @@ class SessionRunner(ABC):
         self.io_adapter = io_adapter
         self.runtime: AgentRuntime | None = None
 
-    async def start(self) -> AgentRuntime:
+    async def __aenter__(self) -> Self:
+        await self.start_runtime()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        await self._stop_execution()
+        async with self.session._runner_lock:
+            if self.session.runner is not self:
+                return
+            runtime = self.runtime
+            try:
+                if runtime is not None:
+                    await runtime.__aexit__(exc_type, exc_val, exc_tb)
+            finally:
+                self.runtime = None
+                self.session.runner = None
+
+    async def start_runtime(self) -> AgentRuntime:
         async with self.session._runner_lock:
             if self.session.runner is not None:
                 if self.session.runner is self and self.runtime is not None:
@@ -55,33 +77,14 @@ class SessionRunner(ABC):
                 self.session.manager._track(self.session, self.session.owner)
             return runtime
 
-    async def _stop_runtime(
-        self,
-        exc_type: type[BaseException] | None = None,
-        exc_val: BaseException | None = None,
-        exc_tb: Any = None,
-    ) -> None:
-        async with self.session._runner_lock:
-            if self.session.runner is not self:
-                return
-            runtime = self.runtime
-            try:
-                if runtime is not None:
-                    await runtime.__aexit__(exc_type, exc_val, exc_tb)
-            finally:
-                self.runtime = None
-                self.session.runner = None
+    async def stop_runtime(self) -> None:
+        await self.__aexit__(None, None, None)
 
-    @abstractmethod
-    async def cancel_turn(self) -> bool:
-        """Cancel the current turn while keeping the runtime active."""
-
-    @abstractmethod
-    async def stop(self) -> None:
-        """Stop all execution and release the runtime."""
+    async def _stop_execution(self) -> None:
+        pass
 
 
-class TaskSessionRunner(SessionRunner):
+class TaskRunner(SessionRunner):
     def __init__(
         self,
         session: AgentSession,
@@ -92,18 +95,16 @@ class TaskSessionRunner(SessionRunner):
         self._task: asyncio.Task[AgentRunResult[str]] | None = None
 
     @property
-    def current_task(self) -> asyncio.Task[AgentRunResult[str]] | None:
-        if self._task is None or self._task.done():
-            return None
+    def task(self) -> asyncio.Task[AgentRunResult[str]] | None:
         return self._task
 
-    def start_turn(
+    def run(
         self, user_input: UserInput | str | None = None
     ) -> asyncio.Task[AgentRunResult[str]]:
         if self.runtime is None:
-            raise RuntimeError("Runner must be started before calling run().")
+            raise RuntimeError("Runtime must be started before calling run().")
         if self._task is not None and not self._task.done():
-            raise RuntimeError("Session is already running.")
+            raise RuntimeError("A task is already running.")
 
         async def execute() -> AgentRunResult[str]:
             assert self.runtime is not None
@@ -113,29 +114,18 @@ class TaskSessionRunner(SessionRunner):
         self._task = task
         return task
 
-    async def wait(self, timeout: float | None = None) -> AgentRunResult[str] | None:
+    async def _stop_execution(self) -> None:
         task = self._task
-        if task is None:
-            return None
-        if timeout is None:
-            return await asyncio.shield(task)
-        return await asyncio.wait_for(asyncio.shield(task), timeout)
-
-    async def cancel_turn(self) -> bool:
-        task = self._task
-        if task is None or task.done():
-            return False
+        if task is None or task.done() or task is asyncio.current_task():
+            return
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        return True
-
-    async def stop(self) -> None:
-        await self.cancel_turn()
-        await self._stop_runtime()
 
 
 class ServeDriver(Protocol):
-    async def serve(self, runner: "ServeRunner") -> None: ...
+    async def run(self, runner: "ServeRunner") -> None: ...
+
+    async def cancel_current_interaction(self) -> bool: ...
 
 
 class ServeRunner(SessionRunner):
@@ -148,44 +138,29 @@ class ServeRunner(SessionRunner):
     ) -> None:
         super().__init__(session, config_loader, io_adapter)
         self.driver = driver
-        self._serve_task: asyncio.Task[None] | None = None
-        self._turn_task: asyncio.Task[AgentRunResult[str]] | None = None
+        self._task: asyncio.Task[None] | None = None
 
     @property
-    def serve_task(self) -> asyncio.Task[None] | None:
-        return self._serve_task
+    def task(self) -> asyncio.Task[None] | None:
+        return self._task
 
-    @property
-    def current_task(self) -> asyncio.Task[AgentRunResult[str]] | None:
-        return self._turn_task
-
-    async def start_serving(self) -> asyncio.Task[None]:
-        await self.start()
-        return self.serve()
-
-    def serve(self) -> asyncio.Task[None]:
+    def run(self) -> asyncio.Task[None]:
         if self.runtime is None:
-            raise RuntimeError("Runner must be started before calling serve().")
-        if self._serve_task is not None and not self._serve_task.done():
+            raise RuntimeError("Runtime must be started before calling run().")
+        if self._task is not None and not self._task.done():
             raise RuntimeError("Session is already serving.")
 
         async def execute() -> None:
             try:
-                await self.driver.serve(self)
+                await self.driver.run(self)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
                 self.session.record_error_event(exc)
                 raise
-            finally:
-                try:
-                    await self._stop_runtime()
-                finally:
-                    if self._serve_task is task:
-                        self._serve_task = None
 
         task = asyncio.create_task(execute(), name=f"agent-serve:{self.session.id}")
-        self._serve_task = task
+        self._task = task
 
         def log_failure(completed: asyncio.Task[None]) -> None:
             if completed.cancelled():
@@ -201,44 +176,12 @@ class ServeRunner(SessionRunner):
         task.add_done_callback(log_failure)
         return task
 
-    def start_turn(
-        self, user_input: UserInput | str | None = None
-    ) -> asyncio.Task[AgentRunResult[str]]:
-        if self.runtime is None:
-            raise RuntimeError("Runner must be started before running a turn.")
-        if self._turn_task is not None and not self._turn_task.done():
-            raise RuntimeError("A turn is already running.")
+    async def cancel_current_interaction(self) -> bool:
+        return await self.driver.cancel_current_interaction()
 
-        async def execute() -> AgentRunResult[str]:
-            try:
-                assert self.runtime is not None
-                return await self.runtime.run_turn(user_input)
-            finally:
-                if self._turn_task is task:
-                    self._turn_task = None
-
-        task = asyncio.create_task(execute(), name=f"agent-turn:{self.session.id}")
-        self._turn_task = task
-        return task
-
-    async def cancel_turn(self) -> bool:
-        task = self._turn_task
-        if task is None or task.done():
-            return False
+    async def _stop_execution(self) -> None:
+        task = self._task
+        if task is None or task.done() or task is asyncio.current_task():
+            return
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
-        return True
-
-    async def wait(self) -> None:
-        task = self._serve_task
-        if task is not None:
-            await asyncio.shield(task)
-
-    async def stop(self) -> None:
-        await self.cancel_turn()
-        task = self._serve_task
-        if task is not None and task is not asyncio.current_task():
-            if not task.done():
-                task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-        await self._stop_runtime()

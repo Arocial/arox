@@ -2,6 +2,9 @@ import asyncio
 import logging
 from dataclasses import dataclass
 
+from pydantic_ai import AgentRunResult
+
+from arox.core.agent_runtime import AgentRuntime
 from arox.core.io import ReplyEvent, RequestEvent
 from arox.core.runner import ServeRunner
 from arox.core.types import UserInput
@@ -26,21 +29,22 @@ class ChatInputReply(UserInput, ReplyEvent):
 
 
 class ChatServeDriver:
-    async def serve(self, runner: ServeRunner) -> None:
-        """Serve the runtime with an optional input generator"""
+    def __init__(self) -> None:
+        self._interaction_task: asyncio.Task[AgentRunResult[str]] | None = None
+
+    async def run(self, runner: ServeRunner) -> None:
+        """Serve the runtime with an optional input generator."""
         runtime = runner.runtime
         assert runtime is not None
         pending_exception: BaseException | None = None
 
         while True:
-            # 1. Prepare the event for this round
             input_request = ChatInputRequest()
 
             if pending_exception:
                 input_request.pending_exception = pending_exception
                 pending_exception = None
 
-            # 2. Send the request and wait for the matching reply
             reply: ChatInputReply = await runtime.agent_ep.send(input_request)
 
             if reply.is_abort(input_request):
@@ -56,15 +60,14 @@ class ChatServeDriver:
                         await runtime.agent_ep.send(command_reply.output)
                     continue
 
-            # 5. Execute the step
             try:
-                result = await runner.start_turn(reply)
+                result = await self._run_interaction(runtime, reply)
 
                 if result and isinstance(result.output, Exception):
-                    e = result.output
-                    logger.error("An error occurred.", exc_info=e)
-                    runner.session.record_turn_error(e)
-                    pending_exception = e
+                    error = result.output
+                    logger.error("An error occurred.", exc_info=error)
+                    runner.session.record_turn_error(error)
+                    pending_exception = error
 
             except asyncio.CancelledError:
                 current_task = asyncio.current_task()
@@ -73,5 +76,31 @@ class ChatServeDriver:
                 logger.info("Step cancelled.")
                 await runtime.agent_ep.send("\n[Step cancelled]\n")
 
-            # 6. Send StepDoneEvent to indicate the step is finished
             await runtime.agent_ep.send(StepDoneEvent())
+
+    async def cancel_current_interaction(self) -> bool:
+        task = self._interaction_task
+        if task is None or task.done():
+            return False
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return True
+
+    async def _run_interaction(
+        self,
+        runtime: AgentRuntime,
+        user_input: UserInput | str | None,
+    ) -> AgentRunResult[str]:
+        if self._interaction_task is not None and not self._interaction_task.done():
+            raise RuntimeError("An interaction is already running.")
+
+        task = asyncio.create_task(
+            runtime.run_turn(user_input),
+            name=f"agent-interaction:{runtime.session.id}",
+        )
+        self._interaction_task = task
+        try:
+            return await task
+        finally:
+            if self._interaction_task is task:
+                self._interaction_task = None

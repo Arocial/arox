@@ -32,24 +32,20 @@ class _FakeAgent:
         return SimpleNamespace(output=self._summary)
 
 
-class _FakeTaskSessionRunner:
+class _FakeTaskRunner:
     def __init__(self, session, config_loader, io_adapter):
         self.session = session
         self.runtime = config_loader._compaction_agent
-        self._prompt = None
 
-    async def start(self):
+    async def __aenter__(self):
         self.runtime.session = self.session
-        return self.runtime
+        return self
 
-    def start_turn(self, prompt):
-        self._prompt = prompt
-
-    async def wait(self):
-        return await self.runtime.run(self._prompt)
-
-    async def stop(self):
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
         return None
+
+    def run(self, prompt):
+        return self.runtime.run(prompt)
 
 
 @pytest.fixture(autouse=True)
@@ -57,9 +53,7 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fake")
     monkeypatch.setattr("arox.core.agent_runtime.AgentRuntime.__aenter__", AsyncMock())
     monkeypatch.setattr("arox.core.agent_runtime.AgentRuntime.__aexit__", AsyncMock())
-    monkeypatch.setattr(
-        "arox.plugins.compaction.TaskSessionRunner", _FakeTaskSessionRunner
-    )
+    monkeypatch.setattr("arox.plugins.compaction.TaskRunner", _FakeTaskRunner)
 
 
 class _MockAgent:

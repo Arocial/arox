@@ -9,7 +9,7 @@ from arox.core.agent_runtime import (
     AgentRuntime,
 )
 from arox.core.plugin import Plugin, tool
-from arox.core.runner import TaskSessionRunner
+from arox.core.runner import TaskRunner
 from arox.core.session import AgentSession
 from arox.plugins.slots import RUN_SUBAGENT, SYSTEM_PROMPT
 
@@ -97,7 +97,7 @@ class SubagentPlugin(Plugin):
     @staticmethod
     async def _close_runner(task_session: AgentSession) -> None:
         if task_session.runner is not None:
-            await task_session.runner.stop()
+            await task_session.runner.stop_runtime()
 
     def _register_task_session(self, task_session: AgentSession) -> None:
         self.task_sessions[task_session.id] = task_session
@@ -182,13 +182,13 @@ class SubagentPlugin(Plugin):
         task_session: AgentSession,
         on_agent_created: Callable[[AgentRuntime], Awaitable[None] | None]
         | None = None,
-    ) -> TaskSessionRunner:
+    ) -> TaskRunner:
         runner = task_session.runner
         if runner is None:
-            runner = TaskSessionRunner(
+            runner = TaskRunner(
                 task_session, self.runtime.config_loader, self.runtime.io_adapter
             )
-            runtime = await runner.start()
+            runtime = await runner.start_runtime()
             if on_agent_created is not None:
                 callback_result = on_agent_created(runtime)
                 if asyncio.iscoroutine(callback_result):
@@ -204,7 +204,7 @@ class SubagentPlugin(Plugin):
     ) -> asyncio.Task[Any]:
         self.runtime.session.record_subagent_call(task_session.agent_name, message)
         runner = await self._ensure_runner(task_session, on_agent_created)
-        task = runner.start_turn(message)
+        task = runner.run(message)
         return task
 
     def _format_task(
@@ -236,10 +236,13 @@ class SubagentPlugin(Plugin):
         )
         try:
             runner = task_session.runner
-            if not isinstance(runner, TaskSessionRunner):
-                raise TypeError("Subagent session is not using a TaskSessionRunner.")
+            if not isinstance(runner, TaskRunner):
+                raise TypeError("Subagent session is not using a TaskRunner.")
             try:
-                result = await runner.wait()
+                task = runner.task
+                if task is None:
+                    return "Task completed with no output."
+                result = await task
                 if result is None or not isinstance(result.output, str):
                     return "Task completed with no output."
                 return result.output
@@ -285,7 +288,11 @@ class SubagentPlugin(Plugin):
         task_session = self._resolve_task(target)
         async with self._lock:
             runner = task_session.runner
-            if runner is not None and runner.current_task is not None:
+            if (
+                isinstance(runner, TaskRunner)
+                and runner.task is not None
+                and not runner.task.done()
+            ):
                 raise ValueError(
                     f"Agent task '{task_session.target}' is already running."
                 )
@@ -304,10 +311,13 @@ class SubagentPlugin(Plugin):
 
         task_session = self._resolve_task(target)
         runner = task_session.runner
-        if runner is None:
+        if not isinstance(runner, TaskRunner):
+            return self._format_task(task_session)
+        task = runner.task
+        if task is None:
             return self._format_task(task_session)
         try:
-            await runner.wait(timeout_seconds)
+            await asyncio.wait_for(asyncio.shield(task), timeout_seconds)
         except TimeoutError:
             return "Agent is still running.\n" + self._format_task(task_session, False)
 
@@ -321,8 +331,13 @@ class SubagentPlugin(Plugin):
         """Interrupt a running agent turn while preserving its session for follow-up."""
         task_session = self._resolve_task(target)
         runner = task_session.runner
-        if runner is None or not await runner.cancel_turn():
+        if not isinstance(runner, TaskRunner):
             return "Agent is not running.\n" + self._format_task(task_session, False)
+        task = runner.task
+        if task is None or task.done():
+            return "Agent is not running.\n" + self._format_task(task_session, False)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         return "Agent interrupted.\n" + self._format_task(task_session, False)
 
     @tool(enabled=lambda plugin: plugin.mode is SubagentMode.ADVANCED)

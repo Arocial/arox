@@ -146,24 +146,24 @@ def main(profile: str | None = None):
                 runner = ServeRunner(
                     session, config_loader, io_adapter, ChatServeDriver()
                 )
-                try:
+                async with runner:
                     async with AsyncExitStack() as interrupt_stack:
                         if args.ui == "text":
                             from arox.apps.chat.interrupt import SignalInterruptHandler
 
                             await interrupt_stack.enter_async_context(
-                                SignalInterruptHandler(runner.cancel_turn)
+                                SignalInterruptHandler(
+                                    runner.cancel_current_interaction
+                                )
                             )
 
-                        main_agent = await runner.start()
+                        main_agent = runner.runtime
+                        assert main_agent is not None
                         if args.session:
                             await main_agent.agent_ep.send(
                                 f"Session restored: {args.session}"
                             )
-                        runner.serve()
-                        await runner.wait()
-                finally:
-                    await runner.stop()
+                        await runner.run()
 
         if args.ui == "headless":
             from arox.ui.headless import HeadlessIOAdapter
