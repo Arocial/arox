@@ -350,10 +350,12 @@ class TestAgentSession:
         assert forked.result is None
         assert forked.error is None
 
-    def test_create_child_session(self, tmp_path):
+    @pytest.mark.asyncio
+    async def test_create_child_session(self, tmp_path):
         store = FileSessionStore()
         store.base_dir = tmp_path / "sessions"
         manager = SessionManager(store)
+        manager.register_session_type(AgentSession)
         parent = AgentSession(
             agent_name="main",
             path=["root-id"],
@@ -361,7 +363,7 @@ class TestAgentSession:
             manager=manager,
         )
 
-        child = parent.create_child_session(
+        child = await parent.create_child_session(
             agent_name="worker",
             agent_source="subagent",
             task_name="sub_task",
@@ -384,14 +386,22 @@ class TestAgentSession:
         assert child.run_info.llm_context_id is not None
         assert child.run_info.llm_context_id != parent.run_info.llm_context_id
 
-    def test_create_child_session_workspace_override(self, tmp_path):
+        stored_parent = await store.load_session(parent.path)
+        stored_child = await store.load_session(child.path)
+        assert stored_parent is not None
+        assert stored_parent.children == [child.id]
+        assert isinstance(stored_child, AgentSession)
+        assert stored_child.task_name == "sub_task"
+
+    @pytest.mark.asyncio
+    async def test_create_child_session_workspace_override(self, tmp_path):
         parent = AgentSession(
             agent_name="main",
             path=["root-id"],
             workspace=str(tmp_path),
         )
         custom_ws = tmp_path / "custom"
-        child = parent.create_child_session(
+        child = await parent.create_child_session(
             agent_name="worker",
             workspace=custom_ws,
         )
@@ -688,11 +698,8 @@ class TestFileSessionStore:
         manager = SessionManager(store)
         manager.register_session_type(AgentSession)
         root = AgentSession(agent_name="main", path=["root"], manager=manager)
-        child = root.create_child_session("worker", task_name="child")
-        grandchild = child.create_child_session("worker", task_name="grandchild")
-        await root.save()
-        await child.save()
-        await grandchild.save()
+        child = await root.create_child_session("worker", task_name="child")
+        grandchild = await child.create_child_session("worker", task_name="grandchild")
 
         loaded = await manager.resolve(root.id)
         assert isinstance(loaded, AgentSession)
@@ -720,7 +727,7 @@ class TestFileSessionStore:
         manager = SessionManager(store)
         manager.register_session_type(AgentSession)
         root = AgentSession(agent_name="main", path=["root"], manager=manager)
-        child = root.create_child_session("worker", task_name="child")
+        child = await root.create_child_session("worker", task_name="child")
         child_runner = SimpleNamespace(stop=AsyncMock())
         child.runner = child_runner
         manager._track(root)

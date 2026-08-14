@@ -156,7 +156,7 @@ class SubagentPlugin(Plugin):
             if subagent_name not in self.runtime.agent_config.subagents:
                 raise ValueError(f"Agent '{subagent_name}' is not configured.")
 
-            task_session = self.runtime.session.create_child_session(
+            task_session = await self.runtime.session.create_child_session(
                 agent_name=subagent_name,
                 agent_source="subagent",
                 workspace=self.runtime.workspace,
@@ -168,8 +168,6 @@ class SubagentPlugin(Plugin):
             self._register_task_session(task_session)
 
             try:
-                await task_session.save()
-                await self.runtime.session.save()
                 await self._start_session_task(
                     task_session, message, on_subagent_created
                 )
@@ -207,10 +205,6 @@ class SubagentPlugin(Plugin):
         self.runtime.session.record_subagent_call(task_session.agent_name, message)
         runner = await self._ensure_runner(task_session, on_agent_created)
         task = runner.start_turn(message)
-        task.add_done_callback(
-            lambda _: asyncio.create_task(self.runtime.broadcast_session_tree())
-        )
-        await self.runtime.broadcast_session_tree()
         return task
 
     def _format_task(
@@ -258,7 +252,6 @@ class SubagentPlugin(Plugin):
             await self._close_runner(task_session)
             self._unregister_task_session(task_session)
             await task_session.save()
-            await self.runtime.broadcast_session_tree()
 
     @tool(
         sequential=True,

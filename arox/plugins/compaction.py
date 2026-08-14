@@ -195,7 +195,7 @@ class CompactionPlugin(Plugin):
             "Context size is large. Compacting conversation history..."
         )
 
-        compaction_session = runtime.session.create_child_session(
+        compaction_session = await runtime.session.create_child_session(
             agent_name=COMPACTION_AGENT_NAME,
             agent_source="compaction",
             workspace=runtime.workspace,
@@ -206,10 +206,7 @@ class CompactionPlugin(Plugin):
             compaction_session, runtime.config_loader, runtime.io_adapter
         )
         try:
-            await compaction_session.save()
-            await runtime.session.save()
             compaction_runtime = await runner.start()
-            await runtime.broadcast_session_tree()
             compaction_runtime.message_history = messages.copy()
             runner.start_turn(prompt)
             result = await runner.wait()
@@ -220,7 +217,6 @@ class CompactionPlugin(Plugin):
         finally:
             await runner.stop()
             await compaction_session.save()
-            await runtime.broadcast_session_tree()
 
         if not summary:
             logger.warning("Compaction returned no summary. Skipping.")

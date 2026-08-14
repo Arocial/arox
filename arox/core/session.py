@@ -211,7 +211,7 @@ class AgentSession(Session):
     def is_active(self) -> bool:
         return self.runner is not None
 
-    def create_child_session(
+    async def create_child_session(
         self,
         agent_name: str,
         *,
@@ -242,6 +242,8 @@ class AgentSession(Session):
         if self.manager:
             self.manager._track(self, self.owner)
             self.manager._track(child, self)
+            await child.save()
+            await self.save()
         return child
 
     def replace_message_history(self, messages: Sequence[ModelMessage]) -> None:
