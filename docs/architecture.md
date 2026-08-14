@@ -57,7 +57,7 @@ Built-in adapters:
     - methods decorated with `@tool` — Python functions exposed to the LLM. Arox also supports **MCP** tools via `fastmcp`, registered alongside local tools.
     - `commands()` — slash / control commands for the human. Plugins override `commands()` to return `CommandSpec(event_cls, handler, completer)` bindings that `CommandManager` dispatches. Commands run locally without calling the LLM, saving time and tokens.
     - `history_processor()` — async hook that modifies message history before each LLM call.
-- **Slots** (`arox/core/slot.py`): typed tokens for loose coupling, used for both pull and push patterns. Producers call `runtime.provide_slot(slot, impl)`; consumers pull or push notifications with `await runtime.invoke_slot(slot, ...)`. Built-in slots live in `arox/plugins/slots.py` (e.g. `RUN_SUBAGENT`, `PERSISTENT_CONTEXT`).
+- **Slots** (`arox/core/slot.py`): typed tokens for loose coupling, used for both pull and push patterns. Producers call `runtime.provide_slot(slot, impl)`; consumers pull or push notifications with `await runtime.invoke_slot(slot, ...)`. Built-in slots live in `arox/plugins/slots.py` (e.g. `PROJECT_FILES`, `PERSISTENT_CONTEXT`).
 - **Skills**: Discovered automatically during configuration loading (`arox/core/config.py`) from `~/.config/arox/skills/` and `.agents/skills/` directories in the workspace and global paths. They are injected into the agent's system prompt as an XML catalog. `AgentConfig.skills` restricts which skills are visible to a given agent.
 
 ## Data flow

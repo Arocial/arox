@@ -1,18 +1,12 @@
 from collections.abc import Callable
-from typing import Any
 
 from pydantic_ai import ModelMessage
 
-from arox.core.slot import FirstSlot, ListSlot
+from arox.core.slot import ListSlot
 
 # Slot for getting project files
 PROJECT_FILES = ListSlot[Callable[[], list[str]], list[str]](
     "project_files", "Provides a list of tracked project files"
-)
-
-RUN_SUBAGENT = FirstSlot[Callable[..., Any], str](
-    "run_subagent",
-    "Runs an internal one-shot task with a named subagent and returns its result",
 )
 
 # Slot for getting agent info

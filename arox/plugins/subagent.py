@@ -11,7 +11,7 @@ from arox.core.agent_runtime import (
 from arox.core.plugin import Plugin, tool
 from arox.core.runner import TaskRunner
 from arox.core.session import AgentSession
-from arox.plugins.slots import RUN_SUBAGENT, SYSTEM_PROMPT
+from arox.plugins.slots import SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,6 @@ class SubagentPlugin(Plugin):
             )
 
         self.runtime.provide_slot(SYSTEM_PROMPT, get_subagent_instructions)
-        self.runtime.provide_slot(RUN_SUBAGENT, self._delegate_once)
 
     def configure(self, config: dict[str, Any]) -> None:
         try:
@@ -226,19 +225,13 @@ class SubagentPlugin(Plugin):
                 lines.extend(("", "Result:", runner.result.output))
         return "\n".join(lines)
 
-    async def _delegate_once(
-        self,
-        subagent_name: str,
-        task: str,
-        on_subagent_created: Callable[[AgentRuntime], Awaitable[None] | None]
-        | None = None,
-    ) -> str:
-        task_session = await self._spawn_task(
-            None,
-            task,
-            subagent_name,
-            on_subagent_created,
-        )
+    @tool(
+        sequential=True,
+        enabled=lambda plugin: plugin.mode is SubagentMode.SIMPLE,
+    )
+    async def delegate_task(self, message: str, agent_name: str) -> str:
+        """Delegate a task to a configured subagent and wait for its result."""
+        task_session = await self._spawn_task(None, message, agent_name)
         try:
             runner = task_session.runner
             if not isinstance(runner, TaskRunner):
@@ -260,14 +253,6 @@ class SubagentPlugin(Plugin):
         finally:
             await self._close_runner(task_session)
             self._unregister_task_session(task_session)
-
-    @tool(
-        sequential=True,
-        enabled=lambda plugin: plugin.mode is SubagentMode.SIMPLE,
-    )
-    async def delegate_task(self, message: str, agent_name: str) -> str:
-        """Delegate a task to a configured subagent and wait for its result."""
-        return await self._delegate_once(agent_name, message)
 
     @tool(
         sequential=True,
