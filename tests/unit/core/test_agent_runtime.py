@@ -339,8 +339,7 @@ request_limit_prompt = "Check your progress and continue."
             result = await runtime.run_turn("start")
 
     assert result.output == "done"
-    assert runtime.session.result == "done"
-    assert runtime.session.error is None
+    assert runtime.result is result
     assert len(requests) == 2
     assert tool_executions == 1
     parts = [part for message in result.all_messages() for part in message.parts]
@@ -419,6 +418,8 @@ system_prompt = "Hi."
     runner = TaskRunner(runtime.session, runtime.config_loader, runtime.io_adapter)
     runner.runtime = runtime
     runtime.session.runner = runner
+    assert runner.result is None
+    assert runner.error is None
     async with runtime:
         task = runner.run("work")
         await started.wait()
@@ -433,11 +434,17 @@ system_prompt = "Hi."
         await asyncio.gather(task, return_exceptions=True)
         assert task.cancelled()
         assert runner.task is task
+        assert runner.result is None
+        assert runner.error == "Task interrupted."
 
         release.set()
         completed_task = runner.run("completed work")
+        assert runner.result is None
+        assert runner.error is None
         assert await completed_task == "completed work"
         assert runner.task is completed_task
+        assert runner.result == "completed work"
+        assert runner.error is None
         assert await runner.task == "completed work"
     runtime.session.runner = None
 

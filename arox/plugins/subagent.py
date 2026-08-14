@@ -163,7 +163,6 @@ class SubagentPlugin(Plugin):
                 task_name=task_name,
                 target=f"/{self.runtime.name}/{task_name}" if task_name else None,
                 initial_message=message,
-                last_message=message,
             )
             self._register_task_session(task_session)
 
@@ -215,10 +214,16 @@ class SubagentPlugin(Plugin):
             f"- target: {task_session.target}",
             f"- agent_name: {task_session.agent_name}",
         ]
-        if task_session.error:
-            lines.append(f"- error: {task_session.error}")
-        if include_result and task_session.result:
-            lines.extend(("", "Result:", task_session.result))
+        runner = task_session.runner
+        if isinstance(runner, TaskRunner):
+            if runner.error:
+                lines.append(f"- error: {runner.error}")
+            if (
+                include_result
+                and runner.result
+                and isinstance(runner.result.output, str)
+            ):
+                lines.extend(("", "Result:", runner.result.output))
         return "\n".join(lines)
 
     async def _delegate_once(
@@ -242,7 +247,8 @@ class SubagentPlugin(Plugin):
                 task = runner.task
                 if task is None:
                     return "Task completed with no output."
-                result = await task
+                await task
+                result = runner.result
                 if result is None or not isinstance(result.output, str):
                     return "Task completed with no output."
                 return result.output
@@ -316,9 +322,8 @@ class SubagentPlugin(Plugin):
         task = runner.task
         if task is None:
             return self._format_task(task_session)
-        try:
-            await asyncio.wait_for(asyncio.shield(task), timeout_seconds)
-        except TimeoutError:
+        done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
+        if not done:
             return "Agent is still running.\n" + self._format_task(task_session, False)
 
         return self._format_task(task_session)
@@ -350,8 +355,13 @@ class SubagentPlugin(Plugin):
         blocks = []
         for task_session in sorted(task_sessions, key=lambda item: item.created_at):
             block = self._format_task(task_session, False)
-            if task_session.result:
-                summary = task_session.result.replace("\n", " ")[:200]
+            runner = task_session.runner
+            if (
+                isinstance(runner, TaskRunner)
+                and runner.result
+                and isinstance(runner.result.output, str)
+            ):
+                summary = runner.result.output.replace("\n", " ")[:200]
                 block += f"\n- result_summary: {summary}"
             blocks.append(block)
         return "\n\n".join(blocks)

@@ -200,7 +200,6 @@ class CompactionPlugin(Plugin):
             agent_source="compaction",
             workspace=runtime.workspace,
             initial_message=prompt,
-            last_message=prompt,
         )
         try:
             async with TaskRunner(

@@ -557,11 +557,6 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         if not isinstance(user_input, UserInput):
             user_input = UserInput(input_content=user_input)
 
-        self.session.last_message = user_input.text_content
-        self.session.result = None
-        self.session.error = None
-        self.session.mark_dirty()
-
         try:
             input_content = user_input.input_content
 
@@ -592,14 +587,10 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                 input_content = self.request_limit_prompt
 
             self.result = result
-            output = result.output if isinstance(result.output, str) else None
-            self.session.result = output
-            self.session.mark_dirty()
             await self.agent_ep.send(AgentRunResultEvent(result))
             return result
         except asyncio.CancelledError:
-            self.session.error = "Task interrupted."
-            self.session.mark_dirty()
+            self.session.record_error_event("Task interrupted.")
             raise
         except Exception as exc:
             self.session.record_turn_error(exc)

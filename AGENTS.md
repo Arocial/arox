@@ -30,7 +30,7 @@ mode = "advanced"
 **Session-centric architecture** (`arox/core/session.py` and `arox/core/agent_runtime.py`):
 - **`AgentSession`** is the persistent, authoritative entity tracking:
   - Identity and hierarchy (`id`, `path`, `owner`, `children`).
-  - Task metadata (`task_name`, `target`, `initial_message`, `last_message`, `result`, `error`).
+  - Task metadata (`task_name`, `target`, `initial_message`). Task results and errors are maintained by the active `TaskRunner` rather than persisted on the session.
   - Ephemeral execution presence via `session.runner`; runners are not persisted.
   - Message history is persisted as segments on the session and is the runtime source of truth. Events store only audit metadata; user turns are located through the existing `server_message_id` carried in `UserInput.input_content`. Compaction archives the processor's original messages, including the current user request, so historical forks can locate and slice the appropriate messages without replaying events or duplicating message payloads or IDs.
   - Agent sessions persist only the agent name; full `AgentConfig` is resolved dynamically. The user-facing `AgentSession` is the top-level session; child tasks nest beneath it.
@@ -39,7 +39,7 @@ mode = "advanced"
   - A `SessionRunner` creates, enters, and closes the runtime through `start_runtime()` / `stop_runtime()` and supports async context management; startup is serialized through the session and failed initialization rolls back the runner binding.
   - Child sessions are spawned via `parent_session.create_child_session(...)`.
   - Runtime identity matches `session.id` (`runtime.uuid == session.id`).
-  - `TaskRunner.run()` starts one turn and returns its retained `asyncio.Task`; callers await, shield, time out, or cancel that task directly while the runtime remains available for follow-ups.
+  - `TaskRunner.run()` starts one turn and returns its retained `asyncio.Task`; the runner updates its latest `result` / `error` as execution completes, while callers await, shield, time out, or cancel the task directly and the runtime remains available for follow-ups.
   - `ServeRunner.run()` starts and returns the long-lived serve task without closing the runtime when the loop finishes. `ChatServeDriver` owns the current interaction task, and `ServeRunner.cancel_current_interaction()` cancels only that interaction while preserving the serve loop. `stop_runtime()` stops owned execution before closing the runtime.
   - `ChatServeDriver` implements the concrete request/reply protocol used by `ServeRunner`.
 - `SessionManager` coordinates with `SessionStore` (default `FileSessionStore`) and maintains one authoritative in-process Session identity map keyed by full path. Its tree API (`resolve`, `list_roots`, `children_of`, `walk`, `find`, `stop_tree`, `delete_tree`, and `remove_child`) transparently prefers cached/live instances over storage, while manager shutdown stops every live root tree before flushing pending saves.

@@ -63,8 +63,6 @@ async def build_session_view(session: AgentSession) -> SessionView:
         active=session.is_active,
         task_name=session.task_name,
         target=session.target,
-        result=session.result,
-        error=session.error,
         children=children,
     )
 
@@ -211,8 +209,6 @@ class SessionView(BaseModel):
     active: bool
     task_name: str | None
     target: str | None
-    result: str | None
-    error: str | None
     children: list["SessionView"] = Field(default_factory=list)
 
 

@@ -310,14 +310,14 @@ class TestAgentSession:
             task_name="my_task",
             target="/main/my_task",
             initial_message="start",
-            last_message="continue",
-            result="done",
         )
         assert agent_session.task_id == agent_session.id
         assert agent_session.task_name == "my_task"
         assert agent_session.target == "/main/my_task"
-        assert agent_session.result == "done"
-        assert agent_session.error is None
+        dumped = agent_session.model_dump()
+        assert "last_message" not in dumped
+        assert "result" not in dumped
+        assert "error" not in dumped
 
     @pytest.mark.asyncio
     async def test_runner_excluded_from_serialization(self):
@@ -333,22 +333,21 @@ class TestAgentSession:
         agent_session = AgentSession(agent_name="main")
 
         agent_session.record_turn_error("something crashed")
-        assert agent_session.error == "something crashed"
-        assert agent_session.events[-1].event_type == "error"
+        event = agent_session.events[-1]
+        assert isinstance(event, ErrorEvent)
+        assert event.error == "something crashed"
 
     @pytest.mark.asyncio
     async def test_fork_resets_task_fields(self):
         original = AgentSession(
             agent_name="main",
             task_name="old_task",
-            result="res",
-            error="err",
         )
         original.add_event(UserInputEvent(user_input=UserInput(input_content="hi")))
         forked = await original.fork_at(None)
         assert forked.task_name is None
-        assert forked.result is None
-        assert forked.error is None
+        assert forked.target is None
+        assert forked.initial_message is None
 
     @pytest.mark.asyncio
     async def test_create_child_session(self, tmp_path):
@@ -369,7 +368,6 @@ class TestAgentSession:
             task_name="sub_task",
             target="/main/sub_task",
             initial_message="do work",
-            last_message="do work",
         )
 
         assert child.owner is parent
@@ -381,7 +379,6 @@ class TestAgentSession:
         assert child.task_name == "sub_task"
         assert child.target == "/main/sub_task"
         assert child.initial_message == "do work"
-        assert child.last_message == "do work"
         assert child.workspace == str(tmp_path)
         assert child.run_info.llm_context_id is not None
         assert child.run_info.llm_context_id != parent.run_info.llm_context_id

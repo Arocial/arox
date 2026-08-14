@@ -7,6 +7,7 @@ import pytest
 
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.config import AgentConfig, Config
+from arox.core.runner import TaskRunner
 from arox.core.session import (
     AgentSession,
     FileSessionStore,
@@ -43,22 +44,14 @@ class _FakeDynamicAgent(AgentRuntime):
 
     async def run_turn(self, user_input=None):
         task = str(user_input or "")
-        self.session.result = None
-        self.session.error = None
-        await self.session.manager.persist(self.session)
         self.received_tasks.append(task)
         self.started.set()
-        try:
-            if task.startswith("block"):
-                await self.release.wait()
-            output = f"task done: {task}"
-            self.session.result = output
-            await self.session.manager.persist(self.session)
-            return SimpleNamespace(output=output)
-        except asyncio.CancelledError:
-            self.session.error = "Task interrupted."
-            await self.session.manager.persist(self.session)
-            raise
+        if task.startswith("fail"):
+            raise RuntimeError("task failed")
+        if task.startswith("block"):
+            await self.release.wait()
+        output = f"task done: {task}"
+        return SimpleNamespace(output=output)
 
 
 class _HostAgent:
@@ -269,7 +262,11 @@ async def test_spawn_and_wait_preserves_resumable_agent(agent_factory):
 
         assert "task done: make a plan" in result
         assert isinstance(task_session.runtime, _FakeDynamicAgent)
+        assert isinstance(task_session.runner, TaskRunner)
         assert task_session.runner.runtime is task_session.runtime
+        assert task_session.runner.result is not None
+        assert task_session.runner.result.output == "task done: make a plan"
+        assert task_session.runner.error is None
         assert len(main_agent.session.children) == 1
 
         child_session = await store.load_session(
@@ -277,7 +274,10 @@ async def test_spawn_and_wait_preserves_resumable_agent(agent_factory):
         )
         assert child_session is not None
         assert child_session.task_name == "make_plan"
-        assert child_session.result == "task done: make a plan"
+        persisted = child_session.model_dump()
+        assert "last_message" not in persisted
+        assert "result" not in persisted
+        assert "error" not in persisted
     finally:
         await plugin.on_stop()
 
@@ -362,6 +362,26 @@ async def test_wait_timeout_does_not_cancel_task(agent_factory):
 
 
 @pytest.mark.asyncio
+async def test_wait_reports_runner_exception(agent_factory):
+    create_agent, _store = agent_factory
+    main_agent = create_agent()
+    plugin = _advanced_plugin(main_agent)
+
+    try:
+        await plugin.spawn_agent("failed_review", "fail review", "reviewer")
+
+        result = await plugin.wait_agent("failed_review")
+
+        task_session = plugin._resolve_task("failed_review")
+        assert isinstance(task_session.runner, TaskRunner)
+        assert task_session.runner.result is None
+        assert task_session.runner.error == "RuntimeError: task failed"
+        assert "error: RuntimeError: task failed" in result
+    finally:
+        await plugin.on_stop()
+
+
+@pytest.mark.asyncio
 async def test_interrupt_then_followup_reuses_agent_and_session(agent_factory):
     create_agent, _store = agent_factory
     main_agent = create_agent()
@@ -380,15 +400,25 @@ async def test_interrupt_then_followup_reuses_agent_and_session(agent_factory):
 
         interrupted = await plugin.interrupt_agent("review_patch")
         assert "Task interrupted." in interrupted
+        assert isinstance(task_session.runner, TaskRunner)
         assert task_session.runner.runtime is subagent
+        assert task_session.runner.result is None
+        assert task_session.runner.error == "Task interrupted."
 
         followup = await plugin.followup_task(
             "/main/review_patch", "review the updated tests"
         )
         assert "Follow-up started." in followup
+        assert task_session.runner.result is None
+        assert task_session.runner.error is None
         completed = await plugin.wait_agent(task_session.task_id)
 
         assert "review the updated tests" in completed
+        assert task_session.runner.result is not None
+        assert (
+            task_session.runner.result.output == "task done: review the updated tests"
+        )
+        assert task_session.runner.error is None
         assert task_session.id == original_session_id
         assert task_session.runner.runtime is subagent
         assert subagent.received_tasks == [

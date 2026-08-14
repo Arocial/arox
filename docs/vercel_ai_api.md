@@ -51,8 +51,6 @@ Session responses use this recursive shape:
   "active": true,
   "task_name": null,
   "target": null,
-  "result": null,
-  "error": null,
   "children": []
 }
 ```

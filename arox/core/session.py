@@ -181,9 +181,6 @@ class AgentSession(Session):
     task_name: str | None = None
     target: str | None = None
     initial_message: str | None = None
-    last_message: str | None = None
-    result: str | None = None
-    error: str | None = None
     run_info: AgentRunInfo = Field(default_factory=AgentRunInfo)
     archived_message_histories: list[MessageHistorySegment] = Field(
         default_factory=list
@@ -217,7 +214,6 @@ class AgentSession(Session):
         task_name: str | None = None,
         target: str | None = None,
         initial_message: str | None = None,
-        last_message: str | None = None,
     ) -> AgentSession:
         child_workspace = (
             str(Path(workspace).absolute()) if workspace is not None else self.workspace
@@ -230,7 +226,6 @@ class AgentSession(Session):
             task_name=task_name,
             target=target,
             initial_message=initial_message,
-            last_message=last_message,
             run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
             owner=self,
             manager=self.manager,
@@ -287,8 +282,7 @@ class AgentSession(Session):
         self.metadata["last_user_messages"] = last_user_messages[-2:]
 
     def record_turn_error(self, error: Exception | str) -> None:
-        error_message = self.record_error_event(error)
-        self.error = error_message
+        self.record_error_event(error)
 
     def record_error_event(self, error: Exception | str) -> str:
         """Record an error event without changing task scheduling state."""
@@ -407,9 +401,6 @@ class AgentSession(Session):
                 "task_name": None,
                 "target": None,
                 "initial_message": None,
-                "last_message": None,
-                "result": None,
-                "error": None,
                 "manager": manager_ref,
                 "owner": owner,
                 "runner": None,

@@ -93,6 +93,8 @@ class TaskRunner(SessionRunner):
     ) -> None:
         super().__init__(session, config_loader, io_adapter)
         self._task: asyncio.Task[AgentRunResult[str]] | None = None
+        self.result: AgentRunResult[str] | None = None
+        self.error: str | None = None
 
     @property
     def task(self) -> asyncio.Task[AgentRunResult[str]] | None:
@@ -106,9 +108,21 @@ class TaskRunner(SessionRunner):
         if self._task is not None and not self._task.done():
             raise RuntimeError("A task is already running.")
 
+        self.result = None
+        self.error = None
+
         async def execute() -> AgentRunResult[str]:
             assert self.runtime is not None
-            return await self.runtime.run_turn(user_input)
+            try:
+                result = await self.runtime.run_turn(user_input)
+            except asyncio.CancelledError:
+                self.error = "Task interrupted."
+                raise
+            except Exception as exc:
+                self.error = f"{type(exc).__name__}: {exc!s}"
+                raise
+            self.result = result
+            return result
 
         task = asyncio.create_task(execute(), name=f"agent-turn:{self.session.id}")
         self._task = task
