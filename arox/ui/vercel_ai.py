@@ -528,7 +528,7 @@ class VercelStreamServer:
             else None,
             manager=self.session_manager,
         )
-        await session.save()
+        await self.session_manager.persist(session)
         return await self.start_session(session.id)
 
     async def start_session(self, session_id: str) -> SessionView:

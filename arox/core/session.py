@@ -105,19 +105,16 @@ class Session(BaseModel):
     def id(self) -> str:
         return self.path[-1]
 
-    async def save(self) -> None:
+    def mark_dirty(self) -> None:
         if self.manager:
-            # Explicit save bypasses debounce; remove from dirty set to avoid redundant writes.
-            self.manager._dirty_sessions.pop(self.id, None)
-            await self.manager.save_session(self)
+            self.manager.notify_dirty(self)
 
     def add_event(
         self,
         event: AnySessionEvent,
     ) -> AnySessionEvent:
         self.events.append(event)
-        if self.manager:
-            self.manager.notify_dirty(self)
+        self.mark_dirty()
         return event
 
     def index_of_event(self, event_id: str) -> int | None:
@@ -242,8 +239,7 @@ class AgentSession(Session):
         if self.manager:
             self.manager._track(self, self.owner)
             self.manager._track(child, self)
-            await child.save()
-            await self.save()
+            await self.manager.persist(self, child)
         return child
 
     def replace_message_history(self, messages: Sequence[ModelMessage]) -> None:
@@ -368,7 +364,9 @@ class AgentSession(Session):
         raise ValueError(f"user input {input_id} has no message history")
 
     async def fork_at(
-        self, event_id: str | None, new_owner: Session | None = None
+        self,
+        event_id: str | None,
+        new_owner: Session | None = None,
     ) -> "AgentSession":
         """Branch a new session before a user-input request."""
         owner = new_owner or self.owner
@@ -427,12 +425,17 @@ class AgentSession(Session):
             logger.warning("No session manager to load child sessions")
         for sub_session in child_sessions:
             try:
-                forked_child = await sub_session.fork_at(None, new_session)
-                await forked_child.save()
+                await sub_session.fork_at(None, new_session)
             except Exception:
                 logger.warning(
                     "Failed to fork child session %s", sub_session.id, exc_info=True
                 )
+
+        if self.manager:
+            self.manager._track(new_session, owner)
+            new_session.mark_dirty()
+            if owner:
+                owner.mark_dirty()
 
         return new_session
 
@@ -488,11 +491,18 @@ class SessionManager:
         self._dirty_sessions.clear()
         for session in to_save:
             try:
-                await self.save_session(session)
+                await self.persist(session)
             except Exception as e:
                 logger.error(f"Failed to save session {session.id}: {e}", exc_info=True)
                 # Re-queue for retry on the next cycle.
                 self._dirty_sessions.setdefault(session.id, session)
+
+    async def persist(self, *sessions: Session) -> None:
+        """Persist sessions immediately, bypassing the dirty debounce."""
+        for session in sessions:
+            self._dirty_sessions.pop(session.id, None)
+            self._track(session, session.owner)
+            await self.session_store.save_session(session)
 
     def register_session_type(self, cls: type[Session]) -> None:
         """Register a Session subclass so the store can deserialize it by session_type."""
@@ -531,10 +541,6 @@ class SessionManager:
             *(self.stop_tree(session) for session in roots),
             return_exceptions=True,
         )
-
-    async def save_session(self, session: Session) -> None:
-        self._track(session, session.owner)
-        await self.session_store.save_session(session)
 
     async def resolve(
         self, session_id: str, owner: Session | None = None
@@ -608,7 +614,7 @@ class SessionManager:
             await self.delete_tree(child_session)
         if child_id in parent.children:
             parent.children.remove(child_id)
-            await self.save_session(parent)
+            await self.persist(parent)
 
 
 class SessionStore(Protocol):

@@ -45,7 +45,7 @@ class _FakeDynamicAgent(AgentRuntime):
         task = str(user_input or "")
         self.session.result = None
         self.session.error = None
-        await self.session.save()
+        await self.session.manager.persist(self.session)
         self.received_tasks.append(task)
         self.started.set()
         try:
@@ -53,11 +53,11 @@ class _FakeDynamicAgent(AgentRuntime):
                 await self.release.wait()
             output = f"task done: {task}"
             self.session.result = output
-            await self.session.save()
+            await self.session.manager.persist(self.session)
             return SimpleNamespace(output=output)
         except asyncio.CancelledError:
             self.session.error = "Task interrupted."
-            await self.session.save()
+            await self.session.manager.persist(self.session)
             raise
 
 

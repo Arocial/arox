@@ -216,7 +216,6 @@ class CompactionPlugin(Plugin):
             summary = ""
         finally:
             await runner.stop()
-            await compaction_session.save()
 
         if not summary:
             logger.warning("Compaction returned no summary. Skipping.")

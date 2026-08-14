@@ -107,7 +107,7 @@ main_agent = "coder"
     session.message_history.messages = [
         ModelRequest(parts=[UserPromptPart(content="hello")])
     ]
-    await session.save()
+    await manager.persist(session)
 
     server = VercelStreamServer(manager, config_loader)
     routes = {getattr(route, "path", None) for route in server.app.routes}

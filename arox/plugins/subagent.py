@@ -251,7 +251,6 @@ class SubagentPlugin(Plugin):
         finally:
             await self._close_runner(task_session)
             self._unregister_task_session(task_session)
-            await task_session.save()
 
     @tool(
         sequential=True,

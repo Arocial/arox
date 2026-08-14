@@ -262,10 +262,7 @@ class AgentRuntime(IOHost):
             with contextlib.suppress(ClosedResourceError, EndOfStream):
                 await self.broadcast_session_tree()
         finally:
-            try:
-                await super().__aexit__(exc_type, exc_val, exc_tb)
-            finally:
-                await self.session.save()
+            await super().__aexit__(exc_type, exc_val, exc_tb)
 
     def add_local_tool(self, func, **kwargs):
         self.local_toolset.add_function(func, **kwargs)
@@ -563,8 +560,9 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         self.session.last_message = user_input.text_content
         self.session.result = None
         self.session.error = None
+        self.session.mark_dirty()
+
         try:
-            await self.session.save()
             input_content = user_input.input_content
 
             if user_input.input_content is not None:
@@ -596,13 +594,13 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
             self.result = result
             output = result.output if isinstance(result.output, str) else None
             self.session.result = output
+            self.session.mark_dirty()
             await self.agent_ep.send(AgentRunResultEvent(result))
             return result
         except asyncio.CancelledError:
             self.session.error = "Task interrupted."
+            self.session.mark_dirty()
             raise
         except Exception as exc:
             self.session.record_turn_error(exc)
             raise
-        finally:
-            await self.session.save()

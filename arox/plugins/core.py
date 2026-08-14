@@ -151,9 +151,6 @@ class CorePlugin(Plugin):
         except ValueError as e:
             return str(e)
 
-        # Save the new branch (now with its children linked).
-        await new_agent_session.save()
-
         return (
             f"Forked at event {event.event_id}. New branch session id: {new_agent_session.id}\n"
             f"Resume with: --resume {new_agent_session.id}"
