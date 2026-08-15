@@ -471,8 +471,6 @@ async def test_spawn_validates_name_and_allows_duplicate_tasks(agent_factory):
     plugin = _advanced_plugin(main_agent)
 
     try:
-        with pytest.raises(ValueError, match="task_name"):
-            await plugin.spawn_agent("Bad-Name", "task", "planner")
         with pytest.raises(ValueError, match="not configured"):
             await plugin.spawn_agent("unknown_type", "task", "unknown")
 

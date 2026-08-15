@@ -1,5 +1,4 @@
 import asyncio
-import re
 import secrets
 from enum import StrEnum
 from typing import Any
@@ -8,8 +7,6 @@ from arox.core.plugin import Plugin, tool
 from arox.core.runner import TaskRunner
 from arox.core.session import AgentSession
 from arox.plugins.slots import SYSTEM_PROMPT
-
-_TASK_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 class SubagentMode(StrEnum):
@@ -116,11 +113,6 @@ class SubagentPlugin(Plugin):
     ) -> AgentSession:
         async with self._lock:
             # create session
-            if task_name is not None and not _TASK_NAME_PATTERN.fullmatch(task_name):
-                raise ValueError(
-                    "task_name must start with a lowercase letter and contain only "
-                    "lowercase letters, digits, or underscores (maximum 64 characters)."
-                )
             if subagent_name not in self.runtime.agent_config.subagents:
                 raise ValueError(f"Agent '{subagent_name}' is not configured.")
 
