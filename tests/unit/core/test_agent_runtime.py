@@ -411,7 +411,7 @@ system_prompt = "Hi."
     async def blocking_turn(user_input=None, render_user_message: bool = False):
         started.set()
         await release.wait()
-        return user_input
+        return SimpleNamespace(output=user_input)
 
     runtime.run_turn = blocking_turn  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
@@ -441,11 +441,21 @@ system_prompt = "Hi."
         completed_task = runner.run("completed work")
         assert runner.result is None
         assert runner.error is None
-        assert await completed_task == "completed work"
+        completed_result = await completed_task
+        assert completed_result.output == "completed work"
         assert runner.task is completed_task
-        assert runner.result == "completed work"
+        assert runner.result is completed_result
         assert runner.error is None
-        assert await runner.task == "completed work"
+        assert await runner.task is completed_result
+
+        async def failed_turn(user_input=None, render_user_message: bool = False):
+            return SimpleNamespace(output=RuntimeError("model failed"))
+
+        runtime.run_turn = failed_turn  # type: ignore[method-assign]
+        failed_result = await runner.run("failed work")
+        assert isinstance(failed_result.output, RuntimeError)
+        assert runner.result is None
+        assert runner.error == "RuntimeError: model failed"
     runtime.session.runner = None
 
 

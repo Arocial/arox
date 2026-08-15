@@ -63,10 +63,9 @@ class ChatServeDriver:
             try:
                 result = await self._run_interaction(runtime, reply)
 
-                if result and isinstance(result.output, Exception):
+                if result and isinstance(result.output, BaseException):
                     error = result.output
                     logger.error("An error occurred.", exc_info=error)
-                    runner.session.record_turn_error(error)
                     pending_exception = error
 
             except asyncio.CancelledError:

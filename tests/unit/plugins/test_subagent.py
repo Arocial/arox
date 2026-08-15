@@ -51,6 +51,8 @@ class _FakeDynamicAgent(AgentRuntime):
         )
         self.received_tasks.append(task)
         self.started.set()
+        if task.startswith("return error"):
+            return SimpleNamespace(output=RuntimeError("model failed"))
         if task.startswith("fail"):
             raise RuntimeError("task failed")
         if task.startswith("block"):
@@ -391,6 +393,24 @@ async def test_wait_reports_runner_exception(agent_factory):
         task_session = plugin._resolve_session(target)
         assert task_session.runner is None
         assert "error: RuntimeError: task failed" in result
+    finally:
+        await plugin.on_stop()
+
+
+@pytest.mark.asyncio
+async def test_wait_reports_error_output(agent_factory):
+    create_agent, _store = agent_factory
+    main_agent = create_agent()
+    plugin = _advanced_plugin(main_agent)
+
+    try:
+        await plugin.spawn_agent("failed_review", "return error", "reviewer")
+        target = _target_for(plugin, "failed_review")
+
+        result = await plugin.wait_agent(target)
+
+        assert "error: RuntimeError: model failed" in result
+        assert "Result:" not in result
     finally:
         await plugin.on_stop()
 

@@ -126,7 +126,10 @@ class TaskRunner(SessionRunner):
             except Exception as exc:
                 self.error = f"{type(exc).__name__}: {exc!s}"
                 raise
-            self.result = result
+            if isinstance(result.output, BaseException):
+                self.error = f"{type(result.output).__name__}: {result.output!s}"
+            else:
+                self.result = result
             return result
 
         task = asyncio.create_task(execute(), name=f"agent-turn:{self.session.id}")

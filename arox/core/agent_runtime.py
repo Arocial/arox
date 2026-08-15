@@ -592,6 +592,8 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                 input_content = self.request_limit_prompt
 
             self.result = result
+            if isinstance(result.output, BaseException):
+                self.session.record_turn_error(result.output)
             await self.agent_ep.send(AgentRunResultEvent(result))
             return result
         except asyncio.CancelledError:

@@ -162,11 +162,7 @@ class SubagentPlugin(Plugin):
         if isinstance(runner, TaskRunner):
             if runner.error:
                 lines.append(f"- error: {runner.error}")
-            if (
-                include_result
-                and runner.result
-                and isinstance(runner.result.output, str)
-            ):
+            if include_result and runner.result:
                 lines.extend(("", "Result:", runner.result.output))
         return "\n".join(lines)
 
@@ -182,8 +178,10 @@ class SubagentPlugin(Plugin):
             if not isinstance(runner, TaskRunner) or runner.task is None:
                 return "Task completed with no output."
             await asyncio.gather(runner.task, return_exceptions=True)
+            if runner.error:
+                return f"Task failed: {runner.error}"
             result = runner.result
-            if result is None or not isinstance(result.output, str):
+            if result is None:
                 return "Task completed with no output."
             return result.output
         finally:

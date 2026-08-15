@@ -283,10 +283,10 @@ class AgentSession(Session):
             last_user_messages.append(text)
         self.metadata["last_user_messages"] = last_user_messages[-2:]
 
-    def record_turn_error(self, error: Exception | str) -> None:
+    def record_turn_error(self, error: BaseException | str) -> None:
         self.record_error_event(error)
 
-    def record_error_event(self, error: Exception | str) -> str:
+    def record_error_event(self, error: BaseException | str) -> str:
         """Record an error event without changing task scheduling state."""
         err_msg = (
             str(error)
