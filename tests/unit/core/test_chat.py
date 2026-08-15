@@ -55,7 +55,7 @@ async def test_chat_driver_handles_slash_commands_before_starting_turn():
         ServeRunner,
         SimpleNamespace(
             runtime=runtime,
-            session=SimpleNamespace(record_turn_error=AsyncMock()),
+            session=SimpleNamespace(record_error_event=AsyncMock()),
         ),
     )
 
@@ -85,7 +85,7 @@ async def test_chat_driver_sends_unknown_slash_commands_to_the_agent():
         ServeRunner,
         SimpleNamespace(
             runtime=runtime,
-            session=SimpleNamespace(record_turn_error=AsyncMock()),
+            session=SimpleNamespace(record_error_event=AsyncMock()),
         ),
     )
 
@@ -119,7 +119,7 @@ async def test_chat_driver_cancels_current_interaction_and_keeps_serving():
         ServeRunner,
         SimpleNamespace(
             runtime=runtime,
-            session=SimpleNamespace(record_turn_error=AsyncMock()),
+            session=SimpleNamespace(record_error_event=AsyncMock()),
         ),
     )
     driver = ChatServeDriver()

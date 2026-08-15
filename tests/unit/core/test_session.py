@@ -329,10 +329,10 @@ class TestAgentSession:
         assert "runner" not in dumped
         assert agent_session.runtime is runtime
 
-    def test_turn_error_helper(self):
+    def test_record_error_event(self):
         agent_session = AgentSession(agent_name="main")
 
-        agent_session.record_turn_error("something crashed")
+        agent_session.record_error_event("something crashed")
         event = agent_session.events[-1]
         assert isinstance(event, ErrorEvent)
         assert event.error == "something crashed"

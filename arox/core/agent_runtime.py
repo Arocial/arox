@@ -593,12 +593,12 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 
             self.result = result
             if isinstance(result.output, BaseException):
-                self.session.record_turn_error(result.output)
+                self.session.record_error_event(result.output)
             await self.agent_ep.send(AgentRunResultEvent(result))
             return result
         except asyncio.CancelledError:
             self.session.record_error_event("Task interrupted.")
             raise
         except Exception as exc:
-            self.session.record_turn_error(exc)
+            self.session.record_error_event(exc)
             raise
