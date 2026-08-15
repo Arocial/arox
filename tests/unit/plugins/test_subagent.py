@@ -146,6 +146,14 @@ def _advanced_plugin(agent):
     return plugin
 
 
+def _target_for(plugin: SubagentPlugin, task_name: str | None) -> str:
+    return next(
+        target
+        for target, session in plugin.task_sessions.items()
+        if session.task_name == task_name
+    )
+
+
 @pytest.mark.asyncio
 async def test_simple_mode_exposes_only_delegate_and_waits_for_result(agent_factory):
     create_agent, store = agent_factory
@@ -171,7 +179,11 @@ async def test_simple_mode_exposes_only_delegate_and_waits_for_result(agent_fact
 
         assert response == "task done: make a plan"
         assert len(plugin.task_sessions) == 1
+        target = next(iter(plugin.task_sessions))
         task_session = next(iter(plugin.task_sessions.values()))
+        assert target.startswith("/main/task-")
+        assert len(target.removeprefix("/main/task-")) == 8
+        assert task_session.target == target
         assert task_session.runner is None
         assert len(main_agent.session.children) == 1
         call = main_agent.session.events[-1]
@@ -260,8 +272,9 @@ async def test_spawn_and_wait_releases_runner_and_preserves_session(agent_factor
         response = await plugin.spawn_agent("make_plan", "make a plan", "planner")
         assert "Agent spawned." in response
 
-        task_session = plugin._resolve_session("make_plan")
-        result = await plugin.wait_agent(task_session.task_id)
+        target = _target_for(plugin, "make_plan")
+        task_session = plugin._resolve_session(target)
+        result = await plugin.wait_agent(target)
 
         assert "task done: make a plan" in result
         assert task_session.runtime is None
@@ -293,10 +306,12 @@ async def test_spawn_starts_runtime_and_retains_session(agent_factory):
             "planner",
         )
         assert isinstance(task_session.runner.runtime, AgentRuntime)
-        await plugin.wait_agent(task_session.task_id)
+        target = task_session.target
+        assert target is not None
+        await plugin.wait_agent(target)
 
         assert task_session.runner is None
-        assert plugin._resolve_session("make_plan") is task_session
+        assert plugin._resolve_session(target) is task_session
     finally:
         await plugin.on_stop()
 
@@ -331,7 +346,8 @@ async def test_wait_timeout_does_not_cancel_task(agent_factory):
 
     try:
         await plugin.spawn_agent("slow_review", "block until released", "reviewer")
-        task_session = plugin._resolve_session("slow_review")
+        target = _target_for(plugin, "slow_review")
+        task_session = plugin._resolve_session(target)
         assert task_session.runner.task is not None
 
         # Wait for agent to start
@@ -341,14 +357,14 @@ async def test_wait_timeout_does_not_cancel_task(agent_factory):
         assert isinstance(subagent, _FakeDynamicAgent)
         await subagent.started.wait()
 
-        result = await plugin.wait_agent("slow_review", timeout_seconds=0.01)
+        result = await plugin.wait_agent(target, timeout_seconds=0.01)
 
         assert "Agent is still running." in result
         assert task_session.runner.task is not None
         assert not task_session.runner.task.cancelled()
 
         subagent.release.set()
-        completed = await plugin.wait_agent("slow_review")
+        completed = await plugin.wait_agent(target)
         assert "Result:" in completed
         assert task_session.runner is None
     finally:
@@ -363,10 +379,11 @@ async def test_wait_reports_runner_exception(agent_factory):
 
     try:
         await plugin.spawn_agent("failed_review", "fail review", "reviewer")
+        target = _target_for(plugin, "failed_review")
 
-        result = await plugin.wait_agent("failed_review")
+        result = await plugin.wait_agent(target)
 
-        task_session = plugin._resolve_session("failed_review")
+        task_session = plugin._resolve_session(target)
         assert task_session.runner is None
         assert "error: RuntimeError: task failed" in result
     finally:
@@ -381,7 +398,8 @@ async def test_interrupt_then_followup_reuses_session_with_new_runner(agent_fact
 
     try:
         await plugin.spawn_agent("review_patch", "block first review", "reviewer")
-        task_session = plugin._resolve_session("review_patch")
+        target = _target_for(plugin, "review_patch")
+        task_session = plugin._resolve_session(target)
         original_session_id = task_session.id
 
         while task_session.runner is None:
@@ -390,13 +408,11 @@ async def test_interrupt_then_followup_reuses_session_with_new_runner(agent_fact
         assert isinstance(subagent, _FakeDynamicAgent)
         await subagent.started.wait()
 
-        interrupted = await plugin.interrupt_agent("review_patch")
+        interrupted = await plugin.interrupt_agent(target)
         assert "Task interrupted." in interrupted
         assert task_session.runner is None
 
-        followup = await plugin.followup_task(
-            "/main/review_patch", "review the updated tests"
-        )
+        followup = await plugin.followup_task(target, "review the updated tests")
         assert "Follow-up started." in followup
         assert isinstance(task_session.runner, TaskRunner)
         followup_subagent = task_session.runner.runtime
@@ -404,7 +420,7 @@ async def test_interrupt_then_followup_reuses_session_with_new_runner(agent_fact
         assert followup_subagent is not subagent
         assert task_session.runner.result is None
         assert task_session.runner.error is None
-        completed = await plugin.wait_agent(task_session.task_id)
+        completed = await plugin.wait_agent(target)
 
         assert "review the updated tests" in completed
         assert task_session.runner is None
@@ -426,9 +442,11 @@ async def test_list_agents_includes_idle_and_running_sessions(agent_factory):
 
     try:
         await plugin.spawn_agent("make_plan", "make a plan", "planner")
-        await plugin.wait_agent("make_plan")
+        make_plan_target = _target_for(plugin, "make_plan")
+        await plugin.wait_agent(make_plan_target)
         await plugin.spawn_agent("slow_review", "block review", "reviewer")
-        slow_task_session = plugin._resolve_session("slow_review")
+        slow_review_target = _target_for(plugin, "slow_review")
+        slow_task_session = plugin._resolve_session(slow_review_target)
         while slow_task_session.runner is None:
             await asyncio.sleep(0.01)
         assert isinstance(slow_task_session.runner.runtime, _FakeDynamicAgent)
@@ -436,18 +454,18 @@ async def test_list_agents_includes_idle_and_running_sessions(agent_factory):
 
         agents = await plugin.list_agents()
 
-        assert "/main/make_plan" in agents
-        assert "/main/slow_review" in agents
-        assert plugin._resolve_session("make_plan").runner is None
+        assert make_plan_target in agents
+        assert slow_review_target in agents
+        assert plugin._resolve_session(make_plan_target).runner is None
 
         slow_task_session.runner.runtime.release.set()
-        await plugin.wait_agent("slow_review")
+        await plugin.wait_agent(slow_review_target)
     finally:
         await plugin.on_stop()
 
 
 @pytest.mark.asyncio
-async def test_spawn_validates_name_type_and_duplicate_task(agent_factory):
+async def test_spawn_validates_name_and_allows_duplicate_tasks(agent_factory):
     create_agent, _store = agent_factory
     main_agent = create_agent()
     plugin = _advanced_plugin(main_agent)
@@ -459,20 +477,30 @@ async def test_spawn_validates_name_type_and_duplicate_task(agent_factory):
             await plugin.spawn_agent("unknown_type", "task", "unknown")
 
         await plugin.spawn_agent("first_task", "block first", "planner")
-        first_task_session = plugin._resolve_session("first_task")
+        first_target = _target_for(plugin, "first_task")
+        first_task_session = plugin._resolve_session(first_target)
         while first_task_session.runner is None:
             await asyncio.sleep(0.01)
         assert isinstance(first_task_session.runner.runtime, _FakeDynamicAgent)
         await first_task_session.runner.runtime.started.wait()
 
         await plugin.spawn_agent("second_task", "task", "reviewer")
-        second_result = await plugin.wait_agent("second_task")
+        second_target = _target_for(plugin, "second_task")
+        second_result = await plugin.wait_agent(second_target)
         assert "task done: task" in second_result
-        with pytest.raises(ValueError, match="already exists"):
-            await plugin.spawn_agent("first_task", "task", "planner")
+        await plugin.spawn_agent("first_task", "task", "planner")
+        duplicate_targets = {
+            target
+            for target, session in plugin.task_sessions.items()
+            if session.task_name == "first_task"
+        }
+        assert len(duplicate_targets) == 2
+        assert first_target in duplicate_targets
+        duplicate_target = (duplicate_targets - {first_target}).pop()
+        await plugin.wait_agent(duplicate_target)
 
         first_task_session.runner.runtime.release.set()
-        await plugin.wait_agent("first_task")
+        await plugin.wait_agent(first_target)
     finally:
         await plugin.on_stop()
 
@@ -484,7 +512,8 @@ async def test_on_start_restores_task_without_process_state(agent_factory):
     first_plugin = _advanced_plugin(first_main)
 
     await first_plugin.spawn_agent("slow_plan", "block planning", "planner")
-    first_task_session = first_plugin._resolve_session("slow_plan")
+    target = _target_for(first_plugin, "slow_plan")
+    first_task_session = first_plugin._resolve_session(target)
     while first_task_session.runner is None:
         await asyncio.sleep(0.01)
     assert isinstance(first_task_session.runner.runtime, _FakeDynamicAgent)
@@ -496,7 +525,7 @@ async def test_on_start_restores_task_without_process_state(agent_factory):
     restored_plugin = _advanced_plugin(restored_main)
     try:
         await restored_plugin.on_start()
-        restored = restored_plugin._resolve_session("slow_plan")
+        restored = restored_plugin._resolve_session(target)
 
         assert restored.runner is None
     finally:

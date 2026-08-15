@@ -1,12 +1,9 @@
 import asyncio
 import re
-from collections.abc import Awaitable, Callable
+import secrets
 from enum import StrEnum
 from typing import Any
 
-from arox.core.agent_runtime import (
-    AgentRuntime,
-)
 from arox.core.plugin import Plugin, tool
 from arox.core.runner import TaskRunner
 from arox.core.session import AgentSession
@@ -27,8 +24,6 @@ class SubagentPlugin(Plugin):
         super().__init__(runtime)
         self.mode = SubagentMode.SIMPLE
         self.task_sessions: dict[str, AgentSession] = {}
-        self._task_ids_by_name: dict[str, str] = {}
-        self._task_ids_by_target: dict[str, str] = {}
         self._lock = asyncio.Lock()
 
         def get_subagent_instructions() -> str:
@@ -91,34 +86,27 @@ class SubagentPlugin(Plugin):
             await session_manager.stop_descendants(self.runtime.session)
 
     def _register_task_session(self, task_session: AgentSession) -> None:
-        self.task_sessions[task_session.id] = task_session
-        if task_session.task_name:
-            self._task_ids_by_name[task_session.task_name] = task_session.id
-        if task_session.target:
-            self._task_ids_by_target[task_session.target] = task_session.id
+        if task_session.target is None:
+            raise ValueError("Subagent task session must have a target.")
+        self.task_sessions[task_session.target] = task_session
 
     def _unregister_task_session(self, task_session: AgentSession) -> None:
-        self.task_sessions.pop(task_session.id, None)
-        if (
-            task_session.task_name
-            and self._task_ids_by_name.get(task_session.task_name) == task_session.id
-        ):
-            self._task_ids_by_name.pop(task_session.task_name, None)
-        if (
-            task_session.target
-            and self._task_ids_by_target.get(task_session.target) == task_session.id
-        ):
-            self._task_ids_by_target.pop(task_session.target, None)
+        if task_session.target is not None:
+            self.task_sessions.pop(task_session.target, None)
 
     def _resolve_session(self, target: str) -> AgentSession:
-        task_id = target if target in self.task_sessions else None
-        if task_id is None:
-            task_id = self._task_ids_by_target.get(target)
-        if task_id is None:
-            task_id = self._task_ids_by_name.get(target)
-        if task_id is None:
-            raise ValueError(f"Unknown agent task '{target}'.")
-        return self.task_sessions[task_id]
+        try:
+            return self.task_sessions[target]
+        except KeyError:
+            raise ValueError(f"Unknown agent target '{target}'.") from None
+
+    def _create_target(self, task_name: str | None) -> str:
+        target_name = task_name or "task"
+        while True:
+            short_id = secrets.token_urlsafe(6)
+            target = f"/{self.runtime.name}/{target_name}-{short_id}"
+            if target not in self.task_sessions:
+                return target
 
     async def _spawn_task(
         self,
@@ -133,19 +121,16 @@ class SubagentPlugin(Plugin):
                     "task_name must start with a lowercase letter and contain only "
                     "lowercase letters, digits, or underscores (maximum 64 characters)."
                 )
-            if task_name is not None and task_name in self._task_ids_by_name:
-                raise ValueError(
-                    f"Task '{task_name}' already exists. Use followup_task to continue it."
-                )
             if subagent_name not in self.runtime.agent_config.subagents:
                 raise ValueError(f"Agent '{subagent_name}' is not configured.")
 
+            target = self._create_target(task_name)
             task_session = await self.runtime.session.create_child_session(
                 agent_name=subagent_name,
                 agent_source="subagent",
                 workspace=self.runtime.workspace,
                 task_name=task_name,
-                target=f"/{self.runtime.name}/{task_name}" if task_name else None,
+                target=target,
                 initial_message=message,
             )
             self._register_task_session(task_session)
@@ -177,8 +162,8 @@ class SubagentPlugin(Plugin):
         self, task_session: AgentSession, include_result: bool = True
     ) -> str:
         lines = [
-            f"- task_id: {task_session.id}",
             f"- target: {task_session.target}",
+            f"- task_name: {task_session.task_name}",
             f"- agent_name: {task_session.agent_name}",
         ]
         runner = task_session.runner
@@ -219,8 +204,9 @@ class SubagentPlugin(Plugin):
     async def spawn_agent(self, task_name: str, message: str, agent_name: str) -> str:
         """Start a resumable task using a configured subagent.
 
-        `task_name` must be a unique lowercase identifier and `message` must
-        contain all context the subagent needs.
+        `task_name` must be a lowercase identifier used as a readable label and
+        `message` must contain all context the subagent needs. Use the exact
+        returned `target` with the task management tools.
         """
         task_session = await self._spawn_task(task_name, message, agent_name)
         return "Agent spawned.\n" + self._format_task(task_session, False)
@@ -232,7 +218,8 @@ class SubagentPlugin(Plugin):
     async def followup_task(self, target: str, message: str) -> str:
         """Continue a completed, interrupted, or errored agent task.
 
-        The existing agent session and message history are reused.
+        Use the exact target returned by spawn_agent or list_agents. The existing
+        agent session and message history are reused.
         """
         async with self._lock:
             task_session = self._resolve_session(target)
@@ -253,7 +240,8 @@ class SubagentPlugin(Plugin):
     async def wait_agent(self, target: str, timeout_seconds: float = 600) -> str:
         """Wait for an agent task and return its latest result.
 
-        Timing out does not interrupt the task.
+        Use the exact target returned by spawn_agent or list_agents. Timing out
+        does not interrupt the task.
         """
         if timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be greater than zero.")
@@ -277,14 +265,10 @@ class SubagentPlugin(Plugin):
         enabled=lambda plugin: plugin.mode is SubagentMode.ADVANCED,
     )
     async def interrupt_agent(self, target: str) -> str:
-        """Interrupt a turn and release its runner while preserving its session."""
+        """Interrupt the targeted turn while preserving its agent session."""
         task_session = self._resolve_session(target)
         async with self._lock:
             runner = task_session.runner
-            if not isinstance(runner, TaskRunner):
-                return "Agent is not running.\n" + self._format_task(
-                    task_session, False
-                )
             task = runner.task
             if task is None or task.done():
                 return "Agent is not running.\n" + self._format_task(
