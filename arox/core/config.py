@@ -331,7 +331,8 @@ class ConfigLoader:
         visited: tuple[Path, ...],
         include_paths: set[Path],
     ) -> dict[str, Any]:
-        resolved = path.resolve()
+        source_path = path.expanduser().absolute()
+        resolved = source_path.resolve()
         if resolved in visited:
             chain = " -> ".join(str(item) for item in (*visited, resolved))
             raise ValueError(f"Circular config include detected: {chain}")
@@ -351,15 +352,21 @@ class ConfigLoader:
 
         merged: dict[str, Any] = {}
         for include in includes:
-            include_path = Path(include)
+            include_path = Path(include).expanduser()
             if not include_path.is_absolute():
-                include_path = resolved.parent / include_path
-            include_path = include_path.resolve()
+                resolved_candidate = resolved.parent / include_path
+                source_candidate = source_path.parent / include_path
+                include_path = (
+                    resolved_candidate
+                    if resolved_candidate.is_file()
+                    else source_candidate
+                )
             if not include_path.is_file():
                 raise FileNotFoundError(
-                    f"Included config file not found: {include_path} (from {resolved})"
+                    f"Included config file not found: {include_path.resolve()} "
+                    f"(from {resolved})"
                 )
-            include_paths.add(include_path)
+            include_paths.add(include_path.resolve())
             merged = deep_merge(
                 merged,
                 self._load_config_file(

@@ -113,6 +113,56 @@ def test_config_include_merges_and_overrides(tmp_path):
     assert comp.task_prompt == "shared-task"
 
 
+def test_config_include_expands_home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "shared.toml").write_text('model_ref = "home-model"\n')
+    monkeypatch.setenv("HOME", str(home))
+
+    host = tmp_path / ".arox" / "config.toml"
+    host.parent.mkdir(parents=True)
+    host.write_text('include = ["~/shared.toml"]\n')
+
+    config = ConfigLoader(workspace=tmp_path).reload()
+
+    assert config.model_ref == "home-model"
+
+
+def test_config_include_falls_back_to_symlink_directory(tmp_path):
+    workspace = tmp_path / "workspace"
+    config_dir = workspace / ".arox"
+    config_dir.mkdir(parents=True)
+    (config_dir / "shared.toml").write_text('model_ref = "linked-model"\n')
+
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    target = target_dir / "config.toml"
+    target.write_text('include = ["shared.toml"]\n')
+    (config_dir / "config.toml").symlink_to(target)
+
+    config = ConfigLoader(workspace=workspace).reload()
+
+    assert config.model_ref == "linked-model"
+
+
+def test_config_include_prefers_symlink_target_directory(tmp_path):
+    workspace = tmp_path / "workspace"
+    config_dir = workspace / ".arox"
+    config_dir.mkdir(parents=True)
+    (config_dir / "shared.toml").write_text('model_ref = "linked-model"\n')
+
+    target_dir = tmp_path / "target"
+    target_dir.mkdir()
+    target = target_dir / "config.toml"
+    target.write_text('include = ["shared.toml"]\n')
+    (target_dir / "shared.toml").write_text('model_ref = "target-model"\n')
+    (config_dir / "config.toml").symlink_to(target)
+
+    config = ConfigLoader(workspace=workspace).reload()
+
+    assert config.model_ref == "target-model"
+
+
 def test_config_include_circular_raises(tmp_path):
     a = tmp_path / ".arox" / "config.toml"
     a.parent.mkdir(parents=True, exist_ok=True)
