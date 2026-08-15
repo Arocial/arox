@@ -1,14 +1,21 @@
 import asyncio
 from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, cast
 
 import pytest
 
 from arox.core.io import (
     AbstractIOAdapter,
-    IOHost,
+    AgentIOEndpoint,
+    IOEndpoint,
     ReplyEvent,
     RequestEvent,
+    SnapshotEvent,
 )
+
+if TYPE_CHECKING:
+    from arox.core.agent_runtime import AgentRuntime
 
 
 @dataclass
@@ -45,8 +52,10 @@ async def _drain(endpoint, on_event):
 
 
 def _create_test_channel():
-    host = IOHost(_RecordingAdapter())
-    return host.agent_ep, host.adapter_ep
+    agent_ep = IOEndpoint()
+    adapter_ep = IOEndpoint()
+    agent_ep.pair(adapter_ep)
+    return agent_ep, adapter_ep
 
 
 @pytest.mark.asyncio
@@ -149,23 +158,88 @@ async def test_send_cancelled_clears_pending():
 
 
 @pytest.mark.asyncio
-async def test_io_host_owns_adapter_event_loop_and_cleanup():
+async def test_close_cancels_pending_requests_and_stops_receiving():
+    endpoint = IOEndpoint()
+    send_task = asyncio.create_task(endpoint.send(_Ping(payload="pending")))
+    await asyncio.sleep(0)
+
+    endpoint.close()
+
+    with pytest.raises(asyncio.CancelledError):
+        await send_task
+    with pytest.raises(StopAsyncIteration):
+        await endpoint.receive()
+    assert not endpoint._pending
+
+
+@pytest.mark.asyncio
+async def test_adapter_consumes_peer_events_and_cleans_up():
     adapter = _RecordingAdapter()
-    host = IOHost(adapter)
+    agent_ep = AgentIOEndpoint()
+    runtime = cast("AgentRuntime", SimpleNamespace(agent_ep=agent_ep))
+    assert not adapter.adapter_ep_to_runtime
 
-    assert host.agent_ep.host is host
-    assert host.adapter_ep.host is host
-    assert host.uuid not in adapter.hosts
-
-    async with host:
-        assert adapter.hosts[host.uuid] is host
-        await host.agent_ep.send("hello")
+    async with agent_ep:
+        assert not adapter.adapter_ep_to_runtime
+        adapter_ep = await adapter.connect(runtime)
+        assert adapter.agent_io_for(adapter_ep) is runtime
+        await agent_ep.send("hello")
         endpoint, start_event = await asyncio.wait_for(adapter.events.get(), timeout=1)
         _, end_event = await asyncio.wait_for(adapter.events.get(), timeout=1)
 
-        assert endpoint is host.adapter_ep
+        assert endpoint is adapter_ep
         assert start_event.part.content == "hello"
         assert end_event.part.content == "hello"
 
-    assert adapter.closed_endpoints == [host.adapter_ep]
-    assert host.uuid not in adapter.hosts
+    assert adapter.closed_endpoints == [adapter_ep]
+    assert adapter_ep not in adapter.adapter_ep_to_runtime
+
+
+@pytest.mark.asyncio
+async def test_pair_replays_snapshot_and_cached_events_then_streams_live_events():
+    endpoint = IOEndpoint()
+    endpoint.snapshot("state-1")
+    await endpoint.send("cached")
+
+    peer = IOEndpoint()
+    endpoint.pair(peer)
+    assert endpoint.peer is peer
+    assert peer.peer is endpoint
+    assert await peer.receive() == SnapshotEvent("state-1")
+    assert (await peer.receive()).part.content == "cached"
+    assert (await peer.receive()).part.content == "cached"
+
+    await endpoint.send("live")
+    assert (await peer.receive()).part.content == "live"
+
+    replacement = IOEndpoint()
+    endpoint.pair(replacement)
+    assert peer.peer is None
+    assert endpoint.peer is replacement
+    assert replacement.peer is endpoint
+    assert await replacement.receive() == SnapshotEvent("state-1")
+    assert [(await replacement.receive()).part.content for _ in range(4)] == [
+        "cached",
+        "cached",
+        "live",
+        "live",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_new_pair_replaces_old_peer():
+    adapter = _RecordingAdapter()
+    agent_ep = AgentIOEndpoint()
+    runtime = cast("AgentRuntime", SimpleNamespace(agent_ep=agent_ep))
+    old_peer = await adapter.connect(runtime)
+    new_peer = await adapter.connect(runtime)
+
+    assert old_peer._closed
+
+    await agent_ep.send("new")
+    received = []
+    while len(received) < 2:
+        endpoint, event = await asyncio.wait_for(adapter.events.get(), timeout=1)
+        if endpoint is new_peer and not isinstance(event, SnapshotEvent):
+            received.append(event)
+    assert [event.part.content for event in received] == ["new", "new"]

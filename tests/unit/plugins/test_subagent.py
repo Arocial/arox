@@ -7,6 +7,7 @@ import pytest
 
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.config import AgentConfig, Config
+from arox.core.io import AbstractIOAdapter
 from arox.core.runner import TaskRunner
 from arox.core.session import (
     AgentSession,
@@ -19,6 +20,11 @@ from arox.plugins.subagent import (
     SubagentMode,
     SubagentPlugin,
 )
+
+
+class _TestIOAdapter(AbstractIOAdapter):
+    async def handle_event(self, adapter_ep, event):
+        pass
 
 
 @pytest.fixture(autouse=True)
@@ -79,19 +85,7 @@ class _HostAgent:
         self.session_manager.register_session_type(AgentSession)
         session.manager = self.session_manager
 
-        def register_host(host):
-            self.io_adapter.hosts[host.uuid] = host
-
-        def unregister_host(host):
-            self.io_adapter.hosts.pop(host.uuid, None)
-
-        self.io_adapter = SimpleNamespace(
-            handle_event=AsyncMock(),
-            on_endpoint_closed=AsyncMock(),
-            register_host=register_host,
-            unregister_host=unregister_host,
-            hosts={},
-        )
+        self.io_adapter = _TestIOAdapter()
         self.agent_ep = SimpleNamespace(send=AsyncMock())
         self.workspace = None
         self._stack = contextlib.AsyncExitStack()

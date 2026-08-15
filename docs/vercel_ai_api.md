@@ -63,34 +63,42 @@ node routes. `target_session_id` must belong to the tree identified by
 
 ### `WS /api/sessions/{root_session_id}/nodes/{target_session_id}/ws`
 
-Open the Vercel AI event stream for an active session node. An inactive target
-is rejected. Disconnecting does not cancel an in-flight turn.
+Open the Vercel AI event stream for an active session node. After accepting the
+connection, the server sends a `state` frame containing the committed Vercel UI
+message history and the selected model, then replays any events emitted since
+that snapshot before streaming new events. Internal Arox messages are omitted
+from the history.
+
+Only one WebSocket may be connected to a session node at a time. A newer
+connection closes the previous one with code `4000`; this lets a reconnect pick
+up from the latest snapshot plus cached events without duplicating persisted
+history. Connecting to an inactive node closes the socket with code `4004`.
+Disconnecting does not cancel an in-flight turn.
 
 Server-specific frames include:
 
 | type | meaning |
 |---|---|
+| `state` | Committed UI message history and selected model; sent first and whenever the runtime refreshes its snapshot |
 | `cmd-input-request` | Runtime is waiting for user input |
+| `cmd-user-message` | A user message was added to the live stream |
 | `cmd-user-turn` | A user-turn anchor was recorded |
 | `cmd-session-tree` | Updated recursive session view |
 | `step-done` | Current turn was fully drained |
 | `stream-close` | Close the current UI message stream |
-| `ack` | Acknowledges a client payload |
+| `ack` | Acknowledges a client payload and reports its status |
 
 Client payloads:
 
 ```json
-{ "resume": true }
 { "cancel": true }
 { "command": { "type": "InfoEvent" } }
 { "reply": { "id": "msg-1", "role": "user", "content": "hello", "metadata": { "custom": { "chatInputEventResult": { "req_id": "request-id" } } } } }
 ```
 
-### `GET /api/sessions/{root_session_id}/nodes/{target_session_id}/state`
-
-Return Vercel UI message history directly from the target Session. This endpoint
-works while the runtime is inactive. The model is read from the active runtime
-when present and otherwise derived from Session/config data.
+The former HTTP `.../state` endpoint is no longer exposed. State bootstrap and
+recovery are part of the WebSocket stream, so clients must start the target
+runtime before connecting.
 
 ### `GET /api/sessions/{root_session_id}/nodes/{target_session_id}/suggestions`
 

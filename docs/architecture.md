@@ -26,7 +26,18 @@ IO is split into two layers: a per-agent channel and an app-level adapter.
 
 ### Per-agent channel
 
-Every runtime holds its own **`IOEndpoint`** (`runtime.agent_ep`), created by `create_io_channel()` in `arox/core/io.py` together with a paired adapter-side `IOEndpoint`. Every endpoint exposes its owning `IOHost` through `endpoint.host`, so adapter code can recover the runtime without embedding it in individual events. Endpoints are backed by a pair of in-memory streams and expose `send` / `receive`. Because the main runtime and each subagent runtime have independent channels, their output can be routed, rendered, or stored independently. `RequestEvent` / `ReplyEvent` add request/reply correlation: passing a `RequestEvent` to `send` awaits the matching `ReplyEvent` and returns it.
+Every runtime holds its own **`AgentIOEndpoint`** (`runtime.agent_ep`). An adapter
+connects a peer `IOEndpoint` while it needs to consume that runtime's events.
+The agent endpoint retains a committed snapshot plus events emitted after that
+snapshot; pairing a new endpoint replays both before delivering live events.
+This allows adapters such as the Vercel WebSocket UI to reconnect without a
+separate history request.
+
+Endpoints expose `send` / `receive`, and the adapter maps each connected peer
+back to its runtime. Because the main runtime and each subagent runtime have
+independent endpoints, their output can be routed and rendered independently.
+`RequestEvent` / `ReplyEvent` add request/reply correlation: passing a
+`RequestEvent` to `send` awaits and returns the matching `ReplyEvent`.
 
 ### App-level adapter
 
@@ -38,7 +49,7 @@ One **`AbstractIOAdapter`** (`arox/ui/`) is instantiated per App. The adapter:
 Built-in adapters:
 
 - **`TextIOAdapter`** — rich terminal via `prompt-toolkit`.
-- **`VercelStreamIOAdapter`** — web frontend via Vercel AI SDK (FastAPI/SSE).
+- **`VercelStreamIOAdapter`** — web frontend via Vercel AI SDK (FastAPI/WebSocket).
 - **`TelegramIOAdapter`** — Telegram bot.
 - **`FeishuIOAdapter`** — Feishu (Lark) bot.
 

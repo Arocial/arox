@@ -123,6 +123,7 @@ class CompactionPlugin(Plugin):
             runtime.run_info.llm_context_id,
             previous_messages=previous_messages,
         )
+        runtime.agent_ep.snapshot(runtime.session.build_io_snapshot())
 
     async def history_processor(
         self,

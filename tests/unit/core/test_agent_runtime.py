@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic_ai.messages import (
+    ModelRequest,
     TextContent,
     ToolCallPart,
     ToolReturnPart,
@@ -228,11 +229,12 @@ system_prompt = "Hi."
     async def handler(event):
         received.append(event)
 
-    runtime.register_request_handler(CustomEvent, handler)
+    runtime.agent_ep.register_request_handler(CustomEvent, handler)
 
     async with _managed_runtime(runtime, config_loader, runtime.io_adapter):
         ev = CustomEvent()
-        await runtime.adapter_ep.send(ev)
+        endpoint = next(iter(runtime.io_adapter.adapter_ep_to_runtime))
+        await endpoint.send(ev)
 
     assert received == [ev]
 
@@ -268,10 +270,11 @@ system_prompt = "Hi."
 
     async with _managed_runtime(runtime, config_loader, runtime.io_adapter):
         calls.clear()
-        runtime.register_request_handler(
+        runtime.agent_ep.register_request_handler(
             SetModelEvent, lambda e: runtime.set_model(e.model_ref)
         )
-        await runtime.adapter_ep.send(SetModelEvent(model_ref="test"))
+        endpoint = next(iter(runtime.io_adapter.adapter_ep_to_runtime))
+        await endpoint.send(SetModelEvent(model_ref="test"))
 
     assert calls == ["test"]
     assert runtime.model_ref == "test"
@@ -355,6 +358,42 @@ request_limit_prompt = "Check your progress and continue."
 
 
 @pytest.mark.asyncio
+async def test_error_result_updates_io_snapshot(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text("""
+model_ref = "test"
+[agent.test_agent]
+system_prompt = "Hi."
+""")
+    runtime = AgentRuntime(
+        app_setup(cli_args={"workspace": str(tmp_path)}),
+        io_adapter=_StubIOAdapter(),
+        session=AgentSession(path=["error-snapshot"], agent_name="test_agent"),
+    )
+    committed_messages = [
+        ModelRequest(parts=[UserPromptPart(content="committed before failure")])
+    ]
+    error_result = SimpleNamespace(
+        output=RuntimeError("model failed"),
+        all_messages=lambda: committed_messages,
+    )
+
+    async def fail_inference(*args, **kwargs):
+        return error_result
+
+    runtime._run_inference = fail_inference  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+
+    async with _managed_runtime(runtime, runtime.config_loader, runtime.io_adapter):
+        result = await runtime.run_turn("fail")
+
+    assert result is error_result
+    assert runtime.session.build_io_snapshot() == tuple(committed_messages)
+    assert runtime.agent_ep._snapshot_value == runtime.session.build_io_snapshot()
+
+
+@pytest.mark.asyncio
 async def test_agent_lifecycle_session_binding_and_status(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
     config_file = tmp_path / ".arox" / "config.toml"
@@ -378,16 +417,17 @@ system_prompt = "Hi."
     assert session.runner is None
     assert session.is_active is False
     assert not hasattr(runtime, "status")
-    assert runtime.uuid not in io_adapter.hosts
+    assert runtime not in io_adapter.adapter_ep_to_runtime.values()
 
     async with _managed_runtime(runtime, config_loader, io_adapter):
         assert session.runtime is runtime
         assert session.is_active is True
-        assert io_adapter.hosts[runtime.uuid] is runtime
+        endpoint = next(iter(io_adapter.adapter_ep_to_runtime))
+        assert io_adapter.agent_io_for(endpoint) is runtime
 
     assert session.runner is None
     assert session.is_active is False
-    assert runtime.uuid not in io_adapter.hosts
+    assert runtime not in io_adapter.adapter_ep_to_runtime.values()
 
 
 @pytest.mark.asyncio
@@ -486,7 +526,7 @@ system_prompt = "Hi."
     assert session.runner is None
     assert session.events[-1].event_type == "error"
     assert "RuntimeError: something broke" in session.events[-1].error
-    assert runtime.uuid not in io_adapter.hosts
+    assert runtime not in io_adapter.adapter_ep_to_runtime.values()
 
 
 @pytest.mark.asyncio
@@ -518,7 +558,7 @@ system_prompt = "Hi."
     assert session.runner is None
     assert session.events[-1].event_type == "error"
     assert session.events[-1].error == "Task interrupted."
-    assert runtime.uuid not in io_adapter.hosts
+    assert runtime not in io_adapter.adapter_ep_to_runtime.values()
 
 
 @pytest.mark.asyncio

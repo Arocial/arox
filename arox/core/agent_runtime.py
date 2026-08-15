@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 import re
 import uuid
@@ -39,8 +40,8 @@ from arox.core._pydantic_ai_hack import infer_provider
 from arox.core.config import AgentConfig, Config, ConfigLoader
 from arox.core.io import (
     AbstractIOAdapter,
+    AgentIOEndpoint,
     IOEndpoint,
-    IOHost,
 )
 from arox.core.plugin import CommandManager, load_plugins
 from arox.core.session import (
@@ -74,16 +75,19 @@ class AgentDeps:
     runtime: "AgentRuntime"
 
 
-class AgentRuntime(IOHost):
+class AgentRuntime:
     def __init__(
         self,
         parent_config_loader: ConfigLoader,
         io_adapter: AbstractIOAdapter,
         session: AgentSession,
     ):
-        super().__init__(io_adapter)
         self.session = session
         self.uuid = session.id
+        self.io_adapter = io_adapter
+        self.agent_ep = AgentIOEndpoint()
+        self._stack = contextlib.AsyncExitStack()
+        self.agent_ep.snapshot(session.build_io_snapshot())
         self._slots: dict[Any, Any] = {}
         self.config_loader = parent_config_loader.for_workspace(self.workspace)
 
@@ -246,7 +250,9 @@ class AgentRuntime(IOHost):
     async def __aenter__(self):
         if self.session.runner is None or self.session.runner.runtime is not self:
             raise RuntimeError("Agent runtime must be started through a SessionRunner.")
-        await super().__aenter__()
+        await self._stack.enter_async_context(self.agent_ep)
+        await self.io_adapter.on_runtime_start(self)
+        self._stack.push_async_callback(self.io_adapter.on_runtime_stop, self)
 
         if self.mcp_client:
             await self._stack.enter_async_context(self.mcp_client)
@@ -262,7 +268,7 @@ class AgentRuntime(IOHost):
             elif exc_val is not None:
                 self.session.record_error_event(exc_val)
         finally:
-            await super().__aexit__(exc_type, exc_val, exc_tb)
+            await self._stack.aclose()
 
     def add_local_tool(self, func, **kwargs):
         self.local_toolset.add_function(func, **kwargs)
@@ -595,6 +601,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
             if isinstance(result.output, BaseException):
                 self.session.record_error_event(result.output)
             await self.agent_ep.send(AgentRunResultEvent(result))
+            self.agent_ep.snapshot(self.session.build_io_snapshot())
             return result
         except asyncio.CancelledError:
             self.session.record_error_event("Task interrupted.")

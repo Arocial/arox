@@ -9,6 +9,7 @@ import secrets
 from pathlib import Path
 from typing import TYPE_CHECKING, override
 from urllib.parse import parse_qs
+from weakref import WeakValueDictionary
 
 from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,12 +35,13 @@ from arox.core.chat import (
 )
 from arox.core.completion import parse_request
 from arox.core.config import ConfigLoader
-from arox.core.io import AbstractIOAdapter, IOEndpoint
+from arox.core.io import AbstractIOAdapter, IOEndpoint, SnapshotEvent
 from arox.core.runner import ServeRunner, TaskRunner
 from arox.core.session import AgentSession
 from arox.core.types import ServerIdMapping, SessionTreeUpdate, UserMessageEvent
 
 if TYPE_CHECKING:
+    from arox.core.agent_runtime import AgentRuntime
     from arox.core.session import SessionManager
 
 
@@ -215,25 +217,65 @@ class SessionView(BaseModel):
 class VercelStreamIOAdapter(AbstractIOAdapter):
     def __init__(self):
         super().__init__()
-        self.event_queues: dict[str, asyncio.Queue] = {}
-        self.pending_inputs: dict[str, tuple[IOEndpoint, ChatInputRequest]] = {}
-        self._pydanticai_vercel_streams: dict[IOEndpoint, VercelAIEventStream] = {}
+        self._connections: dict[str, tuple[asyncio.Task, WebSocket]] = {}
+        self._event_contexts: dict[
+            IOEndpoint,
+            tuple[WebSocket, AgentSession, VercelAIEventStream, str | None],
+        ] = {}
+        self._connection_locks: WeakValueDictionary[str, asyncio.Lock] = (
+            WeakValueDictionary()
+        )
+
+    @override
+    async def on_runtime_start(self, runtime: AgentRuntime) -> None:
+        pass
+
+    @override
+    async def on_runtime_stop(self, runtime: AgentRuntime) -> None:
+        pass
 
     @override
     async def handle_event(self, adapter_ep: IOEndpoint, event):
-        session_id = adapter_ep.host.uuid
-        if isinstance(event, ChatInputRequest):
-            self.pending_inputs[session_id] = (adapter_ep, event)
-        elif isinstance(event, StepDoneEvent):
-            self.pending_inputs.pop(session_id, None)
-        queue = self.event_queues.setdefault(session_id, asyncio.Queue())
-        await queue.put((adapter_ep, event))
+        context = self._event_contexts.get(adapter_ep)
+        if context is None:
+            return
+        websocket, root_session, stream, model = context
+        if isinstance(event, SnapshotEvent):
+            messages = event.snapshot
+            visible_messages = [
+                msg
+                for msg in messages
+                if not (
+                    isinstance(msg, ModelRequest)
+                    and msg.metadata
+                    and msg.metadata.get("arox_internal")
+                )
+            ]
+            await websocket.send_json(
+                {
+                    "type": "state",
+                    "history": build_state_history(visible_messages),
+                    "model": model,
+                }
+            )
+            return
+
+        for msg in await self._to_ui_messages(event, root_session, stream):
+            msg_str = str(msg)
+            if len(msg_str) > 1024:
+                msg_str = msg_str[:1024] + "... (truncated)"
+            logger.info(f"WS OUT: {msg_str}")
+            await websocket.send_json(msg)
+
+    @override
+    async def on_endpoint_closed(self, adapter_ep: IOEndpoint) -> None:
+        self._event_contexts.pop(adapter_ep, None)
 
     async def _to_ui_messages(
         self,
-        adapter_ep: IOEndpoint,
         event,
         root_session: AgentSession,
+        stream: VercelAIEventStream,
     ) -> list[dict]:
         messages: list[dict] = []
 
@@ -247,10 +289,6 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 FunctionToolResultEvent,
             ),
         ):
-            stream = self._pydanticai_vercel_streams.setdefault(
-                adapter_ep,
-                VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
-            )
             async for chunk in stream.handle_event(event):
                 messages.append(chunk.model_dump(by_alias=True, exclude_none=True))
 
@@ -314,7 +352,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             return
         await target.agent_ep.send(output)
 
-    async def _apply_input(self, target, payload: dict) -> dict:
+    async def _apply_input(self, target, adapter_ep: IOEndpoint, payload: dict) -> dict:
         if payload.get("cancel"):
             runner = target.session.runner
             if isinstance(runner, ServeRunner):
@@ -360,8 +398,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 client_message_id=reply_metadata.get("client_message_id"),
             )
 
-            self.pending_inputs.pop(target.session.id, None)
-            await target.adapter_ep.send(chat_input_reply)
+            await adapter_ep.send(chat_input_reply)
             return {"status": "ok"}
 
         return {"status": "noop"}
@@ -371,23 +408,35 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         websocket: WebSocket,
         root_session: AgentSession,
         target_session: AgentSession,
+        model: str | None,
     ):
         from fastapi import WebSocketDisconnect
 
-        session_id = target_session.id
-        queue = self.event_queues.setdefault(session_id, asyncio.Queue())
-
         await websocket.accept()
-
-        async def pump_out():
-            while True:
-                adapter_ep, event = await queue.get()
-                for msg in await self._to_ui_messages(adapter_ep, event, root_session):
-                    msg_str = str(msg)
-                    if len(msg_str) > 1024:
-                        msg_str = msg_str[:1024] + "... (truncated)"
-                    logger.info(f"WS OUT: {msg_str}")
-                    await websocket.send_json(msg)
+        runtime = target_session.runtime
+        if runtime is None:
+            await websocket.close(code=4004, reason="Session runtime is not active.")
+            return
+        session_id = target_session.id
+        connection_lock = self._connection_locks.setdefault(session_id, asyncio.Lock())
+        connection_task = asyncio.current_task()
+        assert connection_task is not None
+        async with connection_lock:
+            previous = self._connections.get(session_id)
+            self._connections[session_id] = (connection_task, websocket)
+            if previous is not None and previous[0] is not connection_task:
+                previous_task, previous_websocket = previous
+                await asyncio.gather(
+                    previous_websocket.close(
+                        code=4000, reason="Replaced by a newer connection."
+                    ),
+                    return_exceptions=True,
+                )
+                previous_task.cancel()
+                await asyncio.gather(previous_task, return_exceptions=True)
+        adapter_ep = await self.connect(runtime)
+        stream = VercelAIEventStream(run_input=SubmitMessage(id="", messages=[]))
+        self._event_contexts[adapter_ep] = (websocket, root_session, stream, model)
 
         async def pump_in():
             while True:
@@ -397,39 +446,35 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     payload_str = payload_str[:1024] + "... (truncated)"
                 logger.info(f"WS IN: {payload_str}")
 
-                if payload.get("resume"):
-                    pending = self.pending_inputs.get(session_id)
-                    if pending is not None:
-                        adapter_ep, event = pending
-                        for msg in await self._to_ui_messages(
-                            adapter_ep, event, root_session
-                        ):
-                            await websocket.send_json(msg)
-                    await websocket.send_json({"type": "ack", "status": "ok"})
-                else:
-                    runtime = target_session.runtime
-                    if runtime is None:
-                        await websocket.send_json(
-                            {"type": "ack", "status": "unavailable"}
-                        )
-                        continue
-                    ack = await self._apply_input(runtime, payload)
-                    await websocket.send_json({"type": "ack", **ack})
+                async with connection_lock:
+                    current = self._connections.get(session_id)
+                    if current is None or current[0] is not connection_task:
+                        ack = {"status": "replaced"}
+                    else:
+                        current_runtime = target_session.runtime
+                        if current_runtime is not runtime:
+                            ack = {"status": "unavailable"}
+                        else:
+                            ack = await self._apply_input(runtime, adapter_ep, payload)
+                await websocket.send_json({"type": "ack", **ack})
 
-        out_task = asyncio.create_task(pump_out())
         in_task = asyncio.create_task(pump_in())
+        event_consumer_task = self._event_consumer_tasks[adapter_ep]
         try:
             done, _ = await asyncio.wait(
-                {out_task, in_task}, return_when=asyncio.FIRST_EXCEPTION
+                {event_consumer_task, in_task}, return_when=asyncio.FIRST_COMPLETED
             )
             for t in done:
                 exc = t.exception()
                 if exc and not isinstance(exc, WebSocketDisconnect):
                     logger.exception("ws pump error", exc_info=exc)
         finally:
-            out_task.cancel()
             in_task.cancel()
-            await asyncio.gather(out_task, in_task, return_exceptions=True)
+            await asyncio.gather(in_task, return_exceptions=True)
+            current = self._connections.get(session_id)
+            if current is not None and current[0] is connection_task:
+                self._connections.pop(session_id, None)
+                await self.disconnect(runtime)
 
     async def suggestions(
         self,
@@ -509,9 +554,6 @@ class VercelStreamServer:
             "/api/sessions/{root_session_id}/nodes/{target_session_id}/suggestions",
             response_model=SuggestionResponse,
         )(self.suggestions)
-        self.app.get("/api/sessions/{root_session_id}/nodes/{target_session_id}/state")(
-            self.state
-        )
         self.app.get("/api/health")(self.health)
 
     async def health(self):
@@ -589,7 +631,9 @@ class VercelStreamServer:
         except HTTPException as exc:
             await websocket.close(code=4004, reason=str(exc.detail))
             return
-        return await self.io_adapter.ws_handler(websocket, root, target)
+        return await self.io_adapter.ws_handler(
+            websocket, root, target, self._model_for(target)
+        )
 
     async def suggestions(
         self,
@@ -607,33 +651,16 @@ class VercelStreamServer:
             )
         return await self.io_adapter.suggestions(runtime, command, q)
 
-    async def state(self, root_session_id: str, target_session_id: str):
-        root = await self._resolve_root_session(root_session_id)
-        session = await self._resolve_child_session(root, target_session_id)
-
-        from pydantic_ai import ModelRequest
-
-        messages = [
-            msg
-            for msg in session.message_history.messages
-            if not (
-                isinstance(msg, ModelRequest)
-                and msg.metadata
-                and msg.metadata.get("arox_internal")
-            )
-        ]
-        history = build_state_history(messages)
-
+    def _model_for(self, session: AgentSession) -> str | None:
         runtime = session.runner.runtime if session.runner is not None else None
         agent_config = self.config_loader.current_config.agent.get(session.agent_name)
-        model = (
+        return (
             runtime.provider_model
             if runtime is not None
             else session.extra.get("model_override")
             or (agent_config.model_ref if agent_config else None)
             or self.config_loader.current_config.model_ref
         )
-        return {"history": history, "model": model}
 
     async def list_sessions(self):
         main_agent = self.config_loader.current_config.app.main_agent

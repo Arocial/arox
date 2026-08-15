@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import os
 import signal
 import sys
@@ -17,14 +16,6 @@ class CaptureIO:
 
     async def send(self, msg):
         self.messages.append(msg)
-
-    @contextlib.asynccontextmanager
-    async def text_stream(self):
-        async def write(delta: str) -> None:
-            if delta:
-                self.messages.append(delta)
-
-        yield write
 
 
 class MockAgent:

@@ -1,23 +1,30 @@
 import asyncio
-import contextlib
 import logging
-import math
+import threading
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from anyio import ClosedResourceError, EndOfStream, create_memory_object_stream
 from pydantic_ai import (
-    PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
     TextPart,
-    TextPartDelta,
 )
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from arox.core.agent_runtime import AgentRuntime
+
+
+_STREAM_CLOSED = object()
+
+
+@dataclass(frozen=True)
+class SnapshotEvent:
+    snapshot: Any
 
 
 @dataclass
@@ -39,36 +46,102 @@ class ReplyEvent:
     req_id: str
 
 
-class _BaseIOEndpoint:
-    """Shared send/receive plumbing with request/reply correlation.
+class IOEndpoint:
+    """Channel endpoint with request/reply correlation and event streaming.
 
-    Reply correlation relies on someone calling :meth:`_receive`
-    concurrently with senders awaiting their requests; in the agent runtime
-    these are the event loops owned by :class:`IOHost`.
+    Reply correlation relies on someone calling :meth:`receive` concurrently
+    with senders awaiting their requests; in the agent runtime these are the
+    event loops owned by :class:`AgentIOEndpoint` and :class:`AbstractIOAdapter`.
     """
 
-    def __init__(self, tx, rx):
-        self.tx = tx
-        self.rx = rx
-        self._stack = contextlib.AsyncExitStack()
-        self._pending: dict[str, asyncio.Future[ReplyEvent]] = {}
+    _SYNTHETIC_INDEX_MIN = -(2**31)
+    _state_lock = threading.RLock()
 
-    async def _send(self, event: Any) -> Any:
+    def __init__(self):
+        self._peer: IOEndpoint | None = None
+        self._snapshot_value: Any = None
+        self._cached_events: list[Any] = []
+        self._inbox: asyncio.Queue[Any] = asyncio.Queue()
+        self._closed = False
+        self._pending: dict[str, asyncio.Future[ReplyEvent]] = {}
+        self._synthetic_index = 0
+
+    def pair(self, peer: "IOEndpoint") -> None:
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("IO endpoint is closed.")
+            if peer._closed:
+                raise RuntimeError("IO peer is closed.")
+            self._unpair()
+            peer._unpair()
+            self._peer = peer
+            peer._peer = self
+            self._replay_to(peer)
+            peer._replay_to(self)
+
+    @property
+    def peer(self) -> "IOEndpoint | None":
+        return self._peer
+
+    def _unpair(self) -> None:
+        peer = self._peer
+        if peer is None:
+            return
+        self._peer = None
+        if peer._peer is self:
+            peer._peer = None
+            peer._end_stream()
+
+    def _replay_to(self, peer: "IOEndpoint") -> None:
+        if self._snapshot_value is not None:
+            peer._inbox.put_nowait(SnapshotEvent(self._snapshot_value))
+        for event in self._cached_events:
+            peer._inbox.put_nowait(event)
+
+    def _end_stream(self) -> None:
+        while not self._inbox.empty():
+            self._inbox.get_nowait()
+        self._inbox.put_nowait(_STREAM_CLOSED)
+
+    def _send_event(self, event: Any) -> None:
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("IO endpoint is closed.")
+            self._cached_events.append(event)
+            if self._peer is not None:
+                self._peer._inbox.put_nowait(event)
+
+    def _next_synthetic_index(self) -> int:
+        self._synthetic_index -= 1
+        if self._synthetic_index < self._SYNTHETIC_INDEX_MIN:
+            self._synthetic_index = -1
+        return self._synthetic_index
+
+    async def send(self, event: Any) -> Any:
+        if isinstance(event, str):
+            with self._state_lock:
+                index = self._next_synthetic_index()
+                part = TextPart(content=event)
+                self._send_event(PartStartEvent(part=part, index=index))
+                self._send_event(PartEndEvent(part=part, index=index))
+            return None
         if isinstance(event, RequestEvent):
             loop = asyncio.get_running_loop()
             fut: asyncio.Future[ReplyEvent] = loop.create_future()
             self._pending[event.req_id] = fut
             try:
-                await self.tx.send(event)
+                self._send_event(event)
                 return await fut
             finally:
                 self._pending.pop(event.req_id, None)
-        await self.tx.send(event)
+        self._send_event(event)
         return None
 
-    async def _receive(self) -> Any:
+    async def receive(self) -> Any:
         while True:
-            event = await self.rx.receive()
+            event = await self._inbox.get()
+            if event is _STREAM_CLOSED:
+                raise StopAsyncIteration
             if isinstance(event, ReplyEvent):
                 fut = self._pending.pop(event.req_id, None)
                 if fut is not None and not fut.done():
@@ -82,88 +155,83 @@ class _BaseIOEndpoint:
                 continue
             return event
 
+    def snapshot(self, snapshot: Any) -> None:
+        with self._state_lock:
+            if self._closed:
+                raise RuntimeError("IO endpoint is closed.")
+            self._snapshot_value = snapshot
+            self._cached_events.clear()
+            if self._peer is not None:
+                self._peer._inbox.put_nowait(SnapshotEvent(snapshot))
+
+    def close(self) -> None:
+        with self._state_lock:
+            if self._closed:
+                return
+            self._closed = True
+            self._unpair()
+            self._end_stream()
+            for fut in self._pending.values():
+                if not fut.done():
+                    fut.cancel()
+            self._pending.clear()
+
     async def __aenter__(self):
-        await self._stack.enter_async_context(self.tx)
-        await self._stack.enter_async_context(self.rx)
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        for fut in self._pending.values():
-            if not fut.done():
-                fut.cancel()
-        self._pending.clear()
-        await self._stack.aclose()
-
-
-class IOEndpoint(_BaseIOEndpoint):
-    _SYNTHETIC_INDEX_MIN = -(2**31)
-
-    def __init__(self, tx, rx, *, host: "IOHost"):
-        super().__init__(tx, rx)
-        self.host = host
-        self._synthetic_index = 0
-
-    def _next_synthetic_index(self) -> int:
-        self._synthetic_index -= 1
-        if self._synthetic_index < self._SYNTHETIC_INDEX_MIN:
-            self._synthetic_index = -1
-        return self._synthetic_index
-
-    async def send(self, event: Any) -> Any:
-        if isinstance(event, str):
-            index = self._next_synthetic_index()
-            part = TextPart(content=event)
-            await self.tx.send(PartStartEvent(part=part, index=index))
-            await self.tx.send(PartEndEvent(part=part, index=index))
-            return None
-        return await self._send(event)
-
-    @contextlib.asynccontextmanager
-    async def text_stream(self):
-        """Stream a single TextPart as PartStart + many PartDelta + PartEnd
-        under one synthetic index. Yields an async ``write(delta)`` callable.
-        Use when a logical block of text arrives in pieces (e.g. line-by-line
-        shell output) so the UI groups it as one message instead of N."""
-        index = self._next_synthetic_index()
-        part = TextPart(content="")
-        await self.tx.send(PartStartEvent(part=part, index=index))
-        try:
-
-            async def write(delta: str) -> None:
-                if not delta:
-                    return
-                await self.tx.send(
-                    PartDeltaEvent(
-                        delta=TextPartDelta(content_delta=delta), index=index
-                    )
-                )
-
-            yield write
-        finally:
-            await self.tx.send(PartEndEvent(part=part, index=index))
-
-    async def receive(self) -> Any:
-        return await self._receive()
-
-
-def create_io_channel(host: "IOHost") -> tuple[IOEndpoint, IOEndpoint]:
-    agent_tx, adapter_rx = create_memory_object_stream[Any](math.inf)
-    adapter_tx, agent_rx = create_memory_object_stream[Any](math.inf)
-    return (
-        IOEndpoint(agent_tx, agent_rx, host=host),
-        IOEndpoint(adapter_tx, adapter_rx, host=host),
-    )
+        self.close()
 
 
 class AbstractIOAdapter(ABC):
     def __init__(self):
-        self.hosts: dict[str, IOHost] = {}
+        self.adapter_ep_to_runtime: dict[IOEndpoint, AgentRuntime] = {}
+        self._event_consumer_tasks: dict[IOEndpoint, asyncio.Task[None]] = {}
 
-    def register_host(self, host: "IOHost") -> None:
-        self.hosts[host.uuid] = host
+    async def connect(self, runtime: "AgentRuntime") -> IOEndpoint:
+        agent_ep = runtime.agent_ep
+        current = agent_ep.peer
+        if current in self.adapter_ep_to_runtime:
+            await self.disconnect(runtime)
+        adapter_ep = IOEndpoint()
+        agent_ep.pair(adapter_ep)
+        self.adapter_ep_to_runtime[adapter_ep] = runtime
+        self._event_consumer_tasks[adapter_ep] = asyncio.create_task(
+            self._consume_events(adapter_ep)
+        )
+        return adapter_ep
 
-    def unregister_host(self, host: "IOHost") -> None:
-        self.hosts.pop(host.uuid, None)
+    async def disconnect(self, runtime: "AgentRuntime") -> None:
+        adapter_ep = runtime.agent_ep.peer
+        if adapter_ep not in self.adapter_ep_to_runtime:
+            return
+        adapter_ep.close()
+        task = self._event_consumer_tasks.pop(adapter_ep, None)
+        if task is not None:
+            await asyncio.gather(task, return_exceptions=True)
+        self.adapter_ep_to_runtime.pop(adapter_ep, None)
+
+    async def on_runtime_start(self, runtime: "AgentRuntime") -> None:
+        await self.connect(runtime)
+
+    async def on_runtime_stop(self, runtime: "AgentRuntime") -> None:
+        await self.disconnect(runtime)
+
+    def agent_io_for(self, adapter_ep: IOEndpoint) -> "AgentRuntime":
+        return self.adapter_ep_to_runtime[adapter_ep]
+
+    async def _consume_events(self, adapter_ep: IOEndpoint) -> None:
+        try:
+            while True:
+                event = await adapter_ep.receive()
+                await self.handle_event(adapter_ep, event)
+        except (StopAsyncIteration, RuntimeError):
+            return
+        finally:
+            adapter_ep.close()
+            await self.on_endpoint_closed(adapter_ep)
+            self.adapter_ep_to_runtime.pop(adapter_ep, None)
+            self._event_consumer_tasks.pop(adapter_ep, None)
 
     @abstractmethod
     async def handle_event(self, adapter_ep: IOEndpoint, event: Any):
@@ -176,24 +244,20 @@ class AbstractIOAdapter(ABC):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        pass
+        for r in list(self.adapter_ep_to_runtime.values()):
+            await self.disconnect(r)
 
 
-class IOHost:
-    """Owns one side of an :func:`create_io_channel` pair and a receive loop.
+class AgentIOEndpoint(IOEndpoint):
+    """Agent-side endpoint with a request loop.
 
-    Subclasses (currently :class:`AgentRuntime`)
-    add their own domain on top: tool execution, command handling, etc.
-    The base wires the channel, owns both endpoint event loops, and dispatches
+    The adapter owns the peer endpoint and its consumer. This endpoint dispatches
     inbound :class:`RequestEvent` instances to handlers registered via
     :meth:`register_request_handler`.
     """
 
-    def __init__(self, io_adapter: "AbstractIOAdapter"):
-        self.uuid: str = str(uuid.uuid4())
-        self.agent_ep, self.adapter_ep = create_io_channel(self)
-        self.io_adapter = io_adapter
-        self._stack = contextlib.AsyncExitStack()
+    def __init__(self):
+        super().__init__()
         self._request_handlers: dict[type[RequestEvent], Callable[[Any], Any]] = {}
 
     def register_request_handler(
@@ -209,21 +273,11 @@ class IOHost:
         """
         self._request_handlers[event_type] = handler
 
-    async def _adapter_event_loop(self) -> None:
-        try:
-            while True:
-                event = await self.adapter_ep.receive()
-                await self.io_adapter.handle_event(self.adapter_ep, event)
-        except (EndOfStream, ClosedResourceError):
-            return
-        finally:
-            await self.io_adapter.on_endpoint_closed(self.adapter_ep)
-
-    async def _host_event_loop(self) -> None:
+    async def _agent_event_loop(self) -> None:
         while True:
             try:
-                event = await self.agent_ep.receive()
-            except (EndOfStream, ClosedResourceError):
+                event = await self.receive()
+            except (StopAsyncIteration, RuntimeError):
                 return
             if isinstance(event, RequestEvent):
                 handler = self._request_handlers.get(type(event))
@@ -232,7 +286,7 @@ class IOHost:
                         "No handler registered for RequestEvent %s",
                         type(event).__name__,
                     )
-                    await self.agent_ep.send(ReplyEvent(req_id=event.req_id))
+                    await self.send(ReplyEvent(req_id=event.req_id))
                     continue
                 try:
                     result = handler(event)
@@ -240,9 +294,9 @@ class IOHost:
                         result = await result
                     if isinstance(result, ReplyEvent):
                         result.req_id = event.req_id
-                        await self.agent_ep.send(result)
+                        await self.send(result)
                     else:
-                        await self.agent_ep.send(ReplyEvent(req_id=event.req_id))
+                        await self.send(ReplyEvent(req_id=event.req_id))
                 except Exception:
                     logger.exception(
                         "Error handling RequestEvent %s", type(event).__name__
@@ -255,14 +309,12 @@ class IOHost:
 
     async def __aenter__(self):
         self._tg = asyncio.TaskGroup()
-        await self._stack.enter_async_context(self._tg)
-        await self._stack.enter_async_context(self.agent_ep)
-        await self._stack.enter_async_context(self.adapter_ep)
-        self._tg.create_task(self._adapter_event_loop())
-        self._tg.create_task(self._host_event_loop())
-        self.io_adapter.register_host(self)
+        await self._tg.__aenter__()
+        self._tg.create_task(self._agent_event_loop())
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
-        self.io_adapter.unregister_host(self)
-        await self._stack.aclose()
+        try:
+            self.close()
+        finally:
+            await self._tg.__aexit__(exc_type, exc_val, exc_tb)

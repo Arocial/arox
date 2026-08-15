@@ -242,6 +242,9 @@ class AgentSession(Session):
     def replace_message_history(self, messages: Sequence[ModelMessage]) -> None:
         self.message_history.messages = list(messages)
 
+    def build_io_snapshot(self) -> tuple[ModelMessage, ...]:
+        return tuple(self.message_history.messages)
+
     def _start_message_history(
         self,
         messages: Sequence[ModelMessage],

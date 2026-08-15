@@ -14,9 +14,15 @@ from pydantic_ai.messages import (
 )
 
 from arox.core.agent_runtime import AgentRuntime
+from arox.core.io import AbstractIOAdapter
 from arox.core.session import AgentSession, CompactionEvent
 from arox.plugins.compaction import CompactionPlugin
 from arox.plugins.slots import PERSISTENT_CONTEXT
+
+
+class _TestIOAdapter(AbstractIOAdapter):
+    async def handle_event(self, adapter_ep, event):
+        pass
 
 
 class _FakeAgent:
@@ -74,14 +80,11 @@ class _MockAgent:
             self.config.compaction_threshold = None  # type: ignore
 
         self.model_params = {}
-        self.agent_ep = SimpleNamespace(send=self._send)
+        self.agent_ep = SimpleNamespace(send=self._send, snapshot=lambda snapshot: None)
         self.session = AgentSession(agent_name="main")
         self.workspace = "fake-workspace"
 
-        self.io_adapter = SimpleNamespace(
-            handle_event=AsyncMock(),
-            on_endpoint_closed=AsyncMock(),
-        )
+        self.io_adapter = _TestIOAdapter()
         self.config_loader = self
 
         self._stack = contextlib.AsyncExitStack()
