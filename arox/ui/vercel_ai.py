@@ -215,17 +215,18 @@ class SessionView(BaseModel):
 class VercelStreamIOAdapter(AbstractIOAdapter):
     def __init__(self):
         super().__init__()
-        self.event_queues = {}
-        self.pending_inputs: dict[IOEndpoint, ChatInputRequest] = {}
+        self.event_queues: dict[str, asyncio.Queue] = {}
+        self.pending_inputs: dict[str, tuple[IOEndpoint, ChatInputRequest]] = {}
         self._pydanticai_vercel_streams: dict[IOEndpoint, VercelAIEventStream] = {}
 
     @override
     async def handle_event(self, adapter_ep: IOEndpoint, event):
+        session_id = adapter_ep.host.uuid
         if isinstance(event, ChatInputRequest):
-            self.pending_inputs[adapter_ep] = event
+            self.pending_inputs[session_id] = (adapter_ep, event)
         elif isinstance(event, StepDoneEvent):
-            self.pending_inputs.pop(adapter_ep, None)
-        queue = self.event_queues.setdefault(adapter_ep, asyncio.Queue())
+            self.pending_inputs.pop(session_id, None)
+        queue = self.event_queues.setdefault(session_id, asyncio.Queue())
         await queue.put((adapter_ep, event))
 
     async def _to_ui_messages(
@@ -359,7 +360,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 client_message_id=reply_metadata.get("client_message_id"),
             )
 
-            self.pending_inputs.pop(target.adapter_ep, None)
+            self.pending_inputs.pop(target.session.id, None)
             await target.adapter_ep.send(chat_input_reply)
             return {"status": "ok"}
 
@@ -373,20 +374,14 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
     ):
         from fastapi import WebSocketDisconnect
 
-        runtime = (
-            target_session.runner.runtime if target_session.runner is not None else None
-        )
-        if runtime is None:
-            await websocket.close(code=4009, reason="session runtime is not active")
-            return
-        adapter_ep = runtime.adapter_ep
-        queue = self.event_queues.setdefault(adapter_ep, asyncio.Queue())
+        session_id = target_session.id
+        queue = self.event_queues.setdefault(session_id, asyncio.Queue())
 
         await websocket.accept()
 
         async def pump_out():
             while True:
-                _io, event = await queue.get()
+                adapter_ep, event = await queue.get()
                 for msg in await self._to_ui_messages(adapter_ep, event, root_session):
                     msg_str = str(msg)
                     if len(msg_str) > 1024:
@@ -403,14 +398,21 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 logger.info(f"WS IN: {payload_str}")
 
                 if payload.get("resume"):
-                    event = self.pending_inputs.get(adapter_ep)
-                    if event is not None:
+                    pending = self.pending_inputs.get(session_id)
+                    if pending is not None:
+                        adapter_ep, event = pending
                         for msg in await self._to_ui_messages(
                             adapter_ep, event, root_session
                         ):
                             await websocket.send_json(msg)
                     await websocket.send_json({"type": "ack", "status": "ok"})
                 else:
+                    runtime = target_session.runtime
+                    if runtime is None:
+                        await websocket.send_json(
+                            {"type": "ack", "status": "unavailable"}
+                        )
+                        continue
                     ack = await self._apply_input(runtime, payload)
                     await websocket.send_json({"type": "ack", **ack})
 

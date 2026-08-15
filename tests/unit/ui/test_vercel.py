@@ -1,8 +1,10 @@
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from fastapi import WebSocket, WebSocketDisconnect
 from pydantic_ai.messages import ModelRequest, TextContent, UserPromptPart
 
 from arox.core.app import app_setup
@@ -111,6 +113,50 @@ def test_build_state_history_identical_text_different_anchors():
     assert (
         history[1].get("metadata", {}).get("custom", {}).get(USER_INPUT_ID_KEY) == "b"
     )
+
+
+@pytest.mark.asyncio
+async def test_adapter_routes_runtime_events_through_session_queue():
+    adapter = VercelStreamIOAdapter()
+    session_id = "session-id"
+    first_ep = SimpleNamespace(host=SimpleNamespace(uuid=session_id))
+    second_ep = SimpleNamespace(host=SimpleNamespace(uuid=session_id))
+
+    await adapter.handle_event(cast(IOEndpoint, first_ep), "first")
+    await adapter.handle_event(cast(IOEndpoint, second_ep), "second")
+
+    queue = adapter.event_queues[session_id]
+    assert await queue.get() == (first_ep, "first")
+    assert await queue.get() == (second_ep, "second")
+
+
+@pytest.mark.asyncio
+async def test_websocket_stays_available_without_runtime():
+    adapter = VercelStreamIOAdapter()
+    session = AgentSession(path=["root"], agent_name="coder")
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.accepted = False
+            self.sent = []
+            self.payloads = [{"cancel": True}]
+
+        async def accept(self):
+            self.accepted = True
+
+        async def receive_json(self):
+            if self.payloads:
+                return self.payloads.pop(0)
+            raise WebSocketDisconnect()
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+
+    websocket = FakeWebSocket()
+    await adapter.ws_handler(cast(WebSocket, websocket), session, session)
+
+    assert websocket.accepted
+    assert websocket.sent == [{"type": "ack", "status": "unavailable"}]
 
 
 @pytest.mark.asyncio
