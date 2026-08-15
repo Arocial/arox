@@ -1,5 +1,4 @@
 import asyncio
-import contextlib
 import logging
 import re
 import uuid
@@ -9,7 +8,6 @@ from pathlib import Path
 from typing import Any, overload
 
 import fastmcp
-from anyio import ClosedResourceError, EndOfStream
 from pydantic_ai import (
     AbstractToolset,
     Agent,
@@ -250,7 +248,6 @@ class AgentRuntime(IOHost):
         for plugin in self.plugins:
             await plugin.on_start()
             self._stack.push_async_callback(plugin.on_stop)
-        await self.broadcast_session_tree()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
@@ -259,8 +256,6 @@ class AgentRuntime(IOHost):
                 self.session.record_error_event("Task interrupted.")
             elif exc_val is not None:
                 self.session.record_error_event(exc_val)
-            with contextlib.suppress(ClosedResourceError, EndOfStream):
-                await self.broadcast_session_tree()
         finally:
             await super().__aexit__(exc_type, exc_val, exc_tb)
 

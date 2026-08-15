@@ -235,6 +235,8 @@ class AgentSession(Session):
             self.manager._track(self, self.owner)
             self.manager._track(child, self)
             await self.manager.persist(self, child)
+        if self.runtime:
+            await self.runtime.broadcast_session_tree()
         return child
 
     def replace_message_history(self, messages: Sequence[ModelMessage]) -> None:
