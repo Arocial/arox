@@ -408,7 +408,7 @@ system_prompt = "Hi."
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def blocking_turn(user_input=None):
+    async def blocking_turn(user_input=None, render_user_message: bool = False):
         started.set()
         await release.wait()
         return user_input

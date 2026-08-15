@@ -57,7 +57,12 @@ from arox.core.slot import (
 from arox.core.slot import (
     Provider as SlotProvider,
 )
-from arox.core.types import ServerIdMapping, SessionTreeUpdate, UserInput
+from arox.core.types import (
+    ServerIdMapping,
+    SessionTreeUpdate,
+    UserInput,
+    UserMessageEvent,
+)
 from arox.plugins.slots import SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -545,12 +550,17 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
     async def run_turn(
         self,
         user_input: UserInput | str | None = None,
+        *,
+        render_user_message: bool = False,
     ) -> AgentRunResult[str]:
         """Execute one request, continuing from this session's message history."""
         if self.session.runner is None or self.session.runner.runtime is not self:
             raise RuntimeError("Agent runtime must be entered before calling step().")
         if not isinstance(user_input, UserInput):
             user_input = UserInput(input_content=user_input)
+
+        if render_user_message and user_input.input_content is not None:
+            await self.agent_ep.send(UserMessageEvent(user_input=user_input))
 
         try:
             input_content = user_input.input_content

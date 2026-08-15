@@ -50,6 +50,13 @@ class ServerIdMapping:
 
 
 @dataclass
+class UserMessageEvent:
+    """Requests that an adapter render a runtime-originated user message."""
+
+    user_input: UserInput
+
+
+@dataclass
 class SessionTreeUpdate:
     """Requests broadcasting the latest tree for a root session."""
 

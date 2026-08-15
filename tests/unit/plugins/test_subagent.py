@@ -12,6 +12,7 @@ from arox.core.session import (
     AgentSession,
     FileSessionStore,
 )
+from arox.core.types import UserInput
 from arox.plugins.core import CorePlugin
 from arox.plugins.slots import SYSTEM_PROMPT
 from arox.plugins.subagent import (
@@ -42,8 +43,12 @@ class _FakeDynamicAgent(AgentRuntime):
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def run_turn(self, user_input=None):
-        task = str(user_input or "")
+    async def run_turn(self, user_input=None, *, render_user_message=False):
+        task = (
+            user_input.text_content
+            if isinstance(user_input, UserInput)
+            else str(user_input or "")
+        )
         self.received_tasks.append(task)
         self.started.set()
         if task.startswith("fail"):

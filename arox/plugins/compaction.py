@@ -208,7 +208,7 @@ class CompactionPlugin(Plugin):
                 compaction_runtime = runner.runtime
                 assert compaction_runtime is not None
                 compaction_runtime.message_history = messages.copy()
-                result = await runner.run(prompt)
+                result = await runner.run(prompt, render_user_message=True)
                 summary = (
                     result.output if result and isinstance(result.output, str) else ""
                 )

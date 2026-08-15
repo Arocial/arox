@@ -1,17 +1,47 @@
 import asyncio
 from pathlib import Path
+from typing import cast
 
 import pytest
 from pydantic_ai.messages import ModelRequest, TextContent, UserPromptPart
 
 from arox.core.app import app_setup
+from arox.core.io import IOEndpoint
 from arox.core.session import AgentSession, FileSessionStore, SessionManager
-from arox.core.types import USER_INPUT_ID_KEY
+from arox.core.types import USER_INPUT_ID_KEY, UserInput, UserMessageEvent
 from arox.ui.vercel_ai import (
     CreateSessionRequest,
+    VercelStreamIOAdapter,
     VercelStreamServer,
     build_state_history,
 )
+
+
+@pytest.mark.asyncio
+async def test_user_message_event_becomes_command_with_complete_ui_message():
+    adapter = VercelStreamIOAdapter()
+    root_session = AgentSession(path=["root"], agent_name="coder")
+    user_input = UserInput(input_content="delegated task")
+
+    frames = await adapter._to_ui_messages(
+        cast(IOEndpoint, object()),
+        UserMessageEvent(user_input),
+        root_session,
+    )
+
+    assert frames == [
+        {
+            "type": "cmd-user-message",
+            "message": {
+                "id": user_input.server_message_id,
+                "role": "user",
+                "parts": [{"type": "text", "text": "delegated task", "state": "done"}],
+                "metadata": {
+                    "custom": {USER_INPUT_ID_KEY: user_input.server_message_id}
+                },
+            },
+        }
+    ]
 
 
 def test_build_state_history_carries_user_input_id():

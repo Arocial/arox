@@ -37,7 +37,7 @@ from arox.core.config import ConfigLoader
 from arox.core.io import AbstractIOAdapter, IOEndpoint
 from arox.core.runner import ServeRunner, TaskRunner
 from arox.core.session import AgentSession
-from arox.core.types import ServerIdMapping, SessionTreeUpdate
+from arox.core.types import ServerIdMapping, SessionTreeUpdate, UserMessageEvent
 
 if TYPE_CHECKING:
     from arox.core.session import SessionManager
@@ -285,6 +285,16 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 "client_message_id": event.client_message_id,
             }
             messages.append(frame)
+
+        elif isinstance(event, UserMessageEvent):
+            input_content = event.user_input.input_content
+            if input_content is not None:
+                request = ModelRequest(parts=[UserPromptPart(content=input_content)])
+                history = build_state_history([request])
+                if history:
+                    message = history[0]
+                    message["id"] = event.user_input.server_message_id
+                    messages.append({"type": "cmd-user-message", "message": message})
 
         elif isinstance(event, SessionTreeUpdate):
             if event.session_id == root_session.id:
