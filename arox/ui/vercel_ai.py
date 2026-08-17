@@ -7,6 +7,7 @@ import logging
 import os
 import secrets
 from pathlib import Path
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, override
 from urllib.parse import parse_qs
 from weakref import WeakValueDictionary
@@ -22,7 +23,7 @@ from pydantic_ai import (
     PartEndEvent,
     PartStartEvent,
 )
-from pydantic_ai.messages import ModelRequest, TextContent, UserPromptPart
+from pydantic_ai.messages import ModelMessage, ModelRequest, TextContent, UserPromptPart
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage, UIMessage
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -112,7 +113,7 @@ class TokenAuthASGIMiddleware:
 logger = logging.getLogger(__name__)
 
 
-def build_state_history(messages: list) -> list[dict]:
+def build_state_history(messages: Sequence[ModelMessage]) -> list[dict]:
     from arox.core.types import USER_INPUT_ID_KEY
 
     wrapped_messages = []
@@ -214,10 +215,22 @@ class SessionView(BaseModel):
     children: list["SessionView"] = Field(default_factory=list)
 
 
+@dataclasses.dataclass
+class _SessionConnection:
+    task: asyncio.Task
+    websocket: WebSocket
+    root_session: AgentSession
+    target_session: AgentSession
+    stream: VercelAIEventStream
+    model: str | None
+    runtime: AgentRuntime | None = None
+    adapter_ep: IOEndpoint | None = None
+
+
 class VercelStreamIOAdapter(AbstractIOAdapter):
     def __init__(self):
         super().__init__()
-        self._connections: dict[str, tuple[asyncio.Task, WebSocket]] = {}
+        self._connections: dict[str, _SessionConnection] = {}
         self._event_contexts: dict[
             IOEndpoint,
             tuple[WebSocket, AgentSession, VercelAIEventStream, str | None],
@@ -228,11 +241,47 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
     @override
     async def on_runtime_start(self, runtime: AgentRuntime) -> None:
-        pass
+        session_id = runtime.session.id
+        connection_lock = self._connection_locks.setdefault(session_id, asyncio.Lock())
+        async with connection_lock:
+            connection = self._connections.get(session_id)
+            if connection is not None:
+                await self._attach_runtime(connection, runtime)
 
     @override
     async def on_runtime_stop(self, runtime: AgentRuntime) -> None:
-        pass
+        session_id = runtime.session.id
+        connection_lock = self._connection_locks.setdefault(session_id, asyncio.Lock())
+        async with connection_lock:
+            connection = self._connections.get(session_id)
+            if connection is not None:
+                await self._detach_runtime(connection, runtime)
+
+    async def _attach_runtime(
+        self, connection: _SessionConnection, runtime: AgentRuntime
+    ) -> None:
+        if connection.runtime is runtime:
+            return
+        if connection.runtime is not None:
+            await self._detach_runtime(connection, connection.runtime)
+        adapter_ep = await self.connect(runtime)
+        connection.runtime = runtime
+        connection.adapter_ep = adapter_ep
+        self._event_contexts[adapter_ep] = (
+            connection.websocket,
+            connection.root_session,
+            connection.stream,
+            connection.model,
+        )
+
+    async def _detach_runtime(
+        self, connection: _SessionConnection, runtime: AgentRuntime
+    ) -> None:
+        if connection.runtime is not runtime:
+            return
+        await self.disconnect(runtime)
+        connection.runtime = None
+        connection.adapter_ep = None
 
     @override
     async def handle_event(self, adapter_ep: IOEndpoint, event):
@@ -413,30 +462,46 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         from fastapi import WebSocketDisconnect
 
         await websocket.accept()
-        runtime = target_session.runtime
-        if runtime is None:
-            await websocket.close(code=4004, reason="Session runtime is not active.")
-            return
         session_id = target_session.id
         connection_lock = self._connection_locks.setdefault(session_id, asyncio.Lock())
         connection_task = asyncio.current_task()
         assert connection_task is not None
+        connection = _SessionConnection(
+            task=connection_task,
+            websocket=websocket,
+            root_session=root_session,
+            target_session=target_session,
+            stream=VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
+            model=model,
+        )
+        previous_task: asyncio.Task | None = None
         async with connection_lock:
             previous = self._connections.get(session_id)
-            self._connections[session_id] = (connection_task, websocket)
-            if previous is not None and previous[0] is not connection_task:
-                previous_task, previous_websocket = previous
+            self._connections[session_id] = connection
+            if previous is not None and previous.task is not connection_task:
                 await asyncio.gather(
-                    previous_websocket.close(
+                    previous.websocket.close(
                         code=4000, reason="Replaced by a newer connection."
                     ),
                     return_exceptions=True,
                 )
-                previous_task.cancel()
-                await asyncio.gather(previous_task, return_exceptions=True)
-        adapter_ep = await self.connect(runtime)
-        stream = VercelAIEventStream(run_input=SubmitMessage(id="", messages=[]))
-        self._event_contexts[adapter_ep] = (websocket, root_session, stream, model)
+                previous.task.cancel()
+                previous_task = previous.task
+            runtime = target_session.runtime
+            if runtime is not None:
+                await self._attach_runtime(connection, runtime)
+            else:
+                await websocket.send_json(
+                    {
+                        "type": "state",
+                        "history": build_state_history(
+                            target_session.build_io_snapshot()
+                        ),
+                        "model": model,
+                    }
+                )
+        if previous_task is not None:
+            await asyncio.gather(previous_task, return_exceptions=True)
 
         async def pump_in():
             while True:
@@ -448,33 +513,37 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
                 async with connection_lock:
                     current = self._connections.get(session_id)
-                    if current is None or current[0] is not connection_task:
+                    if current is not connection:
                         ack = {"status": "replaced"}
                     else:
                         current_runtime = target_session.runtime
-                        if current_runtime is not runtime:
+                        adapter_ep = connection.adapter_ep
+                        if (
+                            current_runtime is None
+                            or connection.runtime is not current_runtime
+                            or adapter_ep is None
+                        ):
                             ack = {"status": "unavailable"}
                         else:
-                            ack = await self._apply_input(runtime, adapter_ep, payload)
+                            ack = await self._apply_input(
+                                current_runtime, adapter_ep, payload
+                            )
                 await websocket.send_json({"type": "ack", **ack})
 
         in_task = asyncio.create_task(pump_in())
-        event_consumer_task = self._event_consumer_tasks[adapter_ep]
         try:
-            done, _ = await asyncio.wait(
-                {event_consumer_task, in_task}, return_when=asyncio.FIRST_COMPLETED
-            )
-            for t in done:
-                exc = t.exception()
-                if exc and not isinstance(exc, WebSocketDisconnect):
-                    logger.exception("ws pump error", exc_info=exc)
+            await in_task
+        except WebSocketDisconnect:
+            pass
         finally:
             in_task.cancel()
             await asyncio.gather(in_task, return_exceptions=True)
-            current = self._connections.get(session_id)
-            if current is not None and current[0] is connection_task:
-                self._connections.pop(session_id, None)
-                await self.disconnect(runtime)
+            async with connection_lock:
+                current = self._connections.get(session_id)
+                if current is connection:
+                    self._connections.pop(session_id, None)
+                    if connection.runtime is not None:
+                        await self._detach_runtime(connection, connection.runtime)
 
     async def suggestions(
         self,

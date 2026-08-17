@@ -10,6 +10,7 @@ from pydantic_ai.ui.vercel_ai import VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage
 
 from arox.core.app import app_setup
+from arox.core.agent_runtime import AgentRuntime
 from arox.core.io import AgentIOEndpoint
 from arox.core.session import AgentSession, FileSessionStore, SessionManager
 from arox.core.types import USER_INPUT_ID_KEY, UserInput, UserMessageEvent
@@ -118,7 +119,7 @@ def test_build_state_history_identical_text_different_anchors():
 
 
 @pytest.mark.asyncio
-async def test_websocket_requires_active_runtime():
+async def test_websocket_can_wait_for_active_runtime():
     adapter = VercelStreamIOAdapter()
     session = AgentSession(path=["root"], agent_name="coder")
 
@@ -126,7 +127,6 @@ async def test_websocket_requires_active_runtime():
         def __init__(self):
             self.accepted = False
             self.sent = []
-            self.payloads = [{"cancel": True}]
             self.state_sent = asyncio.Event()
             self.closed = None
 
@@ -135,8 +135,6 @@ async def test_websocket_requires_active_runtime():
 
         async def receive_json(self):
             await self.state_sent.wait()
-            if self.payloads:
-                return self.payloads.pop(0)
             raise WebSocketDisconnect()
 
         async def send_json(self, payload):
@@ -151,8 +149,8 @@ async def test_websocket_requires_active_runtime():
     await adapter.ws_handler(cast(WebSocket, websocket), session, session, "test")
 
     assert websocket.accepted
-    assert websocket.sent == []
-    assert websocket.closed == (4004, "Session runtime is not active.")
+    assert websocket.sent == [{"type": "state", "history": [], "model": "test"}]
+    assert websocket.closed is None
 
 
 @pytest.mark.asyncio
@@ -244,10 +242,63 @@ async def test_new_websocket_replaces_existing_connection():
 
     assert first.closed == (4000, "Replaced by a newer connection.")
     assert first_task.done()
-    assert adapter._connections[session.id][0] is second_task
+    assert adapter._connections[session.id].task is second_task
 
     second_task.cancel()
     await asyncio.gather(second_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_websocket_survives_runtime_restart():
+    adapter = VercelStreamIOAdapter()
+    session = AgentSession(path=["root"], agent_name="coder")
+
+    first_runtime = SimpleNamespace(uuid=session.id, session=session)
+    first_runtime.agent_ep = AgentIOEndpoint()
+    first_runtime.agent_ep.snapshot(())
+    session.runner = SimpleNamespace(runtime=first_runtime)
+
+    class FakeWebSocket:
+        def __init__(self):
+            self.sent = []
+            self.state_sent = asyncio.Event()
+
+        async def accept(self):
+            pass
+
+        async def receive_json(self):
+            await asyncio.Event().wait()
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+            if payload.get("type") == "state":
+                self.state_sent.set()
+
+    websocket = FakeWebSocket()
+    websocket_task = asyncio.create_task(
+        adapter.ws_handler(cast(WebSocket, websocket), session, session, "test")
+    )
+    await asyncio.wait_for(websocket.state_sent.wait(), timeout=1)
+
+    await adapter.on_runtime_stop(cast(AgentRuntime, first_runtime))
+    assert not websocket_task.done()
+    assert adapter._connections[session.id].runtime is None
+
+    websocket.state_sent.clear()
+    second_runtime = SimpleNamespace(uuid=session.id, session=session)
+    second_runtime.agent_ep = AgentIOEndpoint()
+    second_runtime.agent_ep.snapshot(
+        (ModelRequest(parts=[UserPromptPart(content="after restart")]),)
+    )
+    session.runner = SimpleNamespace(runtime=second_runtime)
+    await adapter.on_runtime_start(cast(AgentRuntime, second_runtime))
+    await asyncio.wait_for(websocket.state_sent.wait(), timeout=1)
+
+    assert adapter._connections[session.id].runtime is second_runtime
+    assert websocket.sent[-1]["history"][0]["parts"][0]["text"] == "after restart"
+
+    websocket_task.cancel()
+    await asyncio.gather(websocket_task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
