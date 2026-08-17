@@ -50,7 +50,7 @@ class _FakeTaskRunner:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         return None
 
-    def run(self, prompt, *, render_user_message=False):
+    def run(self, prompt):
         return self.runtime.run(prompt)
 
 

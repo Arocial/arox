@@ -143,7 +143,7 @@ class SubagentPlugin(Plugin):
                     task_session, self.runtime.config_loader, self.runtime.io_adapter
                 )
                 await runner.start_runtime()
-            return runner.run(message, render_user_message=True)
+            return runner.run(message)
         except BaseException:
             if runner is not None:
                 await runner.stop_runtime()

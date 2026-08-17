@@ -18,6 +18,7 @@ from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter, RequestEvent
 from arox.core.runner import TaskRunner
 from arox.core.session import AgentSession
+from arox.core.types import UserMessageEvent
 from arox.plugins.core import SetModelEvent
 
 
@@ -384,11 +385,23 @@ system_prompt = "Hi."
         return error_result
 
     runtime._run_inference = fail_inference  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+    sent_events = []
+    original_send = runtime.agent_ep.send
+
+    async def capture_event(event):
+        sent_events.append(event)
+        return await original_send(event)
+
+    monkeypatch.setattr(runtime.agent_ep, "send", capture_event)
 
     async with _managed_runtime(runtime, runtime.config_loader, runtime.io_adapter):
         result = await runtime.run_turn("fail")
 
     assert result is error_result
+    user_message = next(
+        event for event in sent_events if isinstance(event, UserMessageEvent)
+    )
+    assert user_message.user_input.text_content == "fail"
     assert runtime.session.build_io_snapshot() == tuple(committed_messages)
     assert runtime.agent_ep._snapshot_value == runtime.session.build_io_snapshot()
 
@@ -448,7 +461,7 @@ system_prompt = "Hi."
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def blocking_turn(user_input=None, render_user_message: bool = False):
+    async def blocking_turn(user_input=None):
         started.set()
         await release.wait()
         return SimpleNamespace(output=user_input)
@@ -488,7 +501,7 @@ system_prompt = "Hi."
         assert runner.error is None
         assert await runner.task is completed_result
 
-        async def failed_turn(user_input=None, render_user_message: bool = False):
+        async def failed_turn(user_input=None):
             return SimpleNamespace(output=RuntimeError("model failed"))
 
         runtime.run_turn = failed_turn  # type: ignore[method-assign]

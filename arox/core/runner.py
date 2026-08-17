@@ -103,8 +103,6 @@ class TaskRunner(SessionRunner):
     def run(
         self,
         user_input: UserInput | str | None = None,
-        *,
-        render_user_message: bool = False,
     ) -> asyncio.Task[AgentRunResult[str]]:
         if self.runtime is None:
             raise RuntimeError("Runtime must be started before calling run().")
@@ -117,9 +115,7 @@ class TaskRunner(SessionRunner):
         async def execute() -> AgentRunResult[str]:
             assert self.runtime is not None
             try:
-                result = await self.runtime.run_turn(
-                    user_input, render_user_message=render_user_message
-                )
+                result = await self.runtime.run_turn(user_input)
             except asyncio.CancelledError:
                 self.error = "Task interrupted."
                 raise

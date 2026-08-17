@@ -49,7 +49,7 @@ class _FakeDynamicAgent(AgentRuntime):
         self.started = asyncio.Event()
         self.release = asyncio.Event()
 
-    async def run_turn(self, user_input=None, *, render_user_message=False):
+    async def run_turn(self, user_input=None):
         task = (
             user_input.text_content
             if isinstance(user_input, UserInput)
