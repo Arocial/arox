@@ -6,8 +6,8 @@ import json
 import logging
 import os
 import secrets
-from pathlib import Path
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, override
 from urllib.parse import parse_qs
 from weakref import WeakValueDictionary

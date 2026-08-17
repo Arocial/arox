@@ -9,8 +9,8 @@ from pydantic_ai.messages import ModelRequest, TextContent, UserPromptPart
 from pydantic_ai.ui.vercel_ai import VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage
 
-from arox.core.app import app_setup
 from arox.core.agent_runtime import AgentRuntime
+from arox.core.app import app_setup
 from arox.core.io import AgentIOEndpoint
 from arox.core.session import AgentSession, FileSessionStore, SessionManager
 from arox.core.types import USER_INPUT_ID_KEY, UserInput, UserMessageEvent

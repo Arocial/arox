@@ -72,8 +72,10 @@ class IOEndpoint:
                 raise RuntimeError("IO endpoint is closed.")
             if peer._closed:
                 raise RuntimeError("IO peer is closed.")
-            self._unpair()
-            peer._unpair()
+            if self._peer is not None:
+                raise RuntimeError("IO endpoint is already connected.")
+            if peer._peer is not None:
+                raise RuntimeError("IO peer is already connected.")
             self._peer = peer
             peer._peer = self
             self._replay_to(peer)
@@ -83,25 +85,20 @@ class IOEndpoint:
     def peer(self) -> "IOEndpoint | None":
         return self._peer
 
-    def _unpair(self) -> None:
-        peer = self._peer
-        if peer is None:
-            return
-        self._peer = None
-        if peer._peer is self:
-            peer._peer = None
-            peer._end_stream()
+    def disconnect(self) -> None:
+        with self._state_lock:
+            peer = self._peer
+            if peer is None:
+                return
+            self._peer = None
+            if peer._peer is self:
+                peer._peer = None
 
     def _replay_to(self, peer: "IOEndpoint") -> None:
         if self._snapshot_value is not None:
             peer._inbox.put_nowait(SnapshotEvent(self._snapshot_value))
         for event in self._cached_events:
             peer._inbox.put_nowait(event)
-
-    def _end_stream(self) -> None:
-        while not self._inbox.empty():
-            self._inbox.get_nowait()
-        self._inbox.put_nowait(_STREAM_CLOSED)
 
     def _send_event(self, event: Any) -> None:
         with self._state_lock:
@@ -139,6 +136,8 @@ class IOEndpoint:
 
     async def receive(self) -> Any:
         while True:
+            if self._closed:
+                raise StopAsyncIteration
             event = await self._inbox.get()
             if event is _STREAM_CLOSED:
                 raise StopAsyncIteration
@@ -168,13 +167,15 @@ class IOEndpoint:
         with self._state_lock:
             if self._closed:
                 return
-            self._closed = True
-            self._unpair()
-            self._end_stream()
+            self.disconnect()
+            while not self._inbox.empty():
+                self._inbox.get_nowait()
+            self._inbox.put_nowait(_STREAM_CLOSED)
             for fut in self._pending.values():
                 if not fut.done():
                     fut.cancel()
             self._pending.clear()
+            self._closed = True
 
     async def __aenter__(self):
         return self
@@ -189,11 +190,9 @@ class AbstractIOAdapter(ABC):
         self._event_consumer_tasks: dict[IOEndpoint, asyncio.Task[None]] = {}
 
     async def connect(self, runtime: "AgentRuntime") -> IOEndpoint:
-        agent_ep = runtime.agent_ep
-        current = agent_ep.peer
-        if current in self.adapter_ep_to_runtime:
-            await self.disconnect(runtime)
+        await self.disconnect(runtime)
         adapter_ep = IOEndpoint()
+        agent_ep = runtime.agent_ep
         agent_ep.pair(adapter_ep)
         self.adapter_ep_to_runtime[adapter_ep] = runtime
         self._event_consumer_tasks[adapter_ep] = asyncio.create_task(
@@ -205,11 +204,12 @@ class AbstractIOAdapter(ABC):
         adapter_ep = runtime.agent_ep.peer
         if adapter_ep not in self.adapter_ep_to_runtime:
             return
-        adapter_ep.close()
+        adapter_ep.disconnect()
+        self.adapter_ep_to_runtime.pop(adapter_ep, None)
         task = self._event_consumer_tasks.pop(adapter_ep, None)
+        adapter_ep.close()
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
-        self.adapter_ep_to_runtime.pop(adapter_ep, None)
 
     async def on_runtime_start(self, runtime: "AgentRuntime") -> None:
         await self.connect(runtime)

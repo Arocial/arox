@@ -169,7 +169,25 @@ async def test_close_cancels_pending_requests_and_stops_receiving():
         await send_task
     with pytest.raises(StopAsyncIteration):
         await endpoint.receive()
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(endpoint.receive(), timeout=1)
     assert not endpoint._pending
+
+
+def test_close_disconnects_without_closing_peer():
+    endpoint = IOEndpoint()
+    peer = IOEndpoint()
+    endpoint.pair(peer)
+
+    endpoint.close()
+
+    assert endpoint.peer is None
+    assert peer.peer is None
+    assert not peer._closed
+
+    replacement = IOEndpoint()
+    peer.pair(replacement)
+    assert peer.peer is replacement
 
 
 @pytest.mark.asyncio
@@ -190,6 +208,7 @@ async def test_adapter_consumes_peer_events_and_cleans_up():
         assert endpoint is adapter_ep
         assert start_event.part.content == "hello"
         assert end_event.part.content == "hello"
+        await adapter.disconnect(runtime)
 
     assert adapter.closed_endpoints == [adapter_ep]
     assert adapter_ep not in adapter.adapter_ep_to_runtime
@@ -213,8 +232,12 @@ async def test_pair_replays_snapshot_and_cached_events_then_streams_live_events(
     assert (await peer.receive()).part.content == "live"
 
     replacement = IOEndpoint()
-    endpoint.pair(replacement)
+    with pytest.raises(RuntimeError, match="already connected"):
+        endpoint.pair(replacement)
+    endpoint.disconnect()
     assert peer.peer is None
+    assert endpoint.peer is None
+    endpoint.pair(replacement)
     assert endpoint.peer is replacement
     assert replacement.peer is endpoint
     assert await replacement.receive() == SnapshotEvent("state-1")
@@ -227,7 +250,7 @@ async def test_pair_replays_snapshot_and_cached_events_then_streams_live_events(
 
 
 @pytest.mark.asyncio
-async def test_new_pair_replaces_old_peer():
+async def test_adapter_connect_replaces_old_peer():
     adapter = _RecordingAdapter()
     agent_ep = AgentIOEndpoint()
     runtime = cast("AgentRuntime", SimpleNamespace(agent_ep=agent_ep))
@@ -235,6 +258,8 @@ async def test_new_pair_replaces_old_peer():
     new_peer = await adapter.connect(runtime)
 
     assert old_peer._closed
+    assert old_peer not in adapter.adapter_ep_to_runtime
+    assert old_peer not in adapter._event_consumer_tasks
 
     await agent_ep.send("new")
     received = []
@@ -243,3 +268,26 @@ async def test_new_pair_replaces_old_peer():
         if endpoint is new_peer and not isinstance(event, SnapshotEvent):
             received.append(event)
     assert [event.part.content for event in received] == ["new", "new"]
+    await adapter.disconnect(runtime)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_preserves_agent_request_loop():
+    adapter = _RecordingAdapter()
+    agent_ep = AgentIOEndpoint()
+    runtime = cast("AgentRuntime", SimpleNamespace(agent_ep=agent_ep))
+
+    async with agent_ep:
+        old_peer = await adapter.connect(runtime)
+        request_task = asyncio.create_task(agent_ep.send(_Ping(payload="before")))
+        endpoint, request = await asyncio.wait_for(adapter.events.get(), timeout=1)
+        assert endpoint is old_peer
+        assert isinstance(request, _Ping)
+
+        new_peer = await adapter.connect(runtime)
+        await new_peer.send(_Pong(req_id=request.req_id, payload="after"))
+
+        reply = await asyncio.wait_for(request_task, timeout=1)
+        assert isinstance(reply, _Pong)
+        assert reply.payload == "after"
+        await adapter.disconnect(runtime)
