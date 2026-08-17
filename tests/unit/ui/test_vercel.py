@@ -26,7 +26,9 @@ from arox.ui.vercel_ai import (
 async def test_user_message_event_becomes_command_with_complete_ui_message():
     adapter = VercelStreamIOAdapter()
     root_session = AgentSession(path=["root"], agent_name="coder")
-    user_input = UserInput(input_content="delegated task")
+    user_input = UserInput(
+        input_content="delegated task", client_message_id="client-message-1"
+    )
 
     frames = await adapter._to_ui_messages(
         UserMessageEvent(user_input),
@@ -34,11 +36,14 @@ async def test_user_message_event_becomes_command_with_complete_ui_message():
         VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
     )
 
+    message_id = frames[0]["message"].pop("id")
+    assert isinstance(message_id, str)
+    assert message_id != user_input.server_message_id
     assert frames == [
         {
             "type": "cmd-user-message",
+            "client_message_id": "client-message-1",
             "message": {
-                "id": user_input.server_message_id,
                 "role": "user",
                 "parts": [{"type": "text", "text": "delegated task", "state": "done"}],
                 "metadata": {
@@ -47,6 +52,20 @@ async def test_user_message_event_becomes_command_with_complete_ui_message():
             },
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_user_message_omits_client_message_id():
+    adapter = VercelStreamIOAdapter()
+    root_session = AgentSession(path=["root"], agent_name="coder")
+
+    frames = await adapter._to_ui_messages(
+        UserMessageEvent(UserInput(input_content="delegated task")),
+        root_session,
+        VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
+    )
+
+    assert "client_message_id" not in frames[0]
 
 
 def test_build_state_history_carries_user_input_id():

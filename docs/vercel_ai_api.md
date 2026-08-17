@@ -81,7 +81,7 @@ Server-specific frames include:
 |---|---|
 | `state` | Committed UI message history and selected model; sent first and whenever the runtime refreshes its snapshot |
 | `cmd-input-request` | Runtime is waiting for user input |
-| `cmd-user-message` | A user message was added to the live stream |
+| `cmd-user-message` | A user message was added to the live stream; an optional top-level `client_message_id` correlates a client-originated message without overloading its UI message ID |
 | `cmd-user-turn` | A user-turn anchor was recorded |
 | `cmd-session-tree` | Updated recursive session view |
 | `step-done` | Current turn was fully drained |
