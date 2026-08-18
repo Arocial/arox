@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic_ai.models.test import TestModel
@@ -60,18 +61,18 @@ system_prompt = "Hi there."
     io_adapter = HeadlessIOAdapter(prompt="boom")
     session = AgentSession(path=["dummy"], agent_name="dummy_chat")
 
-    async def failing_turn(*args, **kwargs):
-        class MockResult:
-            output = RuntimeError("step blew up")
-
-        return MockResult()
+    async def failing_inference(*args, **kwargs):
+        return SimpleNamespace(
+            output=RuntimeError("step blew up"),
+            all_messages=lambda: [],
+        )
 
     async with io_adapter:
         runner = ServeRunner(session, config_loader, io_adapter, ChatServeDriver())
         async with runner:
             runtime = runner.runtime
             assert runtime is not None
-            runtime.run_turn = failing_turn  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+            runtime._run_inference = failing_inference  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
             await runner.run()
 
     assert io_adapter.error is not None

@@ -38,7 +38,7 @@ from arox.core.completion import parse_request
 from arox.core.config import ConfigLoader
 from arox.core.io import AbstractIOAdapter, IOEndpoint, SnapshotEvent
 from arox.core.runner import ServeRunner, TaskRunner
-from arox.core.session import AgentSession
+from arox.core.session import AgentSession, ErrorEvent
 from arox.core.types import ServerIdMapping, SessionTreeUpdate, UserMessageEvent
 
 if TYPE_CHECKING:
@@ -345,13 +345,6 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             messages.append({"type": "finish"})
 
         elif isinstance(event, ChatInputRequest):
-            if event.pending_exception:
-                messages.append(
-                    {
-                        "type": "error",
-                        "errorText": f"{type(event.pending_exception).__name__}: {event.pending_exception}",
-                    }
-                )
             messages.append(
                 {
                     "type": "cmd-input-request",
@@ -362,6 +355,9 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             # Emit an explicit stream close signal to let the frontend decouple
             # stream management from business logic.
             messages.append({"type": "stream-close"})
+
+        elif isinstance(event, ErrorEvent):
+            messages.append({"type": "error", "errorText": event.error})
 
         elif isinstance(event, StepDoneEvent):
             messages.append({"type": "step-done"})

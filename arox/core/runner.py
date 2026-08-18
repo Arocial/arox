@@ -1,7 +1,7 @@
 import asyncio
 import logging
 from types import TracebackType
-from typing import Protocol, Self
+from typing import Any, Protocol, Self
 
 from pydantic_ai import AgentRunResult
 
@@ -12,6 +12,14 @@ from arox.core.session import AgentSession
 from arox.core.types import UserInput
 
 logger = logging.getLogger(__name__)
+
+
+async def cancel_task(task: asyncio.Task[Any] | None) -> bool:
+    if task is None or task.done() or task is asyncio.current_task():
+        return False
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    return True
 
 
 class SessionRunner:
@@ -93,12 +101,29 @@ class TaskRunner(SessionRunner):
     ) -> None:
         super().__init__(session, config_loader, io_adapter)
         self._task: asyncio.Task[AgentRunResult[str]] | None = None
-        self.result: AgentRunResult[str] | None = None
-        self.error: str | None = None
 
     @property
     def task(self) -> asyncio.Task[AgentRunResult[str]] | None:
         return self._task
+
+    @property
+    def result(self) -> AgentRunResult[str] | None:
+        task = self._task
+        if task is None or not task.done() or task.cancelled():
+            return None
+        if task.exception() is not None:
+            return None
+        return task.result()
+
+    @property
+    def error(self) -> str | None:
+        task = self._task
+        if task is None or not task.done():
+            return None
+        if task.cancelled():
+            return self.session.format_error(asyncio.CancelledError())
+        error = task.exception()
+        return self.session.format_error(error) if error is not None else None
 
     def run(
         self,
@@ -109,35 +134,22 @@ class TaskRunner(SessionRunner):
         if self._task is not None and not self._task.done():
             raise RuntimeError("A task is already running.")
 
-        self.result = None
-        self.error = None
-
-        async def execute() -> AgentRunResult[str]:
-            assert self.runtime is not None
-            try:
-                result = await self.runtime.run_turn(user_input)
-            except asyncio.CancelledError:
-                self.error = "Task interrupted."
-                raise
-            except Exception as exc:
-                self.error = f"{type(exc).__name__}: {exc!s}"
-                raise
-            if isinstance(result.output, BaseException):
-                self.error = f"{type(result.output).__name__}: {result.output!s}"
-            else:
-                self.result = result
-            return result
-
-        task = asyncio.create_task(execute(), name=f"agent-turn:{self.session.id}")
+        assert self.runtime is not None
+        task = asyncio.create_task(
+            self.runtime.run_turn(user_input), name=f"agent-turn:{self.session.id}"
+        )
         self._task = task
+
+        # Background tasks may never be awaited, so retrieve failures to avoid asyncio warnings.
+        def consume_exception(completed: asyncio.Task[AgentRunResult[str]]) -> None:
+            if not completed.cancelled():
+                completed.exception()
+
+        task.add_done_callback(consume_exception)
         return task
 
     async def _stop_execution(self) -> None:
-        task = self._task
-        if task is None or task.done() or task is asyncio.current_task():
-            return
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        await cancel_task(self._task)
 
 
 class ServeDriver(Protocol):
@@ -168,22 +180,16 @@ class ServeRunner(SessionRunner):
         if self._task is not None and not self._task.done():
             raise RuntimeError("Session is already serving.")
 
-        async def execute() -> None:
-            try:
-                await self.driver.run(self)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                self.session.record_error_event(exc)
-                raise
-
-        task = asyncio.create_task(execute(), name=f"agent-serve:{self.session.id}")
+        task = asyncio.create_task(
+            self.driver.run(self), name=f"agent-serve:{self.session.id}"
+        )
         self._task = task
 
         def log_failure(completed: asyncio.Task[None]) -> None:
             if completed.cancelled():
                 return
             if exc := completed.exception():
+                self.session.record_error_event(exc)
                 logger.error(
                     "Session %s serve loop failed: %s",
                     self.session.id,
@@ -198,8 +204,4 @@ class ServeRunner(SessionRunner):
         return await self.driver.cancel_current_interaction()
 
     async def _stop_execution(self) -> None:
-        task = self._task
-        if task is None or task.done() or task is asyncio.current_task():
-            return
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        await cancel_task(self._task)

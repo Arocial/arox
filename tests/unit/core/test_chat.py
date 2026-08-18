@@ -11,7 +11,12 @@ from pydantic_ai import ToolCallPart
 from pydantic_ai.models.test import TestModel
 
 from arox.core.app import app_setup
-from arox.core.chat import ChatInputReply, ChatInputRequest, ChatServeDriver
+from arox.core.chat import (
+    ChatInputReply,
+    ChatInputRequest,
+    ChatServeDriver,
+    StepDoneEvent,
+)
 from arox.core.plugin import CommandReply
 from arox.core.runner import ServeRunner
 from arox.core.session import AgentSession
@@ -100,6 +105,24 @@ async def test_chat_driver_sends_unknown_slash_commands_to_the_agent():
 
 
 @pytest.mark.asyncio
+async def test_chat_driver_keeps_serving_after_interaction_exception():
+    agent_ep = FakeAgentIO(["hello", None])
+    error = ValueError("bad response")
+    runtime = SimpleNamespace(
+        agent_ep=agent_ep,
+        command_manager=SimpleNamespace(try_handle_slash=AsyncMock(return_value=None)),
+        run_turn=AsyncMock(side_effect=error),
+        session=SimpleNamespace(id="chat", agent_name="coder"),
+    )
+    runner = cast(ServeRunner, SimpleNamespace(runtime=runtime))
+
+    await ChatServeDriver().run(runner)
+
+    assert sum(isinstance(event, StepDoneEvent) for event in agent_ep.events) == 1
+    assert sum(isinstance(event, ChatInputRequest) for event in agent_ep.events) == 2
+
+
+@pytest.mark.asyncio
 async def test_chat_driver_cancels_current_interaction_and_keeps_serving():
     agent_ep = FakeAgentIO(["hello", None])
     command_manager = SimpleNamespace(try_handle_slash=AsyncMock(return_value=None))
@@ -129,7 +152,7 @@ async def test_chat_driver_cancels_current_interaction_and_keeps_serving():
     assert await driver.cancel_current_interaction()
     await serve_task
 
-    assert "\n[Step cancelled]\n" in agent_ep.events
+    assert sum(isinstance(event, StepDoneEvent) for event in agent_ep.events) == 1
     assert not await driver.cancel_current_interaction()
 
 

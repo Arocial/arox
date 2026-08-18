@@ -30,6 +30,7 @@ from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
 )
+from arox.core.session import ErrorEvent
 
 logger = logging.getLogger(__name__)
 
@@ -178,8 +179,6 @@ class TextIOAdapter(AbstractIOAdapter):
             )
         elif isinstance(event, ChatInputRequest):
             user_input: str | None = None
-            if event.pending_exception is not None:
-                print(f"⚠️ An error occurred: {event.pending_exception}")
             if event.request_normal_input:
                 input_generator = self._user_input_for(
                     adapter_ep, self.agent_io_for(adapter_ep)
@@ -195,6 +194,8 @@ class TextIOAdapter(AbstractIOAdapter):
                     input_content=user_input,
                 )
             )
+        elif isinstance(event, ErrorEvent):
+            print(f"⚠️ An error occurred: {event.error}")
         else:
             logger.debug(f"\nUnknown event type: {event.__class__.__name__}\n")
 

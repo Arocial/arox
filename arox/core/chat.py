@@ -6,7 +6,7 @@ from pydantic_ai import AgentRunResult
 
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.io import ReplyEvent, RequestEvent
-from arox.core.runner import ServeRunner
+from arox.core.runner import ServeRunner, cancel_task
 from arox.core.types import UserInput
 
 logger = logging.getLogger(__name__)
@@ -19,7 +19,6 @@ class StepDoneEvent:
 @dataclass
 class ChatInputRequest(RequestEvent):
     request_normal_input: bool = True
-    pending_exception: BaseException | None = None
 
 
 @dataclass
@@ -36,14 +35,8 @@ class ChatServeDriver:
         """Serve the runtime with an optional input generator."""
         runtime = runner.runtime
         assert runtime is not None
-        pending_exception: BaseException | None = None
-
         while True:
             input_request = ChatInputRequest()
-
-            if pending_exception:
-                input_request.pending_exception = pending_exception
-                pending_exception = None
 
             reply: ChatInputReply = await runtime.agent_ep.send(input_request)
 
@@ -61,29 +54,21 @@ class ChatServeDriver:
                     continue
 
             try:
-                result = await self._run_interaction(runtime, reply)
-
-                if result and isinstance(result.output, BaseException):
-                    error = result.output
-                    logger.error("An error occurred.", exc_info=error)
-                    pending_exception = error
+                await self._run_interaction(runtime, reply)
 
             except asyncio.CancelledError:
                 current_task = asyncio.current_task()
                 if current_task is not None and current_task.cancelling():
                     raise
-                logger.info("Step cancelled.")
-                await runtime.agent_ep.send("\n[Step cancelled]\n")
+                else:
+                    logger.info("Step cancelled.")
+            except Exception as error:
+                logger.error("An error occurred.", exc_info=error)
 
             await runtime.agent_ep.send(StepDoneEvent())
 
     async def cancel_current_interaction(self) -> bool:
-        task = self._interaction_task
-        if task is None or task.done():
-            return False
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        return True
+        return await cancel_task(self._interaction_task)
 
     async def _run_interaction(
         self,

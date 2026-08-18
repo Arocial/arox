@@ -12,7 +12,7 @@ from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.app import app_setup
 from arox.core.io import AgentIOEndpoint
-from arox.core.session import AgentSession, FileSessionStore, SessionManager
+from arox.core.session import AgentSession, ErrorEvent, FileSessionStore, SessionManager
 from arox.core.types import USER_INPUT_ID_KEY, UserInput, UserMessageEvent
 from arox.ui.vercel_ai import (
     CreateSessionRequest,
@@ -20,6 +20,19 @@ from arox.ui.vercel_ai import (
     VercelStreamServer,
     build_state_history,
 )
+
+
+@pytest.mark.asyncio
+async def test_error_event_becomes_error_message():
+    adapter = VercelStreamIOAdapter()
+
+    frames = await adapter._to_ui_messages(
+        ErrorEvent(error="ValueError: bad response"),
+        AgentSession(path=["root"], agent_name="coder"),
+        VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
+    )
+
+    assert frames == [{"type": "error", "errorText": "ValueError: bad response"}]
 
 
 @pytest.mark.asyncio

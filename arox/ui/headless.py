@@ -6,6 +6,7 @@ from pydantic_ai import AgentRunResultEvent
 
 from arox.core.chat import ChatInputReply, ChatInputRequest
 from arox.core.io import AbstractIOAdapter, IOEndpoint
+from arox.core.session import ErrorEvent
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +37,11 @@ class HeadlessIOAdapter(AbstractIOAdapter):
                 sys.stdout.flush()
             return
 
+        if isinstance(event, ErrorEvent):
+            self.error = RuntimeError(event.error)
+            return
+
         if isinstance(event, ChatInputRequest):
-            if event.pending_exception is not None:
-                self.error = event.pending_exception
             user_input = None if self._consumed else self.prompt
             self._consumed = True
             await adapter_ep.send(

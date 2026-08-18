@@ -20,6 +20,7 @@ from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
 )
+from arox.core.session import ErrorEvent
 
 logger = logging.getLogger(__name__)
 
@@ -79,10 +80,6 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
                 logger.error("input_queue is not initialized")
                 return
             user_input: str | None = None
-            if event.pending_exception is not None:
-                await self.send_message(
-                    f"⚠️ An error occurred: {event.pending_exception}"
-                )
             if event.request_normal_input:
                 while True:
                     line = await self.input_queue.get()
@@ -94,3 +91,5 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
                     input_content=user_input,
                 )
             )
+        elif isinstance(event, ErrorEvent):
+            await self.send_message(f"⚠️ An error occurred: {event.error}")

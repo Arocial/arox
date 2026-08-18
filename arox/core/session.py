@@ -286,13 +286,17 @@ class AgentSession(Session):
             last_user_messages.append(text)
         self.metadata["last_user_messages"] = last_user_messages[-2:]
 
+    @staticmethod
+    def format_error(error: BaseException | str) -> str:
+        if isinstance(error, asyncio.CancelledError):
+            return "Task interrupted."
+        if isinstance(error, str):
+            return error
+        return f"{type(error).__name__}: {error!s}"
+
     def record_error_event(self, error: BaseException | str) -> str:
         """Record an error event without changing task scheduling state."""
-        err_msg = (
-            str(error)
-            if isinstance(error, str)
-            else f"{type(error).__name__}: {error!s}"
-        )
+        err_msg = self.format_error(error)
         self.add_event(ErrorEvent(error=err_msg, agent_name=self.agent_name))
         return err_msg
 

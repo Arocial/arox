@@ -58,7 +58,7 @@ class _FakeDynamicAgent(AgentRuntime):
         self.received_tasks.append(task)
         self.started.set()
         if task.startswith("return error"):
-            return SimpleNamespace(output=RuntimeError("model failed"))
+            raise RuntimeError("model failed")
         if task.startswith("fail"):
             raise RuntimeError("task failed")
         if task.startswith("block"):
@@ -392,7 +392,7 @@ async def test_wait_reports_runner_exception(agent_factory):
 
 
 @pytest.mark.asyncio
-async def test_wait_reports_error_output(agent_factory):
+async def test_wait_reports_inference_exception(agent_factory):
     create_agent, _store = agent_factory
     main_agent = create_agent()
     plugin = _advanced_plugin(main_agent)

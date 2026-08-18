@@ -47,6 +47,7 @@ from arox.core.plugin import CommandManager, load_plugins
 from arox.core.session import (
     AgentRunInfo,
     AgentSession,
+    ErrorEvent,
 )
 from arox.core.slot import (
     BaseSlot,
@@ -101,7 +102,6 @@ class AgentRuntime:
 
         self.command_manager = CommandManager(self)
 
-        self.result = None
         self.builtin_hooks = Hooks[AgentDeps]()
         self.builtin_hooks.on.before_run(self._before_run)
         self.builtin_hooks.on.before_model_request(self._before_model_request)
@@ -263,9 +263,7 @@ class AgentRuntime:
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         try:
-            if exc_type is asyncio.CancelledError:
-                self.session.record_error_event("Task interrupted.")
-            elif exc_val is not None:
+            if exc_val is not None:
                 self.session.record_error_event(exc_val)
         finally:
             await self._stack.aclose()
@@ -516,37 +514,54 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 
         Stateless w.r.t. the runtime's own message history/session: the
         caller passes the already-composed ``user_prompt`` and message_history
-        in and decides what to do with the result. If an exception occurs, it is
-        captured in the returned AgentRunResult's metadata under the "exception" key.
+        in and decides what to do with the result. Pydantic AI run errors are
+        temporarily represented as results by ``_on_run_error`` so model
+        fallbacks can be attempted, then re-raised at this boundary.
         """
         primary_ref = self.model_ref
+        current_prompt = user_prompt
+        current_history = message_history
         try:
-            for model_ref in [primary_ref, *self.fallback_model_refs]:
-                if model_ref != self.model_ref:
-                    self.set_model(model_ref)
-                    await self.agent_ep.send(
-                        f"Primary model failed, falling back to {self.provider_model}"
+            while True:
+                if self.model_ref != primary_ref:
+                    self.set_model(primary_ref)
+
+                for model_ref in [primary_ref, *self.fallback_model_refs]:
+                    if model_ref != self.model_ref:
+                        self.set_model(model_ref)
+                        await self.agent_ep.send(
+                            "Primary model failed, "
+                            f"falling back to {self.provider_model}"
+                        )
+
+                    self.run_info.run_id = str(uuid.uuid4())
+                    result = await self._pydantic_agent.run(
+                        current_prompt,
+                        model=self.model,
+                        event_stream_handler=self.handle_event,
+                        model_settings=ModelSettings(**self.model_params),
+                        message_history=current_history,
+                        usage_limits=UsageLimits(request_limit=self.request_limit),
+                        deps=AgentDeps(agent_ep=self.agent_ep, runtime=self),
                     )
 
-                self.run_info.run_id = str(uuid.uuid4())
-                result = await self._pydantic_agent.run(
-                    user_prompt,
-                    model=self.model,
-                    event_stream_handler=self.handle_event,
-                    model_settings=ModelSettings(**self.model_params),
-                    message_history=message_history,
-                    usage_limits=UsageLimits(request_limit=self.request_limit),
-                    deps=AgentDeps(agent_ep=self.agent_ep, runtime=self),
-                )
+                    if isinstance(result.output, ModelAPIError):
+                        logger.warning(
+                            "Model %s failed (%s), trying next fallback",
+                            self.provider_model,
+                            result.output,
+                        )
+                    else:
+                        break
 
-                if isinstance(result.output, ModelAPIError):
-                    logger.warning(
-                        "Model %s failed (%s), trying next fallback",
-                        self.provider_model,
-                        result.output,
-                    )
-                else:
+                if not (
+                    isinstance(result.output, UsageLimitExceeded)
+                    and self.request_limit_prompt
+                ):
                     break
+                logger.info("Continuing agent run after soft usage limit.")
+                current_prompt = self.request_limit_prompt
+                current_history = result.all_messages()
         finally:
             if self.model_ref != primary_ref:
                 self.set_model(primary_ref)
@@ -566,44 +581,38 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         if user_input.input_content is not None:
             await self.agent_ep.send(UserMessageEvent(user_input=user_input))
 
-        try:
-            input_content = user_input.input_content
+        input_content = user_input.input_content
 
-            if user_input.input_content is not None:
-                self.session.record_user_input(user_input)
-                if user_input.client_message_id:
-                    await self.agent_ep.send(
-                        ServerIdMapping(
-                            server_message_id=user_input.server_message_id,
-                            client_message_id=user_input.client_message_id,
-                        )
+        if user_input.input_content is not None:
+            self.session.record_user_input(user_input)
+            if user_input.client_message_id:
+                await self.agent_ep.send(
+                    ServerIdMapping(
+                        server_message_id=user_input.server_message_id,
+                        client_message_id=user_input.client_message_id,
                     )
-
-            self.reload_config()
-            while True:
-                result = await self._run_inference(
-                    input_content,
-                    message_history=self.message_history,
                 )
-                self.session.record_step(result.all_messages())
 
-                if not (
-                    isinstance(result.output, UsageLimitExceeded)
-                    and self.request_limit_prompt
-                ):
-                    break
-                logger.info("Continuing agent run after soft usage limit.")
-                input_content = self.request_limit_prompt
+        self.reload_config()
+        result = await self._run_inference(
+            input_content,
+            message_history=self.message_history,
+        )
 
-            self.result = result
-            if isinstance(result.output, BaseException):
-                self.session.record_error_event(result.output)
+        self.session.record_step(result.all_messages())
+        self.agent_ep.snapshot(self.session.build_io_snapshot())
+        if isinstance(result.output, asyncio.CancelledError):
+            await self.agent_ep.send(AgentSession.format_error(result.output))
+            raise result.output
+        if isinstance(result.output, BaseException):
+            self.session.record_error_event(result.output)
+            await self.agent_ep.send(
+                ErrorEvent(
+                    error=AgentSession.format_error(result.output),
+                    agent_name=self.name,
+                )
+            )
+            raise result.output
+        else:
             await self.agent_ep.send(AgentRunResultEvent(result))
-            self.agent_ep.snapshot(self.session.build_io_snapshot())
-            return result
-        except asyncio.CancelledError:
-            self.session.record_error_event("Task interrupted.")
-            raise
-        except Exception as exc:
-            self.session.record_error_event(exc)
-            raise
+        return result

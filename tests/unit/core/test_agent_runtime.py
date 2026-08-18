@@ -5,7 +5,6 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic_ai.messages import (
-    ModelRequest,
     TextContent,
     ToolCallPart,
     ToolReturnPart,
@@ -343,7 +342,6 @@ request_limit_prompt = "Check your progress and continue."
             result = await runtime.run_turn("start")
 
     assert result.output == "done"
-    assert runtime.result is result
     assert len(requests) == 2
     assert tool_executions == 1
     parts = [part for message in result.all_messages() for part in message.parts]
@@ -359,7 +357,9 @@ request_limit_prompt = "Check your progress and continue."
 
 
 @pytest.mark.asyncio
-async def test_error_result_updates_io_snapshot(tmp_path, monkeypatch):
+async def test_inference_error_is_raised_without_updating_io_snapshot(
+    tmp_path, monkeypatch
+):
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
     config_file = tmp_path / ".arox" / "config.toml"
     config_file.parent.mkdir(parents=True, exist_ok=True)
@@ -373,18 +373,15 @@ system_prompt = "Hi."
         io_adapter=_StubIOAdapter(),
         session=AgentSession(path=["error-snapshot"], agent_name="test_agent"),
     )
-    committed_messages = [
-        ModelRequest(parts=[UserPromptPart(content="committed before failure")])
-    ]
     error_result = SimpleNamespace(
         output=RuntimeError("model failed"),
-        all_messages=lambda: committed_messages,
+        all_messages=lambda: [],
     )
 
-    async def fail_inference(*args, **kwargs):
+    async def fail_agent_run(*args, **kwargs):
         return error_result
 
-    runtime._run_inference = fail_inference  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+    monkeypatch.setattr(runtime._pydantic_agent, "run", fail_agent_run)
     sent_events = []
     original_send = runtime.agent_ep.send
 
@@ -395,15 +392,56 @@ system_prompt = "Hi."
     monkeypatch.setattr(runtime.agent_ep, "send", capture_event)
 
     async with _managed_runtime(runtime, runtime.config_loader, runtime.io_adapter):
-        result = await runtime.run_turn("fail")
+        with pytest.raises(RuntimeError, match="model failed"):
+            await runtime.run_turn("fail")
 
-    assert result is error_result
     user_message = next(
         event for event in sent_events if isinstance(event, UserMessageEvent)
     )
     assert user_message.user_input.text_content == "fail"
-    assert runtime.session.build_io_snapshot() == tuple(committed_messages)
-    assert runtime.agent_ep._snapshot_value == runtime.session.build_io_snapshot()
+    assert runtime.session.build_io_snapshot() == ()
+    assert runtime.agent_ep._snapshot_value == ()
+
+
+@pytest.mark.asyncio
+async def test_inference_cancellation_sends_only_formatted_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text("""
+model_ref = "test"
+[agent.test_agent]
+system_prompt = "Hi."
+""")
+    runtime = AgentRuntime(
+        app_setup(cli_args={"workspace": str(tmp_path)}),
+        io_adapter=_StubIOAdapter(),
+        session=AgentSession(path=["cancelled-inference"], agent_name="test_agent"),
+    )
+    cancelled_result = SimpleNamespace(
+        output=asyncio.CancelledError(),
+        all_messages=lambda: [],
+    )
+
+    async def cancel_agent_run(*args, **kwargs):
+        return cancelled_result
+
+    monkeypatch.setattr(runtime._pydantic_agent, "run", cancel_agent_run)
+    sent_events = []
+    original_send = runtime.agent_ep.send
+
+    async def capture_event(event):
+        sent_events.append(event)
+        return await original_send(event)
+
+    monkeypatch.setattr(runtime.agent_ep, "send", capture_event)
+
+    async with _managed_runtime(runtime, runtime.config_loader, runtime.io_adapter):
+        with pytest.raises(asyncio.CancelledError):
+            await runtime.run_turn("cancel")
+
+    assert sent_events[-1] == "Task interrupted."
+    assert all(event.event_type != "error" for event in runtime.session.events)
 
 
 @pytest.mark.asyncio
@@ -502,11 +540,11 @@ system_prompt = "Hi."
         assert await runner.task is completed_result
 
         async def failed_turn(user_input=None):
-            return SimpleNamespace(output=RuntimeError("model failed"))
+            raise RuntimeError("model failed")
 
         runtime.run_turn = failed_turn  # type: ignore[method-assign]
-        failed_result = await runner.run("failed work")
-        assert isinstance(failed_result.output, RuntimeError)
+        with pytest.raises(RuntimeError, match="model failed"):
+            await runner.run("failed work")
         assert runner.result is None
         assert runner.error == "RuntimeError: model failed"
     runtime.session.runner = None
