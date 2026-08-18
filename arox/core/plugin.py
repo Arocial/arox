@@ -3,12 +3,20 @@ import inspect
 import logging
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from functools import update_wrapper
+from functools import update_wrapper, wraps
 from types import FunctionType
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal, TypedDict
 
-from pydantic_ai import FunctionToolset, ModelMessage, RunContext
+from pydantic_ai import (
+    ApprovalRequired,
+    CallDeferred,
+    FunctionToolset,
+    ModelMessage,
+    ModelRetry,
+    RunContext,
+)
 from pydantic_ai.capabilities import AbstractCapability, ProcessHistory, Toolset
+from pydantic_ai.exceptions import SkipToolExecution, SkipToolValidation
 
 from arox.core.completion import (
     CompletionProvider,
@@ -17,6 +25,27 @@ from arox.core.completion import (
 from arox.core.io import ReplyEvent, RequestEvent
 
 logger = logging.getLogger(__name__)
+
+ToolErrorBehavior = Literal["return", "retry", "raise"]
+_TOOL_ERROR_MESSAGE_LIMIT = 2000
+_TOOL_CONTROL_EXCEPTIONS = (
+    ModelRetry,
+    ApprovalRequired,
+    CallDeferred,
+    SkipToolExecution,
+    SkipToolValidation,
+)
+
+
+class ToolErrorDetails(TypedDict):
+    type: str
+    message: str
+    retryable: bool
+
+
+class ToolErrorResult(TypedDict):
+    ok: Literal[False]
+    error: ToolErrorDetails
 
 
 @dataclass(kw_only=True)
@@ -62,10 +91,12 @@ class _ToolRegistration:
         *,
         sequential: bool,
         enabled: bool | Callable[[Any], bool],
+        on_error: ToolErrorBehavior,
     ) -> None:
         self.func = func
         self.sequential = sequential
         self.enabled = enabled
+        self.on_error = on_error
         update_wrapper(self, func)
 
     def __get__(self, instance: Any, owner: type[Any] | None = None) -> Any:
@@ -82,12 +113,18 @@ def tool(
     *,
     sequential: bool = False,
     enabled: bool | Callable[[Any], bool] = True,
+    on_error: ToolErrorBehavior = "return",
 ):
     """Prepare a plugin method for toolset registration.
 
     ``enabled`` can be a fixed boolean or a predicate receiving the plugin
-    instance, allowing exposure to depend on configured plugin state.
+    instance, allowing exposure to depend on configured plugin state. ``on_error``
+    controls whether ordinary tool exceptions are returned to the model, converted
+    to a model retry, or raised to terminate the current turn.
     """
+
+    if on_error not in ("return", "retry", "raise"):
+        raise ValueError(f"Unsupported tool error behavior: {on_error!r}")
 
     def decorator(func: FunctionType) -> _ToolRegistration:
         if dynamic_context:
@@ -95,9 +132,74 @@ def tool(
 
             context = dynamic_context()
             func.__doc__ = utils.render_template(func.__doc__, **context)
-        return _ToolRegistration(func, sequential=sequential, enabled=enabled)
+        return _ToolRegistration(
+            func,
+            sequential=sequential,
+            enabled=enabled,
+            on_error=on_error,
+        )
 
     return decorator
+
+
+def _tool_error_message(error: Exception) -> str:
+    message = str(error) or type(error).__name__
+    if len(message) > _TOOL_ERROR_MESSAGE_LIMIT:
+        return message[:_TOOL_ERROR_MESSAGE_LIMIT] + "..."
+    return message
+
+
+def _handle_tool_error(
+    tool_name: str,
+    behavior: ToolErrorBehavior,
+    error: Exception,
+) -> ToolErrorResult:
+    logger.exception("Plugin tool %s failed", tool_name)
+    if behavior == "raise":
+        raise error
+
+    message = _tool_error_message(error)
+    if behavior == "retry":
+        raise ModelRetry(message) from error
+
+    return {
+        "ok": False,
+        "error": {
+            "type": type(error).__name__,
+            "message": message,
+            "retryable": False,
+        },
+    }
+
+
+def _wrap_tool_errors(
+    func: Callable[..., Any],
+    behavior: ToolErrorBehavior,
+) -> Callable[..., Any]:
+    tool_name = getattr(func, "__name__", type(func).__name__)
+    if inspect.iscoroutinefunction(func):
+
+        @wraps(func)
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return await func(*args, **kwargs)
+            except _TOOL_CONTROL_EXCEPTIONS:
+                raise
+            except Exception as error:
+                return _handle_tool_error(tool_name, behavior, error)
+
+        return async_wrapper
+
+    @wraps(func)
+    def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return func(*args, **kwargs)
+        except _TOOL_CONTROL_EXCEPTIONS:
+            raise
+        except Exception as error:
+            return _handle_tool_error(tool_name, behavior, error)
+
+    return sync_wrapper
 
 
 class CommandManager:
@@ -284,8 +386,9 @@ class Plugin:
             enabled = registration.enabled
             if not (enabled(self) if callable(enabled) else enabled):
                 continue
+            func = registration.__get__(self, type(self))
             toolset.add_function(
-                registration.__get__(self, type(self)),
+                _wrap_tool_errors(func, registration.on_error),
                 sequential=registration.sequential,
             )
         return toolset if toolset.tools else None

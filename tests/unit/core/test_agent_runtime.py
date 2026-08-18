@@ -18,6 +18,7 @@ from pydantic_ai.usage import RunUsage
 from arox.core.agent_runtime import AgentDeps, AgentRuntime
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter, RequestEvent
+from arox.core.plugin import Plugin, tool
 from arox.core.runner import TaskRunner
 from arox.core.session import AgentSession
 from arox.core.types import UserMessageEvent
@@ -27,6 +28,12 @@ from arox.plugins.core import SetModelEvent
 class _StubIOAdapter(AbstractIOAdapter):
     async def handle_event(self, adapter_ep, event):
         pass
+
+
+class _FailingToolPlugin(Plugin):
+    @tool()
+    def fail(self) -> None:
+        raise RuntimeError("expected failure")
 
 
 @pytest.mark.asyncio
@@ -386,6 +393,59 @@ request_limit_prompt = "Check your progress and continue."
     assert isinstance(user_prompts[0][0], TextContent)
     assert user_prompts[0][0].content == "start"
     assert user_prompts[1] == "Check your progress and continue."
+
+
+@pytest.mark.asyncio
+async def test_plugin_tool_error_is_returned_without_ending_turn(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    monkeypatch.setattr(
+        "arox.utils.import_class", lambda *_args, **_kwargs: _FailingToolPlugin
+    )
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text("""
+model_ref = "test"
+[agent.test_agent]
+system_prompt = "Hi."
+plugins = ["failing"]
+""")
+    config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
+    runtime = AgentRuntime(
+        config_loader,
+        io_adapter=_StubIOAdapter(),
+        session=AgentSession(path=["tool-error"], agent_name="test_agent"),
+    )
+    requests = []
+
+    async def stream_function(messages, info):
+        requests.append(messages)
+        if len(requests) == 1:
+            yield {0: DeltaToolCall(name="fail", json_args="{}")}
+        else:
+            yield "recovered"
+
+    async with _managed_runtime(runtime, config_loader, runtime.io_adapter):
+        with runtime._pydantic_agent.override(
+            model=FunctionModel(stream_function=stream_function)
+        ):
+            result = await runtime.run_turn("start")
+
+    assert result.output == "recovered"
+    assert len(requests) == 2
+    tool_return = next(
+        part
+        for message in result.all_messages()
+        for part in message.parts
+        if isinstance(part, ToolReturnPart)
+    )
+    assert tool_return.content == {
+        "ok": False,
+        "error": {
+            "type": "RuntimeError",
+            "message": "expected failure",
+            "retryable": False,
+        },
+    }
 
 
 @pytest.mark.asyncio
