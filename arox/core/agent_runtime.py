@@ -491,6 +491,10 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
     ) -> AgentRunResult[Any]:
         from pydantic_ai._agent_graph import GraphAgentState
 
+        logger.error(
+            "Agent run failed.",
+            exc_info=(type(error), error, error.__traceback__),
+        )
         state = GraphAgentState(
             message_history=self.message_history_fallback,
             usage=ctx.usage,

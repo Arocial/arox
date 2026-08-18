@@ -2,8 +2,10 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
+from pydantic_ai import RunContext
 from pydantic_ai.messages import (
     TextContent,
     ToolCallPart,
@@ -11,8 +13,9 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
+from pydantic_ai.usage import RunUsage
 
-from arox.core.agent_runtime import AgentRuntime
+from arox.core.agent_runtime import AgentDeps, AgentRuntime
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter, RequestEvent
 from arox.core.runner import TaskRunner
@@ -24,6 +27,35 @@ from arox.plugins.core import SetModelEvent
 class _StubIOAdapter(AbstractIOAdapter):
     async def handle_event(self, adapter_ep, event):
         pass
+
+
+@pytest.mark.asyncio
+async def test_run_error_logs_exception_traceback(caplog):
+    runtime = cast(
+        AgentRuntime,
+        SimpleNamespace(message_history_fallback=[], new_message_index=0),
+    )
+    ctx = cast(
+        RunContext[AgentDeps],
+        SimpleNamespace(
+            usage=RunUsage(),
+            run_id="run-id",
+            conversation_id="conversation-id",
+            metadata=None,
+        ),
+    )
+
+    try:
+        raise RuntimeError("model failed")
+    except RuntimeError as error:
+        raised_error = error
+        with caplog.at_level("ERROR", logger="arox.core.agent_runtime"):
+            result = await AgentRuntime._on_run_error(runtime, ctx, error=error)
+
+    assert result.output is raised_error
+    assert "Agent run failed." in caplog.text
+    assert "RuntimeError: model failed" in caplog.text
+    assert "test_run_error_logs_exception_traceback" in caplog.text
 
 
 @asynccontextmanager
