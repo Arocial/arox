@@ -18,8 +18,27 @@ from arox.ui.vercel_ai import (
     CreateSessionRequest,
     VercelStreamIOAdapter,
     VercelStreamServer,
+    _log_ws_payload,
     build_state_history,
 )
+
+
+def test_websocket_debug_log_is_structured_and_compact(caplog):
+    with caplog.at_level("DEBUG", logger="arox.ui.vercel_ai"):
+        _log_ws_payload("IN", "session-1", {"type": "message", "text": "你好"})
+
+    assert (
+        "WS IN session_id=session-1 type=message size=30 "
+        'payload={"type":"message","text":"你好"}' in caplog.text
+    )
+
+
+def test_websocket_debug_log_truncates_large_payload(caplog):
+    with caplog.at_level("DEBUG", logger="arox.ui.vercel_ai"):
+        _log_ws_payload("OUT", "session-1", {"type": "data", "text": "x" * 1100})
+
+    assert "WS OUT session_id=session-1 type=data size=1125" in caplog.text
+    assert "<truncated 101 chars>" in caplog.text
 
 
 @pytest.mark.asyncio

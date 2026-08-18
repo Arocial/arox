@@ -8,7 +8,7 @@ import os
 import secrets
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, override
+from typing import TYPE_CHECKING, Literal, cast, override
 from urllib.parse import parse_qs
 from weakref import WeakValueDictionary
 
@@ -111,6 +111,40 @@ class TokenAuthASGIMiddleware:
 
 
 logger = logging.getLogger(__name__)
+_WS_LOG_PAYLOAD_LIMIT = 1024
+
+
+def _log_ws_payload(
+    direction: Literal["IN", "OUT"], session_id: str, payload: object
+) -> None:
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+
+    serialized = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        default=str,
+    )
+    size = len(serialized)
+    if size > _WS_LOG_PAYLOAD_LIMIT:
+        omitted = size - _WS_LOG_PAYLOAD_LIMIT
+        serialized = (
+            serialized[:_WS_LOG_PAYLOAD_LIMIT] + f"... <truncated {omitted} chars>"
+        )
+    message_type = (
+        cast(dict[str, object], payload).get("type")
+        if isinstance(payload, dict)
+        else None
+    )
+    logger.debug(
+        "WS %s session_id=%s type=%s size=%d payload=%s",
+        direction,
+        session_id,
+        message_type,
+        size,
+        serialized,
+    )
 
 
 def build_state_history(messages: Sequence[ModelMessage]) -> list[dict]:
@@ -233,7 +267,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         self._connections: dict[str, _SessionConnection] = {}
         self._event_contexts: dict[
             IOEndpoint,
-            tuple[WebSocket, AgentSession, VercelAIEventStream, str | None],
+            tuple[WebSocket, AgentSession, VercelAIEventStream, str | None, str],
         ] = {}
         self._connection_locks: WeakValueDictionary[str, asyncio.Lock] = (
             WeakValueDictionary()
@@ -272,6 +306,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             connection.root_session,
             connection.stream,
             connection.model,
+            connection.target_session.id,
         )
 
     async def _detach_runtime(
@@ -288,7 +323,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         context = self._event_contexts.get(adapter_ep)
         if context is None:
             return
-        websocket, root_session, stream, model = context
+        websocket, root_session, stream, model, session_id = context
         if isinstance(event, SnapshotEvent):
             messages = event.snapshot
             visible_messages = [
@@ -300,21 +335,25 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     and msg.metadata.get("arox_internal")
                 )
             ]
-            await websocket.send_json(
+            await self._send_ws_json(
+                websocket,
                 {
                     "type": "state",
                     "history": build_state_history(visible_messages),
                     "model": model,
-                }
+                },
+                session_id,
             )
             return
 
         for msg in await self._to_ui_messages(event, root_session, stream):
-            msg_str = str(msg)
-            if len(msg_str) > 1024:
-                msg_str = msg_str[:1024] + "... (truncated)"
-            logger.info(f"WS OUT: {msg_str}")
-            await websocket.send_json(msg)
+            await self._send_ws_json(websocket, msg, session_id)
+
+    async def _send_ws_json(
+        self, websocket: WebSocket, payload: dict, session_id: str
+    ) -> None:
+        _log_ws_payload("OUT", session_id, payload)
+        await websocket.send_json(payload)
 
     @override
     async def on_endpoint_closed(self, adapter_ep: IOEndpoint) -> None:
@@ -489,14 +528,16 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             if runtime is not None:
                 await self._attach_runtime(connection, runtime)
             else:
-                await websocket.send_json(
+                await self._send_ws_json(
+                    websocket,
                     {
                         "type": "state",
                         "history": build_state_history(
                             target_session.build_io_snapshot()
                         ),
                         "model": model,
-                    }
+                    },
+                    session_id,
                 )
         if previous_task is not None:
             await asyncio.gather(previous_task, return_exceptions=True)
@@ -504,10 +545,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         async def pump_in():
             while True:
                 payload = await websocket.receive_json()
-                payload_str = str(payload)
-                if len(payload_str) > 1024:
-                    payload_str = payload_str[:1024] + "... (truncated)"
-                logger.info(f"WS IN: {payload_str}")
+                _log_ws_payload("IN", session_id, payload)
 
                 async with connection_lock:
                     current = self._connections.get(session_id)
@@ -526,7 +564,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                             ack = await self._apply_input(
                                 current_runtime, adapter_ep, payload
                             )
-                await websocket.send_json({"type": "ack", **ack})
+                await self._send_ws_json(websocket, {"type": "ack", **ack}, session_id)
 
         in_task = asyncio.create_task(pump_in())
         try:
