@@ -11,7 +11,7 @@ os.environ["FASTMCP_LOG_ENABLED"] = "false"
 
 from arox.apps.chat.driver import ChatServeDriver
 from arox.core.app import app_setup
-from arox.core.runner import ServeRunner
+from arox.core.runner import ServeRunner, TaskRunner
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +118,7 @@ def main(profile: str | None = None):
                     file=sys.stderr,
                 )
                 sys.exit(2)
-            io_adapter = HeadlessIOAdapter(prompt=prompt)
+            io_adapter = HeadlessIOAdapter()
         else:
             raise ValueError(f"Unknown UI: {args.ui}")
 
@@ -143,6 +143,12 @@ def main(profile: str | None = None):
 
             # Stop all session runtimes before closing their shared IO adapter.
             async with io_adapter, session_manager:
+                if args.ui == "headless":
+                    runner = TaskRunner(session, config_loader, io_adapter)
+                    async with runner:
+                        await runner.run(prompt)
+                    return
+
                 runner = ServeRunner(
                     session, config_loader, io_adapter, ChatServeDriver()
                 )
@@ -152,9 +158,7 @@ def main(profile: str | None = None):
                             from arox.apps.chat.interrupt import SignalInterruptHandler
 
                             await interrupt_stack.enter_async_context(
-                                SignalInterruptHandler(
-                                    runner.cancel_current_interaction
-                                )
+                                SignalInterruptHandler(runner.cancel_current_execution)
                             )
 
                         main_agent = runner.runtime
@@ -171,9 +175,10 @@ def main(profile: str | None = None):
             assert isinstance(io_adapter, HeadlessIOAdapter)
             try:
                 asyncio.run(run_all())
-            except Exception:
+            except Exception as error:
                 logger.exception("Headless run failed")
-                sys.exit(1)
+                if io_adapter.error is None:
+                    io_adapter.error = error
             if io_adapter.error is not None:
                 print(f"Headless run failed: {io_adapter.error}", file=sys.stderr)
                 sys.exit(1)

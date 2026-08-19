@@ -15,7 +15,7 @@ from pydantic_ai import (
     ThinkingPartDelta,
 )
 
-from arox.apps.chat.events import ChatInputReply, ChatInputRequest
+from arox.apps.chat.driver import ChatInputReply, ChatInputRequest
 from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
@@ -80,11 +80,10 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
                 logger.error("input_queue is not initialized")
                 return
             user_input: str | None = None
-            if event.request_normal_input:
-                while True:
-                    line = await self.input_queue.get()
-                    user_input = line
-                    break
+            while True:
+                line = await self.input_queue.get()
+                user_input = line
+                break
             await adapter_ep.send(
                 ChatInputReply(
                     req_id=event.req_id,

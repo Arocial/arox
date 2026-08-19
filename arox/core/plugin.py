@@ -73,6 +73,17 @@ class CommandReply(ReplyEvent):
     output: str | None = None
 
 
+CommandDispatchStatus = Literal["handled", "not_command", "unknown", "invalid"]
+
+
+@dataclass(frozen=True)
+class CommandDispatchResult:
+    """Result of recognizing and dispatching an external command representation."""
+
+    status: CommandDispatchStatus
+    reply: CommandReply | None = None
+
+
 @dataclass
 class CommandSpec:
     """Binding between a :class:`CommandEvent` subclass and its handler."""
@@ -270,20 +281,32 @@ class CommandManager:
             logger.exception("Error parsing command /%s", name)
             return None
 
-    async def try_handle_slash(self, line: str) -> CommandReply | None:
-        """Parse and execute ``line`` if it's a slash command.
+    async def dispatch(self, command: str | dict[str, Any]) -> CommandDispatchResult:
+        """Recognize and execute a textual or structured command."""
+        if isinstance(command, str):
+            status, event = await self._resolve_slash(command)
+        else:
+            status, event = self._resolve_serialized(command)
 
-        Returns the :class:`CommandReply` on success, or ``None`` if ``line``
-        is not a slash command or could not be parsed (e.g. unknown command).
-        Shared entry point for chat/control-flow drivers that need to handle
-        slash commands before dispatching normal input to the agent.
-        """
+        if event is None:
+            return CommandDispatchResult(status)
+        return CommandDispatchResult("handled", await self.execute(event))
+
+    async def _resolve_slash(
+        self, line: str
+    ) -> tuple[CommandDispatchStatus, CommandEvent | None]:
         if not line.startswith("/"):
-            return None
+            return "not_command", None
+
+        name = line[1:].split(" ", 1)[0]
+        if name not in self._slash_map:
+            logger.warning("Command not found: /%s", name)
+            return "unknown", None
+
         event = await self.parse_slash_command(line)
         if event is None:
-            return None
-        return await self.execute(event)
+            return "invalid", None
+        return "handled", event
 
     def deserialize_event(self, payload: dict[str, Any]) -> CommandEvent | None:
         """Reconstruct a :class:`CommandEvent` from a ``{"type", ...}`` dict."""
@@ -302,6 +325,21 @@ class CommandManager:
                     return None
         logger.warning("Unknown CommandEvent type %s", type_name)
         return None
+
+    def _resolve_serialized(
+        self, payload: dict[str, Any]
+    ) -> tuple[CommandDispatchStatus, CommandEvent | None]:
+        type_name = payload.get("type")
+        if not type_name:
+            return "invalid", None
+        if not any(evt_cls.__name__ == type_name for evt_cls in self._handlers):
+            logger.warning("Unknown CommandEvent type %s", type_name)
+            return "unknown", None
+
+        event = self.deserialize_event(payload)
+        if event is None:
+            return "invalid", None
+        return "handled", event
 
     async def execute(self, event: CommandEvent) -> CommandReply:
         """Run the handler for ``event`` and return a :class:`CommandReply`."""

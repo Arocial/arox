@@ -10,15 +10,10 @@ from prompt_toolkit.output import DummyOutput
 from pydantic_ai import ToolCallPart
 from pydantic_ai.models.test import TestModel
 
-from arox.apps.chat.driver import ChatServeDriver
-from arox.apps.chat.events import (
-    ChatInputReply,
-    ChatInputRequest,
-    StepDoneEvent,
-)
+from arox.apps.chat.driver import ChatInputReply, ChatInputRequest, ChatServeDriver
 from arox.apps.chat.io_adapters.text import CommandCompleter, TextIOAdapter
 from arox.core.app import app_setup
-from arox.core.plugin import CommandReply
+from arox.core.plugin import CommandDispatchResult, CommandReply
 from arox.core.runner import ServeRunner
 from arox.core.session import AgentSession
 
@@ -47,7 +42,11 @@ class FakeAgentIO:
 async def test_chat_driver_handles_slash_commands_before_starting_turn():
     agent_ep = FakeAgentIO(["/info", None])
     command_manager = SimpleNamespace(
-        try_handle_slash=AsyncMock(return_value=CommandReply(req_id="", output="info"))
+        dispatch=AsyncMock(
+            return_value=CommandDispatchResult(
+                "handled", CommandReply(req_id="", output="info")
+            )
+        )
     )
     run_turn = AsyncMock()
     runtime = SimpleNamespace(
@@ -66,7 +65,7 @@ async def test_chat_driver_handles_slash_commands_before_starting_turn():
 
     await ChatServeDriver().run(runner)
 
-    command_manager.try_handle_slash.assert_awaited_once_with("/info")
+    command_manager.dispatch.assert_awaited_once_with("/info")
     run_turn.assert_not_awaited()
     requests = [
         event for event in agent_ep.events if isinstance(event, ChatInputRequest)
@@ -76,9 +75,11 @@ async def test_chat_driver_handles_slash_commands_before_starting_turn():
 
 
 @pytest.mark.asyncio
-async def test_chat_driver_sends_unknown_slash_commands_to_the_agent():
+async def test_chat_driver_reports_unknown_slash_commands_without_starting_turn():
     agent_ep = FakeAgentIO(["/unknown", None])
-    command_manager = SimpleNamespace(try_handle_slash=AsyncMock(return_value=None))
+    command_manager = SimpleNamespace(
+        dispatch=AsyncMock(return_value=CommandDispatchResult("unknown"))
+    )
     run_turn = AsyncMock(return_value=SimpleNamespace(output="done"))
     runtime = SimpleNamespace(
         agent_ep=agent_ep,
@@ -96,12 +97,9 @@ async def test_chat_driver_sends_unknown_slash_commands_to_the_agent():
 
     await ChatServeDriver().run(runner)
 
-    command_manager.try_handle_slash.assert_awaited_once_with("/unknown")
-    run_turn.assert_awaited_once()
-    await_args = run_turn.await_args
-    assert await_args is not None
-    reply = await_args.args[0]
-    assert reply.text_content == "/unknown"
+    command_manager.dispatch.assert_awaited_once_with("/unknown")
+    run_turn.assert_not_awaited()
+    assert "Unknown command." in agent_ep.events
 
 
 @pytest.mark.asyncio
@@ -110,7 +108,7 @@ async def test_chat_driver_keeps_serving_after_interaction_exception():
     error = ValueError("bad response")
     runtime = SimpleNamespace(
         agent_ep=agent_ep,
-        command_manager=SimpleNamespace(try_handle_slash=AsyncMock(return_value=None)),
+        command_manager=SimpleNamespace(dispatch=AsyncMock()),
         run_turn=AsyncMock(side_effect=error),
         session=SimpleNamespace(id="chat", agent_name="coder"),
     )
@@ -118,14 +116,13 @@ async def test_chat_driver_keeps_serving_after_interaction_exception():
 
     await ChatServeDriver().run(runner)
 
-    assert sum(isinstance(event, StepDoneEvent) for event in agent_ep.events) == 1
     assert sum(isinstance(event, ChatInputRequest) for event in agent_ep.events) == 2
 
 
 @pytest.mark.asyncio
 async def test_chat_driver_cancels_current_interaction_and_keeps_serving():
     agent_ep = FakeAgentIO(["hello", None])
-    command_manager = SimpleNamespace(try_handle_slash=AsyncMock(return_value=None))
+    command_manager = SimpleNamespace(dispatch=AsyncMock())
     started = asyncio.Event()
 
     async def blocking_turn(user_input):
@@ -149,11 +146,10 @@ async def test_chat_driver_cancels_current_interaction_and_keeps_serving():
     serve_task = asyncio.create_task(driver.run(runner))
 
     await started.wait()
-    assert await driver.cancel_current_interaction()
+    assert await driver.cancel_current_execution()
     await serve_task
 
-    assert sum(isinstance(event, StepDoneEvent) for event in agent_ep.events) == 1
-    assert not await driver.cancel_current_interaction()
+    assert not await driver.cancel_current_execution()
 
 
 @pytest.mark.asyncio

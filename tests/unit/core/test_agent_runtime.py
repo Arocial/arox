@@ -613,9 +613,9 @@ system_prompt = "Hi."
             await asyncio.wait_for(asyncio.shield(task), 0.01)
         assert runner.task is task
 
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        assert await runner.cancel_current_execution()
         assert task.cancelled()
+        assert not await runner.cancel_current_execution()
         assert runner.task is task
         assert runner.result is None
         assert runner.error == "Task interrupted."

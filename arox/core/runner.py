@@ -88,6 +88,10 @@ class SessionRunner:
     async def stop_runtime(self) -> None:
         await self.__aexit__(None, None, None)
 
+    async def cancel_current_execution(self) -> bool:
+        """Cancel the runner's current turn or interaction, if one is active."""
+        return False
+
     async def _stop_execution(self) -> None:
         pass
 
@@ -151,11 +155,14 @@ class TaskRunner(SessionRunner):
     async def _stop_execution(self) -> None:
         await cancel_task(self._task)
 
+    async def cancel_current_execution(self) -> bool:
+        return await cancel_task(self._task)
+
 
 class ServeDriver(Protocol):
     async def run(self, runner: "ServeRunner") -> None: ...
 
-    async def cancel_current_interaction(self) -> bool: ...
+    async def cancel_current_execution(self) -> bool: ...
 
 
 class ServeRunner(SessionRunner):
@@ -200,8 +207,8 @@ class ServeRunner(SessionRunner):
         task.add_done_callback(log_failure)
         return task
 
-    async def cancel_current_interaction(self) -> bool:
-        return await self.driver.cancel_current_interaction()
+    async def cancel_current_execution(self) -> bool:
+        return await self.driver.cancel_current_execution()
 
     async def _stop_execution(self) -> None:
         await cancel_task(self._task)

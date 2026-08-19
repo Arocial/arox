@@ -1,14 +1,46 @@
 import asyncio
 import logging
+from dataclasses import dataclass
+from typing import Any
 
 from pydantic_ai import AgentRunResult
 
-from arox.apps.chat.events import ChatInputReply, ChatInputRequest, StepDoneEvent
 from arox.core.agent_runtime import AgentRuntime
+from arox.core.io import ReplyEvent, RequestEvent
+from arox.core.plugin import CommandDispatchResult
 from arox.core.runner import ServeRunner, cancel_task
 from arox.core.types import UserInput
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ChatInputRequest(RequestEvent):
+    pass
+
+
+@dataclass
+class ChatInputReply(UserInput, ReplyEvent):
+    pass
+
+
+async def dispatch_command(
+    runtime: AgentRuntime, command: str | dict[str, Any]
+) -> CommandDispatchResult:
+    """Dispatch a command and render its outcome through the runtime channel."""
+    result = await runtime.command_manager.dispatch(command)
+    if result.status == "handled":
+        output = result.reply.output if result.reply is not None else None
+    elif result.status == "unknown":
+        output = "Unknown command."
+    elif result.status == "invalid":
+        output = "Invalid command."
+    else:
+        output = None
+
+    if output:
+        await runtime.agent_ep.send(output)
+    return result
 
 
 class ChatServeDriver:
@@ -24,18 +56,13 @@ class ChatServeDriver:
 
             reply: ChatInputReply = await runtime.agent_ep.send(input_request)
 
-            if reply.is_abort(input_request):
+            if reply.input_content is None:
                 break
 
             text_input = reply.text_content
             if text_input and text_input.startswith("/"):
-                command_reply = await runtime.command_manager.try_handle_slash(
-                    text_input
-                )
-                if command_reply is not None:
-                    if command_reply.output:
-                        await runtime.agent_ep.send(command_reply.output)
-                    continue
+                await dispatch_command(runtime, text_input)
+                continue
 
             try:
                 await self._run_interaction(runtime, reply)
@@ -49,9 +76,7 @@ class ChatServeDriver:
             except Exception as error:
                 logger.error("An error occurred.", exc_info=error)
 
-            await runtime.agent_ep.send(StepDoneEvent())
-
-    async def cancel_current_interaction(self) -> bool:
+    async def cancel_current_execution(self) -> bool:
         return await cancel_task(self._interaction_task)
 
     async def _run_interaction(

@@ -1,11 +1,19 @@
 import inspect
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from pydantic_ai import ModelRetry
 
 from arox.core.config import AgentConfig
-from arox.core.plugin import Plugin, _wrap_tool_errors, load_plugins, tool
+from arox.core.plugin import (
+    CommandEvent,
+    CommandManager,
+    Plugin,
+    _wrap_tool_errors,
+    load_plugins,
+    tool,
+)
 
 
 class _ConfiguredPlugin(Plugin):
@@ -40,6 +48,18 @@ class _ToolPlugin(Plugin):
     @tool()
     def model_retry_tool(self) -> None:
         raise ModelRetry("fix the arguments")
+
+
+class _InfoCommand(CommandEvent):
+    slashes = ("info",)
+
+
+class _InvalidSlashCommand(CommandEvent):
+    slashes = ("invalid",)
+
+    @classmethod
+    def from_slash(cls, name: str, arg: str | None) -> None:
+        return None
 
 
 def test_load_plugins_applies_named_plugin_config(monkeypatch):
@@ -146,3 +166,38 @@ def test_tool_control_exceptions_are_not_handled():
 def test_tool_rejects_invalid_error_behavior():
     with pytest.raises(ValueError, match="Unsupported tool error behavior"):
         tool(on_error="invalid")  # ty: ignore[invalid-argument-type]
+
+
+def _command_manager() -> CommandManager:
+    runtime = SimpleNamespace(session=SimpleNamespace(record_command=Mock()))
+    manager = CommandManager(runtime)
+    manager.register(_InfoCommand, lambda event: "info")
+    manager.register(_InvalidSlashCommand, lambda event: "unused")
+    return manager
+
+
+@pytest.mark.asyncio
+async def test_dispatch_reports_explicit_slash_outcomes():
+    manager = _command_manager()
+
+    handled = await manager.dispatch("/info")
+
+    assert handled.status == "handled"
+    assert handled.reply is not None
+    assert handled.reply.output == "info"
+    assert (await manager.dispatch("hello")).status == "not_command"
+    assert (await manager.dispatch("/missing")).status == "unknown"
+    assert (await manager.dispatch("/invalid")).status == "invalid"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_reports_explicit_serialized_outcomes():
+    manager = _command_manager()
+
+    handled = await manager.dispatch({"type": "_InfoCommand"})
+
+    assert handled.status == "handled"
+    assert handled.reply is not None
+    assert handled.reply.output == "info"
+    assert (await manager.dispatch({})).status == "invalid"
+    assert (await manager.dispatch({"type": "MissingCommand"})).status == "unknown"

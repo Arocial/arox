@@ -40,7 +40,7 @@ mode = "advanced"
   - Child sessions are spawned via `parent_session.create_child_session(...)`.
   - Runtime identity matches `session.id` (`runtime.uuid == session.id`).
   - `TaskRunner.run()` starts one turn and returns its retained `asyncio.Task`; the runner updates its latest `result` / `error` as execution completes, while callers await, shield, time out, or cancel the task directly and the runtime remains available for follow-ups.
-  - `ServeRunner.run()` starts and returns the long-lived serve task without closing the runtime when the loop finishes. `ChatServeDriver` owns the current interaction task, and `ServeRunner.cancel_current_interaction()` cancels only that interaction while preserving the serve loop. `stop_runtime()` stops owned execution before closing the runtime.
+  - `ServeRunner.run()` starts and returns the long-lived serve task without closing the runtime when the loop finishes. `ChatServeDriver` owns the current interaction task, and `SessionRunner.cancel_current_execution()` cancels the active turn or interaction while preserving the runner. `stop_runtime()` stops owned execution before closing the runtime.
   - `ChatServeDriver` implements the concrete request/reply protocol used by `ServeRunner`.
 - `SessionManager` coordinates with `SessionStore` (default `FileSessionStore`) and maintains one authoritative in-process Session identity map keyed by full path. Its tree API (`resolve`, `list_roots`, `children_of`, `walk`, `find`, `stop_tree`, `delete_tree`, and `remove_child`) transparently prefers cached/live instances over storage, while manager shutdown stops every live root tree before flushing pending saves.
 - Resuming is done via the `session_id` passed to the App. The `CorePlugin` provides the `/fork` command.

@@ -28,16 +28,16 @@ from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage, UIMessage
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from arox.apps.chat.driver import ChatServeDriver
-from arox.apps.chat.events import (
+from arox.apps.chat.driver import (
     ChatInputReply,
     ChatInputRequest,
-    StepDoneEvent,
+    ChatServeDriver,
+    dispatch_command,
 )
 from arox.core.completion import parse_request
 from arox.core.config import ConfigLoader
 from arox.core.io import AbstractIOAdapter, IOEndpoint, SnapshotEvent
-from arox.core.runner import ServeRunner, TaskRunner
+from arox.core.runner import ServeRunner
 from arox.core.session import AgentSession, ErrorEvent
 from arox.core.types import ServerIdMapping, SessionTreeUpdate, UserMessageEvent
 
@@ -388,7 +388,6 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 {
                     "type": "cmd-input-request",
                     "req_id": event.req_id,
-                    "normal_input": event.request_normal_input,
                 }
             )
             # Emit an explicit stream close signal to let the frontend decouple
@@ -397,9 +396,6 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
         elif isinstance(event, ErrorEvent):
             messages.append({"type": "error", "errorText": event.error})
-
-        elif isinstance(event, StepDoneEvent):
-            messages.append({"type": "step-done"})
 
         elif isinstance(event, ServerIdMapping):
             frame = {
@@ -432,32 +428,21 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
         return messages
 
-    async def _render_command_output(self, target, output: str | None) -> None:
-        """Stream a command's text output through the normal event pipeline."""
-        if not output:
-            return
-        await target.agent_ep.send(output)
-
     async def _apply_input(self, target, adapter_ep: IOEndpoint, payload: dict) -> dict:
         if payload.get("cancel"):
             runner = target.session.runner
-            if isinstance(runner, ServeRunner):
-                await runner.cancel_current_interaction()
-            elif isinstance(runner, TaskRunner):
-                task = runner.task
-                if task is not None and not task.done():
-                    task.cancel()
-                    await asyncio.gather(task, return_exceptions=True)
-            return {"status": "cancelled"}
+            if runner is None:
+                return {"status": "unavailable"}
+            cancelled = await runner.cancel_current_execution()
+            return {"status": "cancelled" if cancelled else "idle"}
 
         cmd = payload.get("command")
         if cmd is not None:
-            event = target.command_manager.deserialize_event(cmd)
-            if event is None:
-                return {"status": "unknown_command"}
-            reply = await target.command_manager.execute(event)
-            await self._render_command_output(target, reply.output)
-            return {"status": "ok", "output": reply.output}
+            result = await dispatch_command(target, cmd)
+            if result.status != "handled":
+                return {"status": result.status}
+            assert result.reply is not None
+            return {"status": "ok", "output": result.reply.output}
 
         reply = payload.get("reply")
         if reply is not None:

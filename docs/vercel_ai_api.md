@@ -84,7 +84,6 @@ Server-specific frames include:
 | `cmd-user-message` | A user message was added to the live stream; an optional top-level `client_message_id` correlates a client-originated message without overloading its UI message ID |
 | `cmd-user-turn` | A user-turn anchor was recorded |
 | `cmd-session-tree` | Updated recursive session view |
-| `step-done` | Current turn was fully drained |
 | `stream-close` | Close the current UI message stream |
 | `ack` | Acknowledges a client payload and reports its status |
 
@@ -95,6 +94,9 @@ Client payloads:
 { "command": { "type": "InfoEvent" } }
 { "reply": { "id": "msg-1", "role": "user", "content": "hello", "metadata": { "custom": { "chatInputEventResult": { "req_id": "request-id" } } } } }
 ```
+
+Cancel acknowledgements report `cancelled`, `idle`, or `unavailable`. Command
+acknowledgements report `ok`, `unknown`, or `invalid`.
 
 The former HTTP `.../state` endpoint is no longer exposed. State bootstrap and
 recovery are part of the WebSocket stream, so clients must start the target

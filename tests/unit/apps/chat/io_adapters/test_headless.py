@@ -4,10 +4,9 @@ from types import SimpleNamespace
 import pytest
 from pydantic_ai.models.test import TestModel
 
-from arox.apps.chat.driver import ChatServeDriver
 from arox.apps.chat.io_adapters.headless import HeadlessIOAdapter
 from arox.core.app import app_setup
-from arox.core.runner import ServeRunner
+from arox.core.runner import TaskRunner
 from arox.core.session import AgentSession
 
 
@@ -26,17 +25,17 @@ system_prompt = "Hi there."
         cli_args={"workspace": str(tmp_path)},
     )
 
-    io_adapter = HeadlessIOAdapter(prompt="say hello")
+    io_adapter = HeadlessIOAdapter()
     session = AgentSession(path=["dummy"], agent_name="dummy_chat")
 
     test_model = TestModel(custom_output_text="hello world")
     async with io_adapter:
-        runner = ServeRunner(session, config_loader, io_adapter, ChatServeDriver())
+        runner = TaskRunner(session, config_loader, io_adapter)
         async with runner:
             runtime = runner.runtime
             assert runtime is not None
             with runtime._pydantic_agent.override(model=test_model):
-                await runner.run()
+                await runner.run("say hello")
 
     captured = capsys.readouterr()
     assert "hello world" in captured.out
@@ -58,7 +57,7 @@ system_prompt = "Hi there."
         cli_args={"workspace": str(tmp_path)},
     )
 
-    io_adapter = HeadlessIOAdapter(prompt="boom")
+    io_adapter = HeadlessIOAdapter()
     session = AgentSession(path=["dummy"], agent_name="dummy_chat")
 
     async def failing_inference(*args, **kwargs):
@@ -68,12 +67,13 @@ system_prompt = "Hi there."
         )
 
     async with io_adapter:
-        runner = ServeRunner(session, config_loader, io_adapter, ChatServeDriver())
+        runner = TaskRunner(session, config_loader, io_adapter)
         async with runner:
             runtime = runner.runtime
             assert runtime is not None
             runtime._run_inference = failing_inference  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
-            await runner.run()
+            with pytest.raises(RuntimeError, match="step blew up"):
+                await runner.run("boom")
 
     assert io_adapter.error is not None
     assert "step blew up" in str(io_adapter.error)

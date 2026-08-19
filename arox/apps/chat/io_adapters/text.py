@@ -21,7 +21,7 @@ from pydantic_ai import (
     ToolCallPartDelta,
 )
 
-from arox.apps.chat.events import (
+from arox.apps.chat.driver import (
     ChatInputReply,
     ChatInputRequest,
 )
@@ -179,15 +179,14 @@ class TextIOAdapter(AbstractIOAdapter):
             )
         elif isinstance(event, ChatInputRequest):
             user_input: str | None = None
-            if event.request_normal_input:
-                input_generator = self._user_input_for(
-                    adapter_ep, self.agent_io_for(adapter_ep)
-                )
-                try:
-                    user_input = await input_generator()
-                except (EOFError, KeyboardInterrupt):
-                    user_input = None
-                    await self._flush_stdin()
+            input_generator = self._user_input_for(
+                adapter_ep, self.agent_io_for(adapter_ep)
+            )
+            try:
+                user_input = await input_generator()
+            except (EOFError, KeyboardInterrupt):
+                user_input = None
+                await self._flush_stdin()
             await adapter_ep.send(
                 ChatInputReply(
                     req_id=event.req_id,

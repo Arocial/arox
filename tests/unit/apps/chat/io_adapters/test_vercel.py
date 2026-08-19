@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import WebSocket, WebSocketDisconnect
@@ -9,6 +10,7 @@ from pydantic_ai.messages import ModelRequest, TextContent, UserPromptPart
 from pydantic_ai.ui.vercel_ai import VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage
 
+from arox.apps.chat.driver import ChatInputRequest
 from arox.apps.chat.io_adapters.vercel_ai import (
     CreateSessionRequest,
     VercelStreamIOAdapter,
@@ -19,6 +21,7 @@ from arox.apps.chat.io_adapters.vercel_ai import (
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.app import app_setup
 from arox.core.io import AgentIOEndpoint
+from arox.core.plugin import CommandDispatchResult
 from arox.core.session import AgentSession, ErrorEvent, FileSessionStore, SessionManager
 from arox.core.types import USER_INPUT_ID_KEY, UserInput, UserMessageEvent
 
@@ -52,6 +55,60 @@ async def test_error_event_becomes_error_message():
     )
 
     assert frames == [{"type": "error", "errorText": "ValueError: bad response"}]
+
+
+@pytest.mark.asyncio
+async def test_chat_input_request_has_no_unused_normal_input_flag():
+    adapter = VercelStreamIOAdapter()
+
+    frames = await adapter._to_ui_messages(
+        ChatInputRequest(),
+        AgentSession(path=["root"], agent_name="coder"),
+        VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
+    )
+
+    assert frames == [
+        {"type": "cmd-input-request", "req_id": frames[0]["req_id"]},
+        {"type": "stream-close"},
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cancelled", "status"), [(True, "cancelled"), (False, "idle")]
+)
+async def test_cancel_uses_runner_execution_api(cancelled, status):
+    adapter = VercelStreamIOAdapter()
+    runner = SimpleNamespace(cancel_current_execution=AsyncMock(return_value=cancelled))
+    target = SimpleNamespace(session=SimpleNamespace(runner=runner))
+
+    result = await adapter._apply_input(
+        target, cast(AgentIOEndpoint, SimpleNamespace()), {"cancel": True}
+    )
+
+    assert result == {"status": status}
+    runner.cancel_current_execution.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_structured_command_uses_shared_dispatch_and_output():
+    adapter = VercelStreamIOAdapter()
+    command_manager = SimpleNamespace(
+        dispatch=AsyncMock(return_value=CommandDispatchResult("unknown"))
+    )
+    target = SimpleNamespace(
+        command_manager=command_manager,
+        agent_ep=SimpleNamespace(send=AsyncMock()),
+    )
+    command = {"type": "MissingCommand"}
+
+    result = await adapter._apply_input(
+        target, cast(AgentIOEndpoint, SimpleNamespace()), {"command": command}
+    )
+
+    assert result == {"status": "unknown"}
+    command_manager.dispatch.assert_awaited_once_with(command)
+    target.agent_ep.send.assert_awaited_once_with("Unknown command.")
 
 
 @pytest.mark.asyncio
