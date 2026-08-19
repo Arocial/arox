@@ -22,6 +22,7 @@ class SubagentPlugin(Plugin):
         self.mode = SubagentMode.SIMPLE
         self.task_sessions: dict[str, AgentSession] = {}
         self._lock = asyncio.Lock()
+        self._stopping = False
 
         def get_subagent_instructions() -> str:
             subagent_names = self.runtime.agent_config.subagents
@@ -78,6 +79,7 @@ class SubagentPlugin(Plugin):
                 self._register_task_session(child_session)
 
     async def on_stop(self) -> None:
+        self._stopping = True
         session_manager = self.runtime.session.manager
         if session_manager is not None:
             await session_manager.stop_descendants(self.runtime.session)
@@ -143,12 +145,37 @@ class SubagentPlugin(Plugin):
                     task_session, self.runtime.config_loader, self.runtime.io_adapter
                 )
                 await runner.start_runtime()
-            return runner.run(message)
+            task = runner.run(message)
+            if self.mode is SubagentMode.ADVANCED:
+                self.runtime.background_tasks.register(task_session.target)
+                task.add_done_callback(
+                    lambda _completed: self._notify_task_finished(task_session, runner)
+                )
+            return task
         except BaseException:
             if runner is not None:
                 await runner.stop_runtime()
             self._unregister_task_session(task_session)
             raise
+
+    def _notify_task_finished(
+        self, task_session: AgentSession, runner: TaskRunner
+    ) -> None:
+        if self._stopping:
+            return
+        if runner.error:
+            status = f"failed ({runner.error})"
+        else:
+            status = "completed"
+        self.runtime.background_tasks.complete(
+            task_session.target,
+            "Background subagent task finished.\n\n"
+            f"Target: {task_session.target}\n"
+            f"Description: {task_session.task_name or task_session.initial_message}\n"
+            f"Status: {status}\n\n"
+            f'Use wait_agent(target="{task_session.target}") to retrieve the '
+            "result before continuing work that depends on it.",
+        )
 
     def _format_task(
         self, task_session: AgentSession, include_result: bool = True
@@ -191,7 +218,12 @@ class SubagentPlugin(Plugin):
         sequential=True,
         enabled=lambda plugin: plugin.mode is SubagentMode.ADVANCED,
     )
-    async def spawn_agent(self, task_name: str, message: str, agent_name: str) -> str:
+    async def spawn_agent(
+        self,
+        task_name: str,
+        message: str,
+        agent_name: str,
+    ) -> str:
         """Start a resumable task using a configured subagent.
 
         `task_name` must be a lowercase identifier used as a readable label and
@@ -199,7 +231,11 @@ class SubagentPlugin(Plugin):
         returned `target` with the task management tools.
         """
         task_session = await self._spawn_task(task_name, message, agent_name)
-        return "Agent spawned.\n" + self._format_task(task_session, False)
+        return (
+            "Agent spawned. You can call wait_agent at any time, and you will "
+            "also be notified when this task finishes.\n"
+            + self._format_task(task_session, False)
+        )
 
     @tool(
         sequential=True,
@@ -224,7 +260,11 @@ class SubagentPlugin(Plugin):
                 )
 
             await self._start_task(task_session, message)
-        return "Follow-up started.\n" + self._format_task(task_session, False)
+        return (
+            "Follow-up started. You can call wait_agent at any time, and you "
+            "will also be notified when this task finishes.\n"
+            + self._format_task(task_session, False)
+        )
 
     @tool(enabled=lambda plugin: plugin.mode is SubagentMode.ADVANCED)
     async def wait_agent(self, target: str, timeout_seconds: float = 600) -> str:
@@ -246,6 +286,7 @@ class SubagentPlugin(Plugin):
             return "Agent is still running.\n" + self._format_task(task_session, False)
 
         await asyncio.gather(runner.task, return_exceptions=True)
+        self.runtime.background_tasks.observe(target)
         outcome = self._format_task(task_session)
         await runner.stop_runtime()
         return outcome
@@ -266,6 +307,7 @@ class SubagentPlugin(Plugin):
                 )
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+            self.runtime.background_tasks.observe(target)
             outcome = self._format_task(task_session)
             await runner.stop_runtime()
         return "Agent interrupted.\n" + outcome

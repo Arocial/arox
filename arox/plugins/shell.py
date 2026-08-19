@@ -286,6 +286,15 @@ class ShellPlugin(Plugin):
                 task.elapsed(),
             )
             if task.notify_on_finish:
+                self.runtime.background_tasks.complete(
+                    task.task_id,
+                    "Background shell task finished.\n\n"
+                    f"Task ID: {task.task_id}\n"
+                    f"Description: {task.description}\n"
+                    f"Exit code: {task.exit_code}\n\n"
+                    f'Use shell_state(task_id="{task.task_id}") to retrieve the '
+                    "final output before continuing work that depends on it.",
+                )
                 try:
                     await self.runtime.agent_ep.send(
                         f"[bg {task.task_id}] task finished "
@@ -519,12 +528,15 @@ class ShellPlugin(Plugin):
             return f"Error creating command output file: {e!s}"
 
         if run_in_background:
+            self.runtime.background_tasks.register(task.task_id)
             await self.runtime.agent_ep.send(
                 f"[bg {task.task_id}] task started: {description}  (pid {process.pid})"
             )
             return (
                 f"Started background task `{task.task_id}` "
                 f"(pid {process.pid}): {description}\n"
+                "You can poll for output at any time, and you will also be "
+                "notified when the command finishes.\n"
                 f"{self._output_notice(task)}\n"
                 f'- Poll output: shell_state(task_id="{task.task_id}")\n'
                 f'- Terminate:   kill_shell(task_id="{task.task_id}")'
@@ -540,6 +552,7 @@ class ShellPlugin(Plugin):
 
         if timed_out:
             task.notify_on_finish = True
+            self.runtime.background_tasks.register(task.task_id)
             rendered = self._render_output(
                 task.head_lines, list(task.tail_lines), task.total_lines
             )
@@ -552,7 +565,9 @@ class ShellPlugin(Plugin):
             parts = [
                 f"Command did not finish within {timeout}s — promoted to "
                 f"background task `{task.task_id}` (still running, elapsed "
-                f"{task.elapsed():.1f}s)."
+                f"{task.elapsed():.1f}s).\n"
+                "You can poll for output at any time, and you will also be "
+                "notified when the command finishes."
             ]
             if rendered.text:
                 parts.append(rendered.text)
@@ -633,6 +648,7 @@ class ShellPlugin(Plugin):
         if task.exit_code is not None:
             status = f"exit {task.exit_code}"
             task.poll_count = 0
+            self.runtime.background_tasks.observe(task_id)
         else:
             status = "running"
 
@@ -698,6 +714,7 @@ class ShellPlugin(Plugin):
             )
         await self._terminate(task.process)
         await self._flush_drain(task)
+        self.runtime.background_tasks.observe(task_id)
         logger.info(
             "Task %s killed: %s (exit %s, elapsed %.1fs)",
             task.task_id,
@@ -714,6 +731,7 @@ class ShellPlugin(Plugin):
         drains = []
         for task_id in list(self._tasks):
             task = self._tasks.pop(task_id)
+            task.notify_on_finish = False
             if task.process.returncode is None:
                 await self._terminate(task.process)
             if task.drain_task and not task.drain_task.done():

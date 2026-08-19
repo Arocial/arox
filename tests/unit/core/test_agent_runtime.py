@@ -7,6 +7,7 @@ from typing import cast
 import pytest
 from pydantic_ai import RunContext
 from pydantic_ai.messages import (
+    ModelRequest,
     TextContent,
     ToolCallPart,
     ToolReturnPart,
@@ -17,6 +18,7 @@ from pydantic_ai.usage import RunUsage
 
 from arox.core.agent_runtime import AgentDeps, AgentRuntime
 from arox.core.app import app_setup
+from arox.core.background import BackgroundTaskBroker
 from arox.core.io import AbstractIOAdapter, RequestEvent
 from arox.core.plugin import Plugin, tool
 from arox.core.runner import TaskRunner
@@ -34,6 +36,27 @@ class _FailingToolPlugin(Plugin):
     @tool()
     def fail(self) -> None:
         raise RuntimeError("expected failure")
+
+
+@pytest.mark.asyncio
+async def test_llm_notifications_are_injected_once_before_model_request():
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.background_tasks = BackgroundTaskBroker()
+    runtime.message_history_fallback = []
+    runtime.notify_llm("First task finished.")
+    runtime.notify_llm("Second task finished.")
+    request_context = SimpleNamespace(messages=[])
+
+    await runtime._before_model_request(None, request_context)
+
+    assert len(request_context.messages) == 1
+    notice = request_context.messages[0]
+    assert isinstance(notice, ModelRequest)
+    assert notice.parts[0].content == ("First task finished.\n\nSecond task finished.")
+    assert not runtime.background_tasks.drain_notices()
+
+    await runtime._before_model_request(None, request_context)
+    assert len(request_context.messages) == 1
 
 
 @pytest.mark.asyncio

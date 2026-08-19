@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import pytest_asyncio
 
+from arox.core.background import BackgroundTaskBroker
 from arox.plugins.shell import POLL_BASE_DELAY, ShellPlugin
 
 
@@ -23,6 +24,7 @@ class MockAgent:
         self.workspace = workspace
         self.agent_ep = CaptureIO()
         self._slots: dict = {}
+        self.background_tasks = BackgroundTaskBroker()
         from arox.core.config import Config
         from arox.core.session import AgentSession, FileSessionStore, SessionManager
 
@@ -266,6 +268,8 @@ async def test_foreground_timeout_promotes_to_background(plugin):
     assert bg.process.returncode is None
     # Finish notification flag flipped on.
     assert bg.notify_on_finish is True
+    assert "can poll for output at any time" in result
+    assert "will also be notified when the command finishes" in result
 
 
 @pytest.mark.asyncio
@@ -276,11 +280,21 @@ async def test_background_returns_id_and_polls_output(plugin):
         run_in_background=True,
     )
     assert "Started background task" in start
+    assert "can poll for output at any time" in start
+    assert "will also be notified when the command finishes" in start
     task_id = _task_id_from(start)
 
     bg = plugin._tasks[task_id]
     assert bg.drain_task is not None
     await asyncio.wait_for(bg.drain_task, timeout=5)
+
+    notifications = plugin.runtime.background_tasks.drain_notices()
+    assert len(notifications) == 1
+    notification = notifications[0]
+    assert task_id in notification
+    assert "Description: Emit three lines" in notification
+    assert f'shell_state(task_id="{task_id}")' in notification
+    assert "line1" not in notification
 
     out = await plugin.shell_state(task_id=task_id, description="poll")
     assert "exit 0" in out
@@ -290,6 +304,22 @@ async def test_background_returns_id_and_polls_output(plugin):
     again = await plugin.shell_state(task_id=task_id, description="poll again")
     assert "(no new output)" in again
     assert "exit 0" in again
+
+
+@pytest.mark.asyncio
+async def test_terminal_shell_state_suppresses_completion_notice(plugin):
+    start = await plugin.shell(
+        command="true",
+        description="Finish quietly",
+        run_in_background=True,
+    )
+    task_id = _task_id_from(start)
+    await plugin._tasks[task_id].drain_task
+
+    state = await plugin.shell_state(task_id=task_id)
+
+    assert "exit 0" in state
+    assert plugin.runtime.background_tasks.drain_notices() == []
 
 
 @pytest.mark.asyncio

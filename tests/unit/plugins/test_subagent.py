@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from arox.core.agent_runtime import AgentRuntime
+from arox.core.background import BackgroundTaskBroker
 from arox.core.config import AgentConfig, Config
 from arox.core.io import AbstractIOAdapter
 from arox.core.runner import TaskRunner
@@ -90,6 +91,7 @@ class _HostAgent:
         self.workspace = None
         self._stack = contextlib.AsyncExitStack()
         self._slots = {}
+        self.background_tasks = BackgroundTaskBroker()
         self.config = Config(
             agent={
                 "main": AgentConfig(
@@ -272,12 +274,15 @@ async def test_spawn_and_wait_releases_runner_and_preserves_session(agent_factor
     try:
         response = await plugin.spawn_agent("make_plan", "make a plan", "planner")
         assert "Agent spawned." in response
+        assert "can call wait_agent at any time" in response
+        assert "will also be notified when this task finishes" in response
 
         target = _target_for(plugin, "make_plan")
         task_session = plugin._resolve_session(target)
         result = await plugin.wait_agent(target)
 
         assert "task done: make a plan" in result
+        assert main_agent.background_tasks.drain_notices() == []
         assert task_session.runtime is None
         assert task_session.runner is None
         assert len(main_agent.session.children) == 1
@@ -291,6 +296,30 @@ async def test_spawn_and_wait_releases_runner_and_preserves_session(agent_factor
         assert "last_message" not in persisted
         assert "result" not in persisted
         assert "error" not in persisted
+    finally:
+        await plugin.on_stop()
+
+
+@pytest.mark.asyncio
+async def test_completed_subagent_notifies_when_result_was_not_observed(agent_factory):
+    create_agent, _store = agent_factory
+    main_agent = create_agent()
+    plugin = _advanced_plugin(main_agent)
+    try:
+        await plugin.spawn_agent("make_plan", "make a plan", "planner")
+        target = _target_for(plugin, "make_plan")
+        runner = plugin._resolve_session(target).runner
+        assert isinstance(runner, TaskRunner) and runner.task is not None
+        await runner.task
+        await asyncio.sleep(0)
+
+        notifications = main_agent.background_tasks.drain_notices()
+        assert len(notifications) == 1
+        notification = notifications[0]
+        assert target in notification
+        assert "Description: make_plan" in notification
+        assert f'wait_agent(target="{target}")' in notification
+        assert "task done: make a plan" not in notification
     finally:
         await plugin.on_stop()
 
@@ -433,6 +462,8 @@ async def test_interrupt_then_followup_reuses_session_with_new_runner(agent_fact
 
         followup = await plugin.followup_task(target, "review the updated tests")
         assert "Follow-up started." in followup
+        assert "can call wait_agent at any time" in followup
+        assert "will also be notified when this task finishes" in followup
         assert isinstance(task_session.runner, TaskRunner)
         followup_subagent = task_session.runner.runtime
         assert isinstance(followup_subagent, _FakeDynamicAgent)

@@ -30,13 +30,16 @@ from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import (
     ModelMessage,
+    ModelRequest,
     ModelResponse,
     UserContent,
+    UserPromptPart,
 )
 from pydantic_ai.models import infer_model
 
 from arox import utils
 from arox.core._pydantic_ai_hack import infer_provider
+from arox.core.background import BackgroundTaskBroker
 from arox.core.config import AgentConfig, Config, ConfigLoader
 from arox.core.io import (
     AbstractIOAdapter,
@@ -97,6 +100,7 @@ class AgentRuntime:
         self.plugins = []
         self.message_history_fallback: list[ModelMessage] = []
         self.new_message_index = 0
+        self.background_tasks = BackgroundTaskBroker()
 
         self.parse_configs()
 
@@ -187,6 +191,13 @@ class AgentRuntime:
             if isinstance(plugin, plugin_cls):
                 return plugin
         return None
+
+    def notify_llm(self, message: str) -> None:
+        """Queue a plugin-generated notice for the next model request."""
+        self.background_tasks.notify(message)
+
+    def _drain_llm_notifications(self) -> list[str]:
+        return self.background_tasks.drain_notices()
 
     def provide_slot[P: SlotProvider, R](self, slot: BaseSlot[P, R], provider: P):
         """Register a provider for a specific slot."""
@@ -465,6 +476,11 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         ctx: RunContext[AgentDeps],
         request_context: ModelRequestContext,
     ) -> ModelRequestContext:
+        notifications = self._drain_llm_notifications()
+        if notifications:
+            request_context.messages.append(
+                ModelRequest(parts=[UserPromptPart(content="\n\n".join(notifications))])
+            )
         self.message_history_fallback = list(request_context.messages)
         return request_context
 
