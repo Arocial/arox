@@ -16,7 +16,7 @@ from arox.core.runner import ServeRunner, TaskRunner
 logger = logging.getLogger(__name__)
 
 
-def main(profile: str | None = None):
+def _create_argument_parser(profile: str | None = None) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--profile",
@@ -50,26 +50,41 @@ def main(profile: str | None = None):
         default=8000,
         help="Port to bind the server to (for vercel_ai UI)",
     )
-    args, unknown_args = parser.parse_known_args()
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging",
+    )
+    return parser
 
-    profile_name = args.profile or "coder"
 
-    if args.ui in ("text", "headless"):
+def _configure_logging(ui: str, *, debug: bool = False) -> None:
+    level = logging.DEBUG if debug else logging.INFO
+
+    if ui in ("text", "headless"):
         from platformdirs import user_log_dir
 
         log_dir = Path(user_log_dir("arox"))
         log_dir.mkdir(parents=True, exist_ok=True)
         logging.basicConfig(
-            level=logging.INFO,
+            level=level,
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
             filename=log_dir / "agents.log",
             filemode="a",
         )
     else:
         logging.basicConfig(
-            level=logging.INFO,
+            level=level,
             format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         )
+
+
+def main(profile: str | None = None):
+    parser = _create_argument_parser(profile)
+    args, unknown_args = parser.parse_known_args()
+
+    profile_name = args.profile or "coder"
+    _configure_logging(args.ui, debug=args.debug)
 
     config_loader = app_setup(
         app_name="chat", profile=profile_name, cli_args=unknown_args
