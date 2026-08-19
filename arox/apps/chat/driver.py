@@ -1,30 +1,14 @@
 import asyncio
 import logging
-from dataclasses import dataclass
 
 from pydantic_ai import AgentRunResult
 
+from arox.apps.chat.events import ChatInputReply, ChatInputRequest, StepDoneEvent
 from arox.core.agent_runtime import AgentRuntime
-from arox.core.io import ReplyEvent, RequestEvent
 from arox.core.runner import ServeRunner, cancel_task
 from arox.core.types import UserInput
 
 logger = logging.getLogger(__name__)
-
-
-class StepDoneEvent:
-    pass
-
-
-@dataclass
-class ChatInputRequest(RequestEvent):
-    request_normal_input: bool = True
-
-
-@dataclass
-class ChatInputReply(UserInput, ReplyEvent):
-    def is_abort(self, request: ChatInputRequest) -> bool:
-        return bool(request.request_normal_input and self.input_content is None)
 
 
 class ChatServeDriver:

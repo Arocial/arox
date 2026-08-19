@@ -4,7 +4,7 @@ from typing import Any, override
 
 from pydantic_ai import AgentRunResultEvent
 
-from arox.core.chat import ChatInputReply, ChatInputRequest
+from arox.apps.chat.events import ChatInputReply, ChatInputRequest
 from arox.core.io import AbstractIOAdapter, IOEndpoint
 from arox.core.session import ErrorEvent
 

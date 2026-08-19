@@ -2,7 +2,7 @@ import pytest
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
-from arox.ui.text_io import UserInputGenerator
+from arox.apps.chat.io_adapters.text import UserInputGenerator
 from arox.utils import (
     deep_merge,
     render_template,

@@ -12,7 +12,7 @@ from telegram.ext import (
     filters,
 )
 
-from arox.ui.bot_base import BotIOAdapter
+from arox.apps.chat.io_adapters.bot_base import BotIOAdapter
 
 logger = logging.getLogger(__name__)
 

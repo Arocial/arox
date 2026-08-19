@@ -15,7 +15,7 @@ from pydantic_ai import (
     ThinkingPartDelta,
 )
 
-from arox.core.chat import ChatInputReply, ChatInputRequest
+from arox.apps.chat.events import ChatInputReply, ChatInputRequest
 from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,

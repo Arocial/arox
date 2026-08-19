@@ -7,7 +7,7 @@ from typing import override
 import lark_oapi as lark
 from anyio import to_thread
 
-from arox.ui.bot_base import BotIOAdapter
+from arox.apps.chat.io_adapters.bot_base import BotIOAdapter
 
 logger = logging.getLogger(__name__)
 

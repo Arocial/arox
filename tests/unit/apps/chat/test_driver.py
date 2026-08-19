@@ -10,17 +10,17 @@ from prompt_toolkit.output import DummyOutput
 from pydantic_ai import ToolCallPart
 from pydantic_ai.models.test import TestModel
 
-from arox.core.app import app_setup
-from arox.core.chat import (
+from arox.apps.chat.driver import ChatServeDriver
+from arox.apps.chat.events import (
     ChatInputReply,
     ChatInputRequest,
-    ChatServeDriver,
     StepDoneEvent,
 )
+from arox.apps.chat.io_adapters.text import CommandCompleter, TextIOAdapter
+from arox.core.app import app_setup
 from arox.core.plugin import CommandReply
 from arox.core.runner import ServeRunner
 from arox.core.session import AgentSession
-from arox.ui.text_io import CommandCompleter, TextIOAdapter
 
 
 def multiply(a: int, b: int) -> int:

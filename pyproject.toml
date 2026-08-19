@@ -40,10 +40,10 @@ Homepage = "https://github.com/Arocial/arox"
 arox = "arox.apps.chat:main"
 
 [project.entry-points."arox.io_adapters"]
-text = "arox.ui.text_io:TextIOAdapter"
-vercel_ai = "arox.ui.vercel_ai:VercelStreamIOAdapter"
-telegram = "arox.ui.telegram:TelegramIOAdapter"
-feishu = "arox.ui.feishu:FeishuIOAdapter"
+text = "arox.apps.chat.io_adapters.text:TextIOAdapter"
+vercel_ai = "arox.apps.chat.io_adapters.vercel_ai:VercelStreamIOAdapter"
+telegram = "arox.apps.chat.io_adapters.telegram:TelegramIOAdapter"
+feishu = "arox.apps.chat.io_adapters.feishu:FeishuIOAdapter"
 
 [project.entry-points."arox.plugins"]
 core = "arox.plugins.core:CorePlugin"

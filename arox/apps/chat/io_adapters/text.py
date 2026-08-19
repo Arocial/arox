@@ -21,7 +21,7 @@ from pydantic_ai import (
     ToolCallPartDelta,
 )
 
-from arox.core.chat import (
+from arox.apps.chat.events import (
     ChatInputReply,
     ChatInputRequest,
 )

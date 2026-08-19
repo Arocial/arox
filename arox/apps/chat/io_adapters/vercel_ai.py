@@ -28,10 +28,10 @@ from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage, UIMessage
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from arox.core.chat import (
+from arox.apps.chat.driver import ChatServeDriver
+from arox.apps.chat.events import (
     ChatInputReply,
     ChatInputRequest,
-    ChatServeDriver,
     StepDoneEvent,
 )
 from arox.core.completion import parse_request

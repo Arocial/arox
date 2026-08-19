@@ -4,11 +4,11 @@ from types import SimpleNamespace
 import pytest
 from pydantic_ai.models.test import TestModel
 
+from arox.apps.chat.driver import ChatServeDriver
+from arox.apps.chat.io_adapters.headless import HeadlessIOAdapter
 from arox.core.app import app_setup
-from arox.core.chat import ChatServeDriver
 from arox.core.runner import ServeRunner
 from arox.core.session import AgentSession
-from arox.ui.headless import HeadlessIOAdapter
 
 
 @pytest.mark.asyncio

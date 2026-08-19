@@ -9,22 +9,22 @@ from pydantic_ai.messages import ModelRequest, TextContent, UserPromptPart
 from pydantic_ai.ui.vercel_ai import VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage
 
-from arox.core.agent_runtime import AgentRuntime
-from arox.core.app import app_setup
-from arox.core.io import AgentIOEndpoint
-from arox.core.session import AgentSession, ErrorEvent, FileSessionStore, SessionManager
-from arox.core.types import USER_INPUT_ID_KEY, UserInput, UserMessageEvent
-from arox.ui.vercel_ai import (
+from arox.apps.chat.io_adapters.vercel_ai import (
     CreateSessionRequest,
     VercelStreamIOAdapter,
     VercelStreamServer,
     _log_ws_payload,
     build_state_history,
 )
+from arox.core.agent_runtime import AgentRuntime
+from arox.core.app import app_setup
+from arox.core.io import AgentIOEndpoint
+from arox.core.session import AgentSession, ErrorEvent, FileSessionStore, SessionManager
+from arox.core.types import USER_INPUT_ID_KEY, UserInput, UserMessageEvent
 
 
 def test_websocket_debug_log_is_structured_and_compact(caplog):
-    with caplog.at_level("DEBUG", logger="arox.ui.vercel_ai"):
+    with caplog.at_level("DEBUG", logger="arox.apps.chat.io_adapters.vercel_ai"):
         _log_ws_payload("IN", "session-1", {"type": "message", "text": "你好"})
 
     assert (
@@ -34,7 +34,7 @@ def test_websocket_debug_log_is_structured_and_compact(caplog):
 
 
 def test_websocket_debug_log_truncates_large_payload(caplog):
-    with caplog.at_level("DEBUG", logger="arox.ui.vercel_ai"):
+    with caplog.at_level("DEBUG", logger="arox.apps.chat.io_adapters.vercel_ai"):
         _log_ws_payload("OUT", "session-1", {"type": "data", "text": "x" * 1100})
 
     assert "WS OUT session_id=session-1 type=data size=1125" in caplog.text

@@ -41,7 +41,9 @@ independent endpoints, their output can be routed and rendered independently.
 
 ### App-level adapter
 
-One **`AbstractIOAdapter`** (`arox/ui/`) is instantiated per App. The adapter:
+One **`AbstractIOAdapter`** (base class in `arox/core/io.py`) is instantiated per
+App. Chat-specific implementations live in `arox/apps/chat/io_adapters/`. The
+adapter:
 
 - Consumes each agent's matching adapter-side `IOEndpoint`.
 - Renders events to the concrete UI.
@@ -60,7 +62,7 @@ Built-in adapters:
 - **`AgentRuntime`** (`arox/core/agent_runtime.py`) — the concrete ephemeral LLM runtime. Owns model inference via `pydantic_ai`, tool registration (local + MCP), plugins, IO resources, and turn hooks.
 - **`TaskRunner`** (`arox/core/runner.py`) — owns the latest resumable turn task returned by `run()`.
 - **`ServeRunner`** (`arox/core/runner.py`) — owns the serve-loop task; `ChatServeDriver` owns and can cancel only the current interaction.
-- **`ChatServeDriver`** (`arox/core/chat.py`) — implements the chat request/reply protocol.
+- **`ChatServeDriver`** (`arox/apps/chat/driver.py`) — implements the chat request/reply protocol.
 
 ### Extension points
 
