@@ -4,7 +4,7 @@ The **Coder** app is the primary application built on top of the Arox framework.
 
 ## Overview
 
-The Coder app runs the "coder" session through a `ServeRunner` and `ChatServeDriver`, configured with plugins including context compaction.
+The Coder app activates an `AgentRuntime` for the "coder" session, configured with plugins including context compaction.
 
 ## Architecture
 

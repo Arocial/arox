@@ -3,10 +3,12 @@ import contextlib
 import logging
 import re
 import uuid
+from collections import deque
 from collections.abc import AsyncIterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, overload
+from types import TracebackType
+from typing import Any, Self, overload
 
 import fastmcp
 from pydantic_ai import (
@@ -46,7 +48,13 @@ from arox.core.io import (
     AgentIOEndpoint,
     IOEndpoint,
 )
-from arox.core.plugin import CommandManager, load_plugins
+from arox.core.plugin import (
+    CommandDispatchResult,
+    CommandInput,
+    CommandInputReply,
+    CommandManager,
+    load_plugins,
+)
 from arox.core.session import (
     AgentRunInfo,
     AgentSession,
@@ -62,6 +70,7 @@ from arox.core.slot import (
 from arox.core.slot import (
     Provider as SlotProvider,
 )
+from arox.core.turn import Turn
 from arox.core.types import (
     ServerIdMapping,
     SessionTreeUpdate,
@@ -90,7 +99,12 @@ class AgentRuntime:
         self.uuid = session.id
         self.io_adapter = io_adapter
         self.agent_ep = AgentIOEndpoint()
+        self.agent_ep.register_event_handler(UserInput, self.accept_input)
+        self.agent_ep.register_event_handler(CommandInput, self.accept_command)
         self._stack = contextlib.AsyncExitStack()
+        self._entered = False
+        self.turn: Turn | None = None
+        self._pending_user_inputs: deque[UserInput] = deque()
         self.agent_ep.snapshot(session.build_io_snapshot())
         self._slots: dict[Any, Any] = {}
         self.config_loader = parent_config_loader.for_workspace(self.workspace)
@@ -180,7 +194,7 @@ class AgentRuntime:
     def message_history(self, value: Sequence[ModelMessage]) -> None:
         self.session.replace_message_history(value)
 
-    async def handle_event(
+    async def _handle_stream_output(
         self, ctx: RunContext["AgentDeps"], events: AsyncIterable[AgentStreamEvent]
     ):
         async for event in events:
@@ -258,26 +272,121 @@ class AgentRuntime:
                         results.append(result)
                 return results
 
-    async def __aenter__(self):
-        if self.session.runner is None or self.session.runner.runtime is not self:
-            raise RuntimeError("Agent runtime must be started through a SessionRunner.")
-        await self._stack.enter_async_context(self.agent_ep)
-        await self.io_adapter.on_runtime_start(self)
-        self._stack.push_async_callback(self.io_adapter.on_runtime_stop, self)
+    async def __aenter__(self) -> Self:
+        async with self.session._runtime_lock:
+            active = self.session.runtime
+            if active is not None:
+                if active is self and self._entered:
+                    return self
+                raise RuntimeError("Session is already active.")
 
-        if self.mcp_client:
-            await self._stack.enter_async_context(self.mcp_client)
-        for plugin in self.plugins:
-            await plugin.on_start()
-            self._stack.push_async_callback(plugin.on_stop)
-        return self
+            self.session.runtime = self
+            try:
+                await self._stack.enter_async_context(self.agent_ep)
+                await self.io_adapter.on_runtime_start(self)
+                self._stack.push_async_callback(self.io_adapter.on_runtime_stop, self)
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        try:
-            if exc_val is not None:
-                self.session.record_error_event(exc_val)
-        finally:
-            await self._stack.aclose()
+                if self.mcp_client:
+                    await self._stack.enter_async_context(self.mcp_client)
+                for plugin in self.plugins:
+                    await plugin.on_start()
+                    self._stack.push_async_callback(plugin.on_stop)
+            except BaseException:
+                try:
+                    await self._stack.aclose()
+                finally:
+                    self.session.runtime = None
+                raise
+            self._entered = True
+            if self.session.manager:
+                self.session.manager._track(self.session, self.session.owner)
+            return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        await self.cancel_turn()
+        async with self.session._runtime_lock:
+            if self.session.runtime is not self:
+                return
+            try:
+                if exc_val is not None:
+                    self.session.record_error_event(exc_val)
+                await self._stack.aclose()
+            finally:
+                self._entered = False
+                self.session.runtime = None
+
+    async def close(self) -> None:
+        await self.__aexit__(None, None, None)
+
+    async def _dispatch_command(
+        self, command: str | dict[str, Any]
+    ) -> CommandDispatchResult:
+        """Dispatch either command representation and render its outcome."""
+        result = await self.command_manager.dispatch(command)
+        if result.status == "handled":
+            output = result.reply.output if result.reply is not None else None
+        elif result.status == "unknown":
+            output = "Unknown command."
+        elif result.status == "invalid":
+            output = "Invalid command."
+        else:
+            output = None
+        if output:
+            await self.agent_ep.send(output)
+        return result
+
+    async def accept_command(self, command_input: CommandInput) -> CommandInputReply:
+        """Handle command input received through the agent IO endpoint."""
+        result = await self._dispatch_command(command_input.command)
+        return CommandInputReply(
+            req_id=command_input.req_id,
+            status=result.status,
+            output=result.reply.output if result.reply is not None else None,
+        )
+
+    async def accept_input(self, user_input: UserInput | str | None) -> Turn | None:
+        """Handle a command or start one turn for a regular user input."""
+        if not isinstance(user_input, UserInput):
+            user_input = UserInput(input_content=user_input)
+        text_input = user_input.text_content
+        if text_input and text_input.startswith("/"):
+            await self._dispatch_command(text_input)
+            return None
+        return self.start_turn(user_input)
+
+    def start_turn(self, user_input: UserInput) -> Turn:
+        """Consume input in the active turn, or start a new turn when idle."""
+        if not self._entered or self.session.runtime is not self:
+            raise RuntimeError("Agent runtime must be entered before starting a turn.")
+        if self.turn is not None and not self.turn.done:
+            self._pending_user_inputs.append(user_input)
+            return self.turn
+        task = asyncio.create_task(
+            self.run_turn(user_input), name=f"agent-turn:{self.session.id}"
+        )
+
+        # Adapter-originated turns are intentionally fire-and-forget. Retrieve
+        # failures so asyncio does not report an unobserved task exception;
+        # callers can still await the Turn and receive the same exception.
+        def consume_exception(completed: asyncio.Task[AgentRunResult[str]]) -> None:
+            if not completed.cancelled():
+                completed.exception()
+
+        task.add_done_callback(consume_exception)
+        self.turn = Turn(user_input, task)
+        return self.turn
+
+    async def cancel_turn(self) -> bool:
+        turn = self.turn
+        cancelled = False if turn is None else await turn.cancel()
+        if cancelled:
+            self._pending_user_inputs.clear()
+        return cancelled
 
     def add_local_tool(self, func, **kwargs):
         self.local_toolset.add_function(func, **kwargs)
@@ -476,6 +585,15 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         ctx: RunContext[AgentDeps],
         request_context: ModelRequestContext,
     ) -> ModelRequestContext:
+        while self._pending_user_inputs:
+            user_input = self._pending_user_inputs.popleft()
+            if user_input.input_content is not None:
+                await self._record_user_input(user_input)
+                request_context.messages.append(
+                    ModelRequest(
+                        parts=[UserPromptPart(content=user_input.input_content)]
+                    )
+                )
         notifications = self._drain_llm_notifications()
         if notifications:
             request_context.messages.append(
@@ -558,7 +676,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                     result = await self._pydantic_agent.run(
                         current_prompt,
                         model=self.model,
-                        event_stream_handler=self.handle_event,
+                        event_stream_handler=self._handle_stream_output,
                         model_settings=ModelSettings(**self.model_params),
                         message_history=current_history,
                         usage_limits=UsageLimits(request_limit=self.request_limit),
@@ -593,17 +711,22 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         user_input: UserInput | str | None = None,
     ) -> AgentRunResult[str]:
         """Execute one request, continuing from this session's message history."""
-        if self.session.runner is None or self.session.runner.runtime is not self:
-            raise RuntimeError("Agent runtime must be entered before calling step().")
+        if not self._entered or self.session.runtime is not self:
+            raise RuntimeError("Agent runtime must be entered before running a turn.")
         if not isinstance(user_input, UserInput):
             user_input = UserInput(input_content=user_input)
 
+        try:
+            result = await self._run_turn_input(user_input)
+            while self._pending_user_inputs:
+                result = await self._run_turn_input(self._pending_user_inputs.popleft())
+            return result
+        finally:
+            self._pending_user_inputs.clear()
+
+    async def _record_user_input(self, user_input: UserInput) -> None:
         if user_input.input_content is not None:
             await self.agent_ep.send(UserMessageEvent(user_input=user_input))
-
-        input_content = user_input.input_content
-
-        if user_input.input_content is not None:
             self.session.record_user_input(user_input)
             if user_input.client_message_id:
                 await self.agent_ep.send(
@@ -612,6 +735,11 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                         client_message_id=user_input.client_message_id,
                     )
                 )
+
+    async def _run_turn_input(self, user_input: UserInput) -> AgentRunResult[str]:
+        """Execute and persist the input that started the current turn."""
+        await self._record_user_input(user_input)
+        input_content = user_input.input_content
 
         self.reload_config()
         result = await self._run_inference(

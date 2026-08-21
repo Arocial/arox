@@ -9,9 +9,9 @@ from pathlib import Path
 # Disable fastmcp custom logging
 os.environ["FASTMCP_LOG_ENABLED"] = "false"
 
-from arox.apps.chat.driver import ChatServeDriver
+from arox.core.agent_runtime import AgentRuntime
 from arox.core.app import app_setup
-from arox.core.runner import ServeRunner, TaskRunner
+from arox.core.types import UserInput
 
 logger = logging.getLogger(__name__)
 
@@ -159,30 +159,30 @@ def main(profile: str | None = None):
             # Stop all session runtimes before closing their shared IO adapter.
             async with io_adapter, session_manager:
                 if args.ui == "headless":
-                    runner = TaskRunner(session, config_loader, io_adapter)
-                    async with runner:
-                        await runner.run(prompt)
+                    runtime = AgentRuntime(config_loader, io_adapter, session)
+                    async with runtime:
+                        turn = await runtime.accept_input(
+                            UserInput(input_content=prompt)
+                        )
+                        assert turn is not None
+                        await turn
                     return
 
-                runner = ServeRunner(
-                    session, config_loader, io_adapter, ChatServeDriver()
-                )
-                async with runner:
+                runtime = AgentRuntime(config_loader, io_adapter, session)
+                async with runtime:
                     async with AsyncExitStack() as interrupt_stack:
                         if args.ui == "text":
                             from arox.apps.chat.interrupt import SignalInterruptHandler
 
                             await interrupt_stack.enter_async_context(
-                                SignalInterruptHandler(runner.cancel_current_execution)
+                                SignalInterruptHandler(runtime.cancel_turn)
                             )
 
-                        main_agent = runner.runtime
-                        assert main_agent is not None
                         if args.session:
-                            await main_agent.agent_ep.send(
+                            await runtime.agent_ep.send(
                                 f"Session restored: {args.session}"
                             )
-                        await runner.run()
+                        await runtime.agent_ep.wait_disconnected()
 
         if args.ui == "headless":
             from arox.apps.chat.io_adapters.headless import HeadlessIOAdapter

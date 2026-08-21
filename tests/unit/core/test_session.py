@@ -16,7 +16,6 @@ from pydantic_ai.messages import (
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter
-from arox.core.runner import TaskRunner
 from arox.core.session import (
     AgentSession,
     CommandEvent,
@@ -50,13 +49,13 @@ class TestAgentSession:
         assert event.event_type == "user_input"
         assert len(agent_session.events) == 1
 
-    def test_runner_is_not_persisted(self):
+    def test_runtime_is_not_persisted(self):
         agent_session = AgentSession(agent_name="main")
-        agent_session.runner = "runner"
+        agent_session.runtime = object()
 
         data = agent_session.model_dump(mode="json")
 
-        assert "runner" not in data
+        assert "runtime" not in data
 
     def test_message_history_defaults_empty_and_is_serialized(self):
         agent_session = AgentSession(agent_name="main")
@@ -233,14 +232,14 @@ class TestAgentSession:
         assert forked.id != agent_session.id
 
     @pytest.mark.asyncio
-    async def test_fork_does_not_copy_active_runner(self):
-        runner = SimpleNamespace(lock=RLock())
-        agent_session = AgentSession(agent_name="main", runner=runner)
+    async def test_fork_does_not_copy_active_runtime(self):
+        runtime = SimpleNamespace(lock=RLock())
+        agent_session = AgentSession(agent_name="main", runtime=runtime)
 
         forked = await agent_session.fork_at(None)
 
-        assert agent_session.runner is runner
-        assert forked.runner is None
+        assert agent_session.runtime is runtime
+        assert forked.runtime is None
 
     @pytest.mark.asyncio
     async def test_fork_at_missing_event_raises(self):
@@ -320,13 +319,13 @@ class TestAgentSession:
         assert "error" not in dumped
 
     @pytest.mark.asyncio
-    async def test_runner_excluded_from_serialization(self):
+    async def test_runtime_excluded_from_serialization(self):
         agent_session = AgentSession(agent_name="main")
         runtime = object()
-        agent_session.runner = SimpleNamespace(runtime=runtime)
+        agent_session.runtime = runtime
 
         dumped = agent_session.model_dump(mode="json")
-        assert "runner" not in dumped
+        assert "runtime" not in dumped
         assert agent_session.runtime is runtime
 
     def test_record_error_event(self):
@@ -421,16 +420,13 @@ system_prompt = "Hello worker."
             agent_name="test_worker",
             path=["worker-session-id"],
         )
-        runner = TaskRunner(session, config_loader, io_adapter)
-        runtime = await runner.start_runtime()
-        try:
+        runtime = AgentRuntime(config_loader, io_adapter, session)
+        async with runtime:
             assert runtime.uuid == "worker-session-id"
             assert runtime.session is session
             assert runtime.message_history is session.message_history.messages
             assert runtime.name == "test_worker"
             assert type(runtime) is AgentRuntime
-        finally:
-            await runner.stop_runtime()
 
     @pytest.mark.asyncio
     async def test_create_runtime_missing_config_raises(self, tmp_path, monkeypatch):
@@ -449,7 +445,7 @@ model_ref = "test"
         with pytest.raises(
             ValueError, match="Agent config for 'unconfigured_agent' not found"
         ):
-            await TaskRunner(session, config_loader, io_adapter).start_runtime()
+            AgentRuntime(config_loader, io_adapter, session)
 
     @pytest.mark.asyncio
     async def test_agent_config_type_is_not_runtime_dispatch(
@@ -468,12 +464,9 @@ model_ref = "test"
         session = AgentSession(
             agent_name="broken_agent",
         )
-        runner = TaskRunner(session, config_loader, io_adapter)
-        runtime = await runner.start_runtime()
-        try:
+        runtime = AgentRuntime(config_loader, io_adapter, session)
+        async with runtime:
             assert type(runtime) is AgentRuntime
-        finally:
-            await runner.stop_runtime()
 
 
 class TestFileSessionStore:
@@ -725,11 +718,11 @@ class TestFileSessionStore:
         manager.register_session_type(AgentSession)
         root = AgentSession(agent_name="main", path=["root"], manager=manager)
         child = await root.create_child_session("worker", task_name="child")
-        child_runner = SimpleNamespace(stop_runtime=AsyncMock())
-        child.runner = child_runner
+        child_runtime = SimpleNamespace(close=AsyncMock())
+        child.runtime = child_runtime
         manager._track(root)
         manager._track(child, root)
 
         await manager.stop_all()
 
-        child_runner.stop_runtime.assert_awaited_once()
+        child_runtime.close.assert_awaited_once()

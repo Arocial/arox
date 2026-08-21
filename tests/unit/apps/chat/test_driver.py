@@ -1,8 +1,7 @@
-import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from prompt_toolkit.input import create_pipe_input
@@ -10,12 +9,12 @@ from prompt_toolkit.output import DummyOutput
 from pydantic_ai import ToolCallPart
 from pydantic_ai.models.test import TestModel
 
-from arox.apps.chat.driver import ChatInputReply, ChatInputRequest, ChatServeDriver
 from arox.apps.chat.io_adapters.text import CommandCompleter, TextIOAdapter
+from arox.core.agent_runtime import AgentRuntime
 from arox.core.app import app_setup
-from arox.core.plugin import CommandDispatchResult, CommandReply
-from arox.core.runner import ServeRunner
+from arox.core.plugin import CommandDispatchResult, CommandInput, CommandReply
 from arox.core.session import AgentSession
+from arox.core.types import UserInput
 
 
 def multiply(a: int, b: int) -> int:
@@ -23,133 +22,59 @@ def multiply(a: int, b: int) -> int:
     return a * b
 
 
-class FakeAgentIO:
-    def __init__(self, inputs: list[str | None]):
-        self.inputs = iter(inputs)
-        self.events: list[object] = []
+@pytest.mark.asyncio
+async def test_runtime_handles_slash_commands_without_starting_turn():
+    dispatch_command = AsyncMock()
+    start_turn = Mock()
+    runtime = cast(
+        AgentRuntime,
+        SimpleNamespace(
+            _dispatch_command=dispatch_command,
+            start_turn=start_turn,
+        ),
+    )
+    result = await AgentRuntime.accept_input(runtime, UserInput(input_content="/info"))
 
-    async def send(self, event):
-        self.events.append(event)
-        if isinstance(event, ChatInputRequest):
-            return ChatInputReply(
-                req_id=event.req_id,
-                input_content=next(self.inputs),
-            )
-        return None
+    assert result is None
+    dispatch_command.assert_awaited_once_with("/info")
+    start_turn.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_chat_driver_handles_slash_commands_before_starting_turn():
-    agent_ep = FakeAgentIO(["/info", None])
-    command_manager = SimpleNamespace(
-        dispatch=AsyncMock(
-            return_value=CommandDispatchResult(
-                "handled", CommandReply(req_id="", output="info")
-            )
+async def test_runtime_starts_regular_user_input():
+    turn = object()
+    dispatch_command = AsyncMock()
+    runtime = cast(
+        AgentRuntime,
+        SimpleNamespace(
+            _dispatch_command=dispatch_command,
+            start_turn=lambda event: turn,
+        ),
+    )
+    event = UserInput(input_content="hello")
+    assert await AgentRuntime.accept_input(runtime, event) is turn
+    dispatch_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_runtime_handles_command_input_from_io():
+    dispatch_command = AsyncMock(
+        return_value=CommandDispatchResult(
+            "handled", CommandReply(req_id="command", output="details")
         )
     )
-    run_turn = AsyncMock()
-    runtime = SimpleNamespace(
-        agent_ep=agent_ep,
-        command_manager=command_manager,
-        run_turn=run_turn,
-        session=SimpleNamespace(id="chat"),
+    runtime = cast(
+        AgentRuntime,
+        SimpleNamespace(_dispatch_command=dispatch_command),
     )
-    runner = cast(
-        ServeRunner,
-        SimpleNamespace(
-            runtime=runtime,
-            session=SimpleNamespace(record_error_event=AsyncMock()),
-        ),
-    )
+    command_input = CommandInput(command={"type": "InfoCommand"})
 
-    await ChatServeDriver().run(runner)
+    reply = await AgentRuntime.accept_command(runtime, command_input)
 
-    command_manager.dispatch.assert_awaited_once_with("/info")
-    run_turn.assert_not_awaited()
-    requests = [
-        event for event in agent_ep.events if isinstance(event, ChatInputRequest)
-    ]
-    assert len(requests) == 2
-    assert "info" in agent_ep.events
-
-
-@pytest.mark.asyncio
-async def test_chat_driver_reports_unknown_slash_commands_without_starting_turn():
-    agent_ep = FakeAgentIO(["/unknown", None])
-    command_manager = SimpleNamespace(
-        dispatch=AsyncMock(return_value=CommandDispatchResult("unknown"))
-    )
-    run_turn = AsyncMock(return_value=SimpleNamespace(output="done"))
-    runtime = SimpleNamespace(
-        agent_ep=agent_ep,
-        command_manager=command_manager,
-        run_turn=run_turn,
-        session=SimpleNamespace(id="chat"),
-    )
-    runner = cast(
-        ServeRunner,
-        SimpleNamespace(
-            runtime=runtime,
-            session=SimpleNamespace(record_error_event=AsyncMock()),
-        ),
-    )
-
-    await ChatServeDriver().run(runner)
-
-    command_manager.dispatch.assert_awaited_once_with("/unknown")
-    run_turn.assert_not_awaited()
-    assert "Unknown command." in agent_ep.events
-
-
-@pytest.mark.asyncio
-async def test_chat_driver_keeps_serving_after_interaction_exception():
-    agent_ep = FakeAgentIO(["hello", None])
-    error = ValueError("bad response")
-    runtime = SimpleNamespace(
-        agent_ep=agent_ep,
-        command_manager=SimpleNamespace(dispatch=AsyncMock()),
-        run_turn=AsyncMock(side_effect=error),
-        session=SimpleNamespace(id="chat", agent_name="coder"),
-    )
-    runner = cast(ServeRunner, SimpleNamespace(runtime=runtime))
-
-    await ChatServeDriver().run(runner)
-
-    assert sum(isinstance(event, ChatInputRequest) for event in agent_ep.events) == 2
-
-
-@pytest.mark.asyncio
-async def test_chat_driver_cancels_current_interaction_and_keeps_serving():
-    agent_ep = FakeAgentIO(["hello", None])
-    command_manager = SimpleNamespace(dispatch=AsyncMock())
-    started = asyncio.Event()
-
-    async def blocking_turn(user_input):
-        started.set()
-        await asyncio.Event().wait()
-
-    runtime = SimpleNamespace(
-        agent_ep=agent_ep,
-        command_manager=command_manager,
-        run_turn=blocking_turn,
-        session=SimpleNamespace(id="chat"),
-    )
-    runner = cast(
-        ServeRunner,
-        SimpleNamespace(
-            runtime=runtime,
-            session=SimpleNamespace(record_error_event=AsyncMock()),
-        ),
-    )
-    driver = ChatServeDriver()
-    serve_task = asyncio.create_task(driver.run(runner))
-
-    await started.wait()
-    assert await driver.cancel_current_execution()
-    await serve_task
-
-    assert not await driver.cancel_current_execution()
+    dispatch_command.assert_awaited_once_with({"type": "InfoCommand"})
+    assert reply.req_id == command_input.req_id
+    assert reply.status == "handled"
+    assert reply.output == "details"
 
 
 @pytest.mark.asyncio
@@ -205,13 +130,11 @@ system_prompt = "Hi there."
 
         test_model = TestModel(call_tools=["multiply"])
         async with io_adapter:
-            runner = ServeRunner(session, config_loader, io_adapter, ChatServeDriver())
-            async with runner:
-                runtime = runner.runtime
-                assert runtime is not None
+            runtime = AgentRuntime(config_loader, io_adapter, session)
+            async with runtime:
                 runtime.add_local_tool(multiply)
                 with runtime._pydantic_agent.override(model=test_model):
-                    await runner.run()
+                    await runtime.agent_ep.wait_disconnected()
                     assert session.is_active
             assert not session.is_active
 

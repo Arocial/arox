@@ -21,16 +21,13 @@ from pydantic_ai import (
     ToolCallPartDelta,
 )
 
-from arox.apps.chat.driver import (
-    ChatInputReply,
-    ChatInputRequest,
-)
 from arox.core.completion import CompletionRouter, parse_request
 from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
 )
 from arox.core.session import ErrorEvent
+from arox.core.types import UserInput
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +113,37 @@ class TextIOAdapter(AbstractIOAdapter):
         self.input = input
         self.output = output
         self.user_inputs: dict[IOEndpoint, UserInputGenerator] = {}
+        self._input_tasks: dict[IOEndpoint, asyncio.Task[None]] = {}
+
+    async def on_runtime_start(self, runtime: Any) -> None:
+        await super().on_runtime_start(runtime)
+
+        if runtime.session.owner is not None:
+            return
+
+        adapter_ep = runtime.agent_ep.peer
+        assert adapter_ep is not None
+        self._input_tasks[adapter_ep] = asyncio.create_task(
+            self._produce_input(adapter_ep, runtime),
+            name=f"text-input:{runtime.session.id}",
+        )
+
+    async def _produce_input(self, adapter_ep: IOEndpoint, runtime: Any) -> None:
+        input_generator = self._user_input_for(adapter_ep, runtime)
+        try:
+            while True:
+                try:
+                    text = await input_generator()
+                except (EOFError, KeyboardInterrupt):
+                    await self._flush_stdin()
+                    return
+                if runtime.session.runtime is not runtime:
+                    return
+                turn = await runtime.accept_input(UserInput(input_content=text))
+                if turn is not None:
+                    await asyncio.gather(turn.task, return_exceptions=True)
+        finally:
+            adapter_ep.close()
 
     def _user_input_for(
         self, adapter_ep: IOEndpoint, runtime: Any | None
@@ -140,6 +168,10 @@ class TextIOAdapter(AbstractIOAdapter):
 
     async def on_endpoint_closed(self, adapter_ep: IOEndpoint) -> None:
         self.user_inputs.pop(adapter_ep, None)
+        task = self._input_tasks.pop(adapter_ep, None)
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def _flush_stdin(self):
         import sys
@@ -176,22 +208,6 @@ class TextIOAdapter(AbstractIOAdapter):
             part = event.part
             print(
                 f"tool call: {part.tool_call_id}: {part.tool_name} args: {str(part.args)[:100]}"
-            )
-        elif isinstance(event, ChatInputRequest):
-            user_input: str | None = None
-            input_generator = self._user_input_for(
-                adapter_ep, self.agent_io_for(adapter_ep)
-            )
-            try:
-                user_input = await input_generator()
-            except (EOFError, KeyboardInterrupt):
-                user_input = None
-                await self._flush_stdin()
-            await adapter_ep.send(
-                ChatInputReply(
-                    req_id=event.req_id,
-                    input_content=user_input,
-                )
             )
         elif isinstance(event, ErrorEvent):
             print(f"⚠️ An error occurred: {event.error}")

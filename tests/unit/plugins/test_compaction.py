@@ -1,7 +1,7 @@
+import asyncio
 import contextlib
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock
 
 import pytest
 from pydantic_ai.messages import (
@@ -16,6 +16,8 @@ from pydantic_ai.messages import (
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.io import AbstractIOAdapter
 from arox.core.session import AgentSession, CompactionEvent
+from arox.core.turn import Turn
+from arox.core.types import UserInput
 from arox.plugins.compaction import CompactionPlugin
 from arox.plugins.slots import PERSISTENT_CONTEXT
 
@@ -33,33 +35,35 @@ class _FakeAgent:
         self.message_history = []
         self.name = "compaction"
 
-    async def run(self, user_input=None):
-        self.last_prompt = str(user_input or "")
+    async def run(self, user_input: UserInput):
+        self.last_prompt = user_input.text_content or ""
         return SimpleNamespace(output=self._summary)
 
-
-class _FakeTaskRunner:
-    def __init__(self, session, config_loader, io_adapter):
-        self.session = session
-        self.runtime = config_loader._compaction_agent
-
     async def __aenter__(self):
-        self.runtime.session = self.session
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         return None
 
-    def run(self, prompt):
-        return self.runtime.run(prompt)
+    async def accept_input(self, prompt):
+        user_input = UserInput(input_content=prompt)
+        return Turn(user_input, asyncio.create_task(self.run(user_input)))
 
 
 @pytest.fixture(autouse=True)
 def mock_env(monkeypatch):
     monkeypatch.setenv("DEEPSEEK_API_KEY", "fake")
-    monkeypatch.setattr("arox.core.agent_runtime.AgentRuntime.__aenter__", AsyncMock())
-    monkeypatch.setattr("arox.core.agent_runtime.AgentRuntime.__aexit__", AsyncMock())
-    monkeypatch.setattr("arox.plugins.compaction.TaskRunner", _FakeTaskRunner)
+    monkeypatch.setattr(
+        "arox.plugins.compaction.AgentRuntime",
+        lambda config_loader, _io_adapter, session: _prepare_fake_agent(
+            config_loader._compaction_agent, session
+        ),
+    )
+
+
+def _prepare_fake_agent(agent, session):
+    agent.session = session
+    return agent
 
 
 class _MockAgent:

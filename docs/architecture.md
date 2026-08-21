@@ -2,15 +2,15 @@
 
 Arox is organized around a clear runtime hierarchy, a split IO system, and a small set of extension points on top of a common agent base. This document walks through each layer.
 
-## Hierarchy: App → AgentSession + SessionRunner
+## Hierarchy: App → AgentSession + AgentRuntime
 
-An **App** is a runnable process (e.g. `arox-coder`) that owns a single **IO adapter** and activates an `AgentSession` through a `SessionRunner`.
+An **App** is a runnable process (e.g. `arox-coder`) that owns a single **IO adapter** and activates an `AgentRuntime` for an `AgentSession`.
 
-- Exactly one user-facing session driven by `ServeRunner` and `ChatServeDriver`.
+- Exactly one user-facing session with an active `AgentRuntime`.
 - Zero or more **subagents** — specialized agents run as resumable tasks by the `SubagentPlugin`. The main agent can spawn, wait for, interrupt, inspect, and continue these tasks through callable tools.
 - A resolved `AppConfig` and `AgentConfig` (from `arox/core/config.py`), which names the main agent, its subagents, and their per-agent configuration.
 
-The runner creates the common `AgentRuntime`, initializes its plugins and IO resources, and closes it through `start_runtime()` / `stop_runtime()` or async context management. `TaskRunner.run()` owns a resumable turn task; `ServeRunner.run()` owns the long-lived serve-loop task, while `ChatServeDriver` separately owns the current interaction task.
+The runtime initializes and closes its plugins and IO resources through async context management. It retains its latest `Turn`, while `AgentIOEndpoint` dispatches inbound `UserInput` events without a separate serving task.
 
 ### Session management
 
@@ -38,6 +38,9 @@ back to its runtime. Because the main runtime and each subagent runtime have
 independent endpoints, their output can be routed and rendered independently.
 `RequestEvent` / `ReplyEvent` add request/reply correlation: passing a
 `RequestEvent` to `send` awaits and returns the matching `ReplyEvent`.
+Adapter-originated events such as `UserInput` are dispatched by
+`AgentIOEndpoint` to registered synchronous or asynchronous handlers without a
+paired reply.
 
 ### App-level adapter
 
@@ -60,9 +63,7 @@ Built-in adapters:
 ### Types
 
 - **`AgentRuntime`** (`arox/core/agent_runtime.py`) — the concrete ephemeral LLM runtime. Owns model inference via `pydantic_ai`, tool registration (local + MCP), plugins, IO resources, and turn hooks.
-- **`TaskRunner`** (`arox/core/runner.py`) — owns the latest resumable turn task returned by `run()`.
-- **`ServeRunner`** (`arox/core/runner.py`) — owns the serve-loop task; `ChatServeDriver` owns and can cancel only the current interaction.
-- **`ChatServeDriver`** (`arox/apps/chat/driver.py`) — implements the chat request/reply protocol.
+- **`Turn`** (`arox/core/turn.py`) — wraps one input execution and exposes its task, result, error, waiting, and cancellation APIs.
 
 ### Extension points
 
@@ -76,7 +77,7 @@ Built-in adapters:
 ## Data flow
 
 1. **User input** arrives at the IO adapter and is forwarded over the main agent's `IOEndpoint`.
-2. **Command check**: the IO adapter tests whether the input is a slash command and, if so, executes it locally without calling the LLM.
+2. **Command check**: `AgentRuntime.accept_input()` tests whether the input is a slash command and, if so, executes it locally without calling the LLM.
 3. **LLM inference**: otherwise the message is appended to history (an `agent_step` event) and sent to the LLM via `pydantic_ai`.
 4. **Tool execution**: tool calls (local, MCP, or a subagent) are dispatched and their results fed back to the LLM.
 5. **Response**: the final text is streamed back through the agent's IO channel and rendered by the adapter.

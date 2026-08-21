@@ -190,20 +190,16 @@ class AgentSession(Session):
     )
     extra: dict[str, Any] = Field(default_factory=dict)
 
-    runner: Any = Field(default=None, exclude=True, repr=False)
-    _runner_lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
+    runtime: Any = Field(default=None, exclude=True, repr=False)
+    _runtime_lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
 
     @property
     def task_id(self) -> str:
         return self.id
 
     @property
-    def runtime(self) -> Any:
-        return self.runner.runtime if self.runner is not None else None
-
-    @property
     def is_active(self) -> bool:
-        return self.runner is not None
+        return self.runtime is not None
 
     async def create_child_session(
         self,
@@ -391,7 +387,7 @@ class AgentSession(Session):
 
         manager_ref = self.manager
         copy_source = self.model_copy(
-            update={"manager": None, "owner": None, "runner": None}
+            update={"manager": None, "owner": None, "runtime": None}
         )
         new_session = copy_source.model_copy(
             deep=True,
@@ -409,7 +405,7 @@ class AgentSession(Session):
                 "initial_message": None,
                 "manager": manager_ref,
                 "owner": owner,
-                "runner": None,
+                "runtime": None,
             },
         )
         new_session.run_info.llm_context_id = str(uuid.uuid4())
@@ -588,8 +584,8 @@ class SessionManager:
     async def stop_tree(self, root: Session) -> None:
         await self.stop_descendants(root)
         if isinstance(root, AgentSession):
-            if root.runner is not None:
-                await root.runner.stop_runtime()
+            if root.runtime is not None:
+                await root.runtime.close()
 
     async def stop_descendants(self, root: Session) -> None:
         """Stop all active descendants in child-first order, preserving root."""

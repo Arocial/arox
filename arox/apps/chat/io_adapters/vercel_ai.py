@@ -28,18 +28,18 @@ from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage, UIMessage
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from arox.apps.chat.driver import (
-    ChatInputReply,
-    ChatInputRequest,
-    ChatServeDriver,
-    dispatch_command,
-)
+from arox.core.agent_runtime import AgentRuntime
 from arox.core.completion import parse_request
 from arox.core.config import ConfigLoader
 from arox.core.io import AbstractIOAdapter, IOEndpoint, SnapshotEvent
-from arox.core.runner import ServeRunner
+from arox.core.plugin import CommandInput, CommandInputReply
 from arox.core.session import AgentSession, ErrorEvent
-from arox.core.types import ServerIdMapping, SessionTreeUpdate, UserMessageEvent
+from arox.core.types import (
+    ServerIdMapping,
+    SessionTreeUpdate,
+    UserInput,
+    UserMessageEvent,
+)
 
 if TYPE_CHECKING:
     from arox.core.agent_runtime import AgentRuntime
@@ -383,17 +383,6 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         elif isinstance(event, FinalResultEvent):
             messages.append({"type": "finish"})
 
-        elif isinstance(event, ChatInputRequest):
-            messages.append(
-                {
-                    "type": "cmd-input-request",
-                    "req_id": event.req_id,
-                }
-            )
-            # Emit an explicit stream close signal to let the frontend decouple
-            # stream management from business logic.
-            messages.append({"type": "stream-close"})
-
         elif isinstance(event, ErrorEvent):
             messages.append({"type": "error", "errorText": event.error})
 
@@ -430,19 +419,19 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
     async def _apply_input(self, target, adapter_ep: IOEndpoint, payload: dict) -> dict:
         if payload.get("cancel"):
-            runner = target.session.runner
-            if runner is None:
+            runtime = target.session.runtime
+            if runtime is None:
                 return {"status": "unavailable"}
-            cancelled = await runner.cancel_current_execution()
+            cancelled = await runtime.cancel_turn()
             return {"status": "cancelled" if cancelled else "idle"}
 
         cmd = payload.get("command")
         if cmd is not None:
-            result = await dispatch_command(target, cmd)
-            if result.status != "handled":
-                return {"status": result.status}
-            assert result.reply is not None
-            return {"status": "ok", "output": result.reply.output}
+            reply = await adapter_ep.send(CommandInput(command=cmd))
+            assert isinstance(reply, CommandInputReply)
+            if reply.status != "handled":
+                return {"status": reply.status}
+            return {"status": "ok", "output": reply.output}
 
         reply = payload.get("reply")
         if reply is not None:
@@ -463,13 +452,12 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             part = parts[0]
             assert isinstance(part, UserPromptPart)
             input_content = part.content
-            chat_input_reply = ChatInputReply(
-                req_id=reply_metadata["req_id"],
+            chat_input = UserInput(
                 input_content=input_content,
                 client_message_id=reply_metadata.get("client_message_id"),
             )
 
-            await adapter_ep.send(chat_input_reply)
+            await adapter_ep.send(chat_input)
             return {"status": "ok"}
 
         return {"status": "noop"}
@@ -676,29 +664,12 @@ class VercelStreamServer:
         await self.session_manager.persist(session)
         return await self.start_session(session.id)
 
-    async def _supervise_runner(
-        self,
-        runner: ServeRunner,
-        serve_task: asyncio.Task[None],
-    ) -> None:
-        try:
-            await asyncio.gather(serve_task, return_exceptions=True)
-        finally:
-            await runner.stop_runtime()
-
     async def start_session(self, session_id: str) -> SessionView:
         session = await self._resolve_root_session(session_id)
         if session.is_active:
             raise HTTPException(status_code=409, detail="Session is already active.")
-        runner = ServeRunner(
-            session, self.config_loader, self.io_adapter, ChatServeDriver()
-        )
-        await runner.start_runtime()
-        serve_task = runner.run()
-        asyncio.create_task(
-            self._supervise_runner(runner, serve_task),
-            name=f"session-supervisor:{session.id}",
-        )
+        runtime = AgentRuntime(self.config_loader, self.io_adapter, session)
+        await runtime.__aenter__()
         return await build_session_view(session)
 
     async def stop_session(self, session_id: str) -> SessionView:
@@ -734,7 +705,7 @@ class VercelStreamServer:
     ):
         root = await self._resolve_root_session(root_session_id)
         target = await self._resolve_child_session(root, target_session_id)
-        runtime = target.runner.runtime if target.runner is not None else None
+        runtime = target.runtime
         if runtime is None:
             raise HTTPException(
                 status_code=409, detail="Session runtime is not active."
@@ -742,7 +713,7 @@ class VercelStreamServer:
         return await self.io_adapter.suggestions(runtime, command, q)
 
     def _model_for(self, session: AgentSession) -> str | None:
-        runtime = session.runner.runtime if session.runner is not None else None
+        runtime = session.runtime
         agent_config = self.config_loader.current_config.agent.get(session.agent_name)
         return (
             runtime.provider_model

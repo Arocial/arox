@@ -63,6 +63,7 @@ class IOEndpoint:
         self._cached_events: list[Any] = []
         self._inbox: asyncio.Queue[Any] = asyncio.Queue()
         self._closed = False
+        self._disconnected = asyncio.Event()
         self._pending: dict[str, asyncio.Future[ReplyEvent]] = {}
         self._synthetic_index = 0
 
@@ -78,6 +79,8 @@ class IOEndpoint:
                 raise RuntimeError("IO peer is already connected.")
             self._peer = peer
             peer._peer = self
+            self._disconnected.clear()
+            peer._disconnected.clear()
             self._replay_to(peer)
             peer._replay_to(self)
 
@@ -91,8 +94,14 @@ class IOEndpoint:
             if peer is None:
                 return
             self._peer = None
+            self._disconnected.set()
             if peer._peer is self:
                 peer._peer = None
+                peer._disconnected.set()
+
+    async def wait_disconnected(self) -> None:
+        """Wait until this endpoint is no longer paired with its peer."""
+        await self._disconnected.wait()
 
     def _replay_to(self, peer: "IOEndpoint") -> None:
         if self._snapshot_value is not None:
@@ -249,29 +258,28 @@ class AbstractIOAdapter(ABC):
 
 
 class AgentIOEndpoint(IOEndpoint):
-    """Agent-side endpoint with a request loop.
+    """Agent-side endpoint with an inbound event dispatch loop.
 
-    The adapter owns the peer endpoint and its consumer. This endpoint dispatches
-    inbound :class:`RequestEvent` instances to handlers registered via
-    :meth:`register_request_handler`.
+    The adapter owns the peer endpoint and its consumer. Inbound events are
+    dispatched to handlers registered for their concrete event type.
     """
 
     def __init__(self):
         super().__init__()
-        self._request_handlers: dict[type[RequestEvent], Callable[[Any], Any]] = {}
+        self._event_handlers: dict[type[Any], Callable[[Any], Any]] = {}
 
-    def register_request_handler(
+    def register_event_handler(
         self,
-        event_type: type[RequestEvent],
+        event_type: type[Any],
         handler: Callable[[Any], Any],
     ) -> None:
-        """Register a handler for a :class:`RequestEvent` subclass.
+        """Register the single handler for an inbound event type.
 
-        Handlers may be sync or async; the receiver loop awaits coroutines.
-        If the handler returns a :class:`ReplyEvent`, it is sent back;
-        otherwise a default :class:`ReplyEvent` is sent.
+        Handlers may be synchronous or asynchronous.
         """
-        self._request_handlers[event_type] = handler
+        if event_type in self._event_handlers:
+            raise RuntimeError(f"Handler already registered for {event_type.__name__}.")
+        self._event_handlers[event_type] = handler
 
     async def _agent_event_loop(self) -> None:
         while True:
@@ -279,32 +287,34 @@ class AgentIOEndpoint(IOEndpoint):
                 event = await self.receive()
             except (StopAsyncIteration, RuntimeError):
                 return
-            if isinstance(event, RequestEvent):
-                handler = self._request_handlers.get(type(event))
-                if handler is None:
+            handler = self._event_handlers.get(type(event))
+            if handler is None:
+                if isinstance(event, RequestEvent):
                     logger.warning(
                         "No handler registered for RequestEvent %s",
                         type(event).__name__,
                     )
                     await self.send(ReplyEvent(req_id=event.req_id))
-                    continue
-                try:
-                    result = handler(event)
-                    if asyncio.iscoroutine(result):
-                        result = await result
+                else:
+                    logger.warning(
+                        "No handler registered for event %s", type(event).__name__
+                    )
+                continue
+            try:
+                result = handler(event)
+                if asyncio.iscoroutine(result):
+                    result = await result
+                if isinstance(event, RequestEvent):
                     if isinstance(result, ReplyEvent):
                         result.req_id = event.req_id
                         await self.send(result)
                     else:
                         await self.send(ReplyEvent(req_id=event.req_id))
-                except Exception:
-                    logger.exception(
-                        "Error handling RequestEvent %s", type(event).__name__
-                    )
-            else:
-                logger.debug(
-                    "Ignoring non-RequestEvent on adapter->host channel: %r",
-                    type(event).__name__,
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Error handling inbound event %s", type(event).__name__
                 )
 
     async def __aenter__(self):

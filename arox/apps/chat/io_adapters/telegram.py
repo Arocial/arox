@@ -21,7 +21,6 @@ class TelegramIOAdapter(BotIOAdapter):
     _shared_app = None
     _app_lock = asyncio.Lock()
     _adapters = []
-    _shared_input_queue = asyncio.Queue()
 
     def __init__(self):
         super().__init__()
@@ -31,7 +30,6 @@ class TelegramIOAdapter(BotIOAdapter):
             self.allowed_chat_id = int(self.allowed_chat_id)
 
         self.current_chat_id = self.allowed_chat_id
-        self.input_queue = TelegramIOAdapter._shared_input_queue
         self.chat_id_event = asyncio.Event()
         if self.current_chat_id:
             self.chat_id_event.set()
@@ -110,4 +108,5 @@ class TelegramIOAdapter(BotIOAdapter):
             adapter.current_chat_id = chat_id
             adapter.chat_id_event.set()
 
-        await cls._shared_input_queue.put(update.message.text)
+        for adapter in cls._adapters:
+            await adapter.send_user_input(update.message.text)

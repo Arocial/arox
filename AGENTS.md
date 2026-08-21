@@ -16,9 +16,9 @@ uv run mkdocs serve  # Serve docs at http://127.0.0.1:3420
 
 ## Architecture
 
-### Hierarchy: App → AgentSession + SessionRunner
+### Hierarchy: App → AgentSession + AgentRuntime
 
-An **App** is a runnable process that owns one `IOAdapter` and activates an `AgentSession` through a `SessionRunner`. `ServeRunner` owns the user-facing serve loop and `TaskRunner` owns resumable subagent turns. Both create the same `AgentRuntime` implementation. Plugins are loaded in `AgentConfig.plugins` order and receive their settings from `AgentConfig.plugin_config`. The `SubagentPlugin` exposes synchronous delegation in `simple` mode and resumable task controls in `advanced` mode.
+An **App** is a runnable process that owns one `IOAdapter` and activates an `AgentRuntime` for an `AgentSession`. The runtime owns the current `Turn`, while `AgentIOEndpoint` dispatches inbound user input. Plugins are loaded in `AgentConfig.plugins` order and receive their settings from `AgentConfig.plugin_config`. The `SubagentPlugin` exposes synchronous delegation in `simple` mode and resumable task controls in `advanced` mode.
 
 ```toml
 [agent.coder.plugin_config.subagent]
@@ -30,18 +30,17 @@ mode = "advanced"
 **Session-centric architecture** (`arox/core/session.py` and `arox/core/agent_runtime.py`):
 - **`AgentSession`** is the persistent, authoritative entity tracking:
   - Identity and hierarchy (`id`, `path`, `owner`, `children`).
-  - Task metadata (`task_name`, `target`, `initial_message`). Task results and errors are maintained by the active `TaskRunner` rather than persisted on the session.
-  - Ephemeral execution presence via `session.runner`; runners are not persisted.
+  - Task metadata (`task_name`, `target`, `initial_message`). Task results and errors are available through the active runtime's `Turn` rather than persisted on the session.
+  - Ephemeral execution presence via `session.runtime`; runtimes are not persisted.
   - Message history is persisted as segments on the session and is the runtime source of truth. Events store only audit metadata; user turns are located through the existing `server_message_id` carried in `UserInput.input_content`. Compaction archives the processor's original messages, including the current user request, so historical forks can locate and slice the appropriate messages without replaying events or duplicating message payloads or IDs.
   - Agent sessions persist only the agent name; full `AgentConfig` is resolved dynamically. The user-facing `AgentSession` is the top-level session; child tasks nest beneath it.
 - **`AgentRuntime`** is an ephemeral runtime owning live/expensive resources (Pydantic AI agent, MCP clients, plugins, tools, IO channels).
-  - It executes one turn through `run_turn()` and does not own asyncio tasks.
-  - A `SessionRunner` creates, enters, and closes the runtime through `start_runtime()` / `stop_runtime()` and supports async context management; startup is serialized through the session and failed initialization rolls back the runner binding.
+  - It executes one input through a retained `Turn`, which wraps the active `asyncio.Task`.
+  - It supports async context management; startup is serialized through the session and failed initialization rolls back the runtime binding.
   - Child sessions are spawned via `parent_session.create_child_session(...)`.
   - Runtime identity matches `session.id` (`runtime.uuid == session.id`).
-  - `TaskRunner.run()` starts one turn and returns its retained `asyncio.Task`; the runner updates its latest `result` / `error` as execution completes, while callers await, shield, time out, or cancel the task directly and the runtime remains available for follow-ups.
-  - `ServeRunner.run()` starts and returns the long-lived serve task without closing the runtime when the loop finishes. `ChatServeDriver` owns the current interaction task, and `SessionRunner.cancel_current_execution()` cancels the active turn or interaction while preserving the runner. `stop_runtime()` stops owned execution before closing the runtime.
-  - `ChatServeDriver` implements the concrete request/reply protocol used by `ServeRunner`.
+  - `AgentRuntime.accept_input()` dispatches slash commands or creates a `Turn`; callers can await, shield, time out, or cancel its task while the runtime remains available for follow-ups.
+  - `AgentIOEndpoint` dispatches adapter-originated `UserInput` directly to the runtime. There is no separate serve task. `AgentRuntime.cancel_turn()` cancels the active turn while preserving the runtime, and `close()` cancels execution before closing resources.
 - `SessionManager` coordinates with `SessionStore` (default `FileSessionStore`) and maintains one authoritative in-process Session identity map keyed by full path. Its tree API (`resolve`, `list_roots`, `children_of`, `walk`, `find`, `stop_tree`, `delete_tree`, and `remove_child`) transparently prefers cached/live instances over storage, while manager shutdown stops every live root tree before flushing pending saves.
 - Resuming is done via the `session_id` passed to the App. The `CorePlugin` provides the `/fork` command.
 
@@ -49,7 +48,7 @@ mode = "advanced"
 
 IO is split into two layers: per-agent channels and app-level adapters.
 
-- **Per-agent channel** (`arox/core/io.py`): `create_io_channel()` returns a pair of `IOEndpoint` instances backed by two in-memory streams. Every endpoint exposes its owning `IOHost` through `endpoint.host`, allowing adapter-side code to recover the runtime without copying it into events. Every runtime holds its own `agent_ep: IOEndpoint` and uses `send` / `receive` to talk to the UI — both the main runtime and each subagent runtime have independent channels, so their output can be routed/rendered separately. `RequestEvent` / `ReplyEvent` provide request/reply correlation on top of `send` / `receive`.
+- **Per-agent channel** (`arox/core/io.py`): every runtime holds its own `agent_ep: AgentIOEndpoint` and uses `send` / `receive` to talk to the UI. Adapter-originated events are dispatched to registered handlers by the agent endpoint's receive loop. Both the main runtime and each subagent runtime have independent channels, so their output can be routed/rendered separately. `RequestEvent` / `ReplyEvent` remain available when explicit request/reply correlation is needed.
 - **App-level adapter** (base `AbstractIOAdapter` in `arox/core/io.py`; Chat implementations in `arox/apps/chat/io_adapters/`): one adapter per App. Each `IOHost` registers itself with the adapter for its active lifetime and owns the adapter-side consumer for its paired `IOEndpoint`; the adapter renders those events to the concrete UI. Available adapters:
   - `TextIOAdapter` — rich terminal via `prompt-toolkit`
   - `VercelStreamIOAdapter` — web frontend via Vercel AI SDK (FastAPI/SSE)
@@ -59,9 +58,7 @@ IO is split into two layers: per-agent channels and app-level adapters.
 
 **Types**
 - **`AgentRuntime`** (`arox/core/agent_runtime.py`): the single LLM runtime. Owns inference, plugins, tools, MCP clients, IO channels, and single-turn `run_turn()` execution.
-- **`TaskRunner`** (`arox/core/runner.py`): manages resumable task turns and retains the latest turn task.
-- **`ServeRunner`** (`arox/core/runner.py`): manages the long-lived serve loop; its driver owns interaction-level execution.
-- **`ChatServeDriver`** (`arox/apps/chat/driver.py`): implements the chat request/reply loop and handles slash commands from normal user input before starting an LLM turn.
+- **`Turn`** (`arox/core/turn.py`): wraps one input execution and exposes its task, result, error, waiting, and cancellation APIs.
 
 **Extension points**
 - **`Plugin`** (`arox/core/plugin.py`): primary extension unit. A plugin declares:

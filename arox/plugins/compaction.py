@@ -7,7 +7,6 @@ from pydantic_ai import ModelMessage, ModelRequest, RunContext, UserPromptPart
 
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, tool
-from arox.core.runner import TaskRunner
 from arox.plugins.slots import PERSISTENT_CONTEXT
 
 logger = logging.getLogger(__name__)
@@ -203,13 +202,14 @@ class CompactionPlugin(Plugin):
             initial_message=prompt,
         )
         try:
-            async with TaskRunner(
-                compaction_session, runtime.config_loader, runtime.io_adapter
-            ) as runner:
-                compaction_runtime = runner.runtime
-                assert compaction_runtime is not None
+            compaction_runtime = AgentRuntime(
+                runtime.config_loader, runtime.io_adapter, compaction_session
+            )
+            async with compaction_runtime:
                 compaction_runtime.message_history = messages.copy()
-                result = await runner.run(prompt)
+                turn = await compaction_runtime.accept_input(prompt)
+                assert turn is not None
+                result = await turn
                 summary = (
                     result.output if result and isinstance(result.output, str) else ""
                 )

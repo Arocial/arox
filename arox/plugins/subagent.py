@@ -3,8 +3,8 @@ import secrets
 from enum import StrEnum
 from typing import Any
 
+from arox.core.agent_runtime import AgentRuntime
 from arox.core.plugin import Plugin, tool
-from arox.core.runner import TaskRunner
 from arox.core.session import AgentSession
 from arox.plugins.slots import SYSTEM_PROMPT
 
@@ -137,34 +137,37 @@ class SubagentPlugin(Plugin):
         task_session: AgentSession,
         message: str,
     ) -> asyncio.Task[Any]:
+        runtime = task_session.runtime
         try:
             self.runtime.session.record_subagent_call(task_session.agent_name, message)
-            runner = task_session.runner
-            if runner is None:
-                runner = TaskRunner(
-                    task_session, self.runtime.config_loader, self.runtime.io_adapter
+            if runtime is None:
+                runtime = AgentRuntime(
+                    self.runtime.config_loader, self.runtime.io_adapter, task_session
                 )
-                await runner.start_runtime()
-            task = runner.run(message)
+                await runtime.__aenter__()
+            turn = await runtime.accept_input(message)
+            assert turn is not None
             if self.mode is SubagentMode.ADVANCED:
                 self.runtime.background_tasks.register(task_session.target)
-                task.add_done_callback(
-                    lambda _completed: self._notify_task_finished(task_session, runner)
+                turn.task.add_done_callback(
+                    lambda _completed: self._notify_task_finished(task_session, runtime)
                 )
-            return task
+            return turn.task
         except BaseException:
-            if runner is not None:
-                await runner.stop_runtime()
+            if runtime is not None:
+                await runtime.close()
             self._unregister_task_session(task_session)
             raise
 
     def _notify_task_finished(
-        self, task_session: AgentSession, runner: TaskRunner
+        self, task_session: AgentSession, runtime: AgentRuntime
     ) -> None:
         if self._stopping:
             return
-        if runner.error:
-            status = f"failed ({runner.error})"
+        turn = runtime.turn
+        error = turn.error if turn is not None else None
+        if error:
+            status = f"failed ({task_session.format_error(error)})"
         else:
             status = "completed"
         self.runtime.background_tasks.complete(
@@ -185,12 +188,13 @@ class SubagentPlugin(Plugin):
             f"- task_name: {task_session.task_name}",
             f"- agent_name: {task_session.agent_name}",
         ]
-        runner = task_session.runner
-        if isinstance(runner, TaskRunner):
-            if runner.error:
-                lines.append(f"- error: {runner.error}")
-            if include_result and runner.result:
-                lines.extend(("", "Result:", runner.result.output))
+        runtime = task_session.runtime
+        turn = runtime.turn if runtime is not None else None
+        if turn is not None:
+            if turn.error:
+                lines.append(f"- error: {task_session.format_error(turn.error)}")
+            if include_result and turn.result:
+                lines.extend(("", "Result:", turn.result.output))
         return "\n".join(lines)
 
     @tool(
@@ -200,19 +204,21 @@ class SubagentPlugin(Plugin):
     async def delegate_task(self, message: str, agent_name: str) -> str:
         """Delegate a task to a configured subagent and wait for its result."""
         task_session = await self._spawn_task(None, message, agent_name)
-        runner = task_session.runner
+        runtime = task_session.runtime
         try:
-            if not isinstance(runner, TaskRunner) or runner.task is None:
+            turn = runtime.turn if runtime is not None else None
+            if turn is None:
                 return "Task completed with no output."
-            await asyncio.gather(runner.task, return_exceptions=True)
-            if runner.error:
-                return f"Task failed: {runner.error}"
-            result = runner.result
+            await asyncio.gather(turn.task, return_exceptions=True)
+            if turn.error:
+                return f"Task failed: {task_session.format_error(turn.error)}"
+            result = turn.result
             if result is None:
                 return "Task completed with no output."
             return result.output
         finally:
-            await runner.stop_runtime()
+            if runtime is not None:
+                await runtime.close()
 
     @tool(
         sequential=True,
@@ -249,11 +255,11 @@ class SubagentPlugin(Plugin):
         """
         async with self._lock:
             task_session = self._resolve_session(target)
-            runner = task_session.runner
+            runtime = task_session.runtime
             if (
-                isinstance(runner, TaskRunner)
-                and runner.task is not None
-                and not runner.task.done()
+                runtime is not None
+                and runtime.turn is not None
+                and not runtime.turn.done
             ):
                 raise ValueError(
                     f"Agent task '{task_session.target}' is already running."
@@ -277,18 +283,19 @@ class SubagentPlugin(Plugin):
             raise ValueError("timeout_seconds must be greater than zero.")
 
         task_session = self._resolve_session(target)
-        runner = task_session.runner
+        runtime = task_session.runtime
+        turn = runtime.turn if runtime is not None else None
 
-        if not isinstance(runner, TaskRunner) or runner.task is None:
+        if turn is None:
             return self._format_task(task_session)
-        done, _ = await asyncio.wait({runner.task}, timeout=timeout_seconds)
+        done, _ = await asyncio.wait({turn.task}, timeout=timeout_seconds)
         if not done:
             return "Agent is still running.\n" + self._format_task(task_session, False)
 
-        await asyncio.gather(runner.task, return_exceptions=True)
+        await asyncio.gather(turn.task, return_exceptions=True)
         self.runtime.background_tasks.observe(target)
         outcome = self._format_task(task_session)
-        await runner.stop_runtime()
+        await runtime.close()
         return outcome
 
     @tool(
@@ -299,17 +306,16 @@ class SubagentPlugin(Plugin):
         """Interrupt the targeted turn while preserving its agent session."""
         task_session = self._resolve_session(target)
         async with self._lock:
-            runner = task_session.runner
-            task = runner.task
-            if task is None or task.done():
+            runtime = task_session.runtime
+            turn = runtime.turn if runtime is not None else None
+            if turn is None or turn.done:
                 return "Agent is not running.\n" + self._format_task(
                     task_session, False
                 )
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+            await turn.cancel()
             self.runtime.background_tasks.observe(target)
             outcome = self._format_task(task_session)
-            await runner.stop_runtime()
+            await runtime.close()
         return "Agent interrupted.\n" + outcome
 
     @tool(enabled=lambda plugin: plugin.mode is SubagentMode.ADVANCED)
@@ -322,13 +328,10 @@ class SubagentPlugin(Plugin):
         blocks = []
         for task_session in sorted(task_sessions, key=lambda item: item.created_at):
             block = self._format_task(task_session, False)
-            runner = task_session.runner
-            if (
-                isinstance(runner, TaskRunner)
-                and runner.result
-                and isinstance(runner.result.output, str)
-            ):
-                summary = runner.result.output.replace("\n", " ")[:200]
+            runtime = task_session.runtime
+            turn = runtime.turn if runtime is not None else None
+            if turn is not None and turn.result and isinstance(turn.result.output, str):
+                summary = turn.result.output.replace("\n", " ")[:200]
                 block += f"\n- result_summary: {summary}"
             blocks.append(block)
         return "\n\n".join(blocks)

@@ -15,12 +15,12 @@ from pydantic_ai import (
     ThinkingPartDelta,
 )
 
-from arox.apps.chat.driver import ChatInputReply, ChatInputRequest
 from arox.core.io import (
     AbstractIOAdapter,
     IOEndpoint,
 )
 from arox.core.session import ErrorEvent
+from arox.core.types import UserInput
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,6 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
         super().__init__()
         self.message_buffer = []
         self.read_lock = asyncio.Lock()
-        self.input_queue: asyncio.Queue | None = None
 
     @abstractmethod
     async def send_message(self, text: str):
@@ -75,20 +74,10 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
             part = event.part
             call_text = f"🛠 Tool call: {part.tool_name}\nArgs: {str(part.args)[:500]}"
             await self.send_message(call_text)
-        elif isinstance(event, ChatInputRequest):
-            if not self.input_queue:
-                logger.error("input_queue is not initialized")
-                return
-            user_input: str | None = None
-            while True:
-                line = await self.input_queue.get()
-                user_input = line
-                break
-            await adapter_ep.send(
-                ChatInputReply(
-                    req_id=event.req_id,
-                    input_content=user_input,
-                )
-            )
         elif isinstance(event, ErrorEvent):
             await self.send_message(f"⚠️ An error occurred: {event.error}")
+
+    async def send_user_input(self, text: str) -> None:
+        for adapter_ep, runtime in list(self.adapter_ep_to_runtime.items()):
+            if runtime.session.owner is None:
+                await adapter_ep.send(UserInput(input_content=text))

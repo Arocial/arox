@@ -17,7 +17,6 @@ class FeishuIOAdapter(BotIOAdapter):
     _lark_client: lark.Client | None = None
     _app_lock = asyncio.Lock()
     _adapters = []
-    _shared_input_queue = asyncio.Queue()
 
     def __init__(self):
         super().__init__()
@@ -26,7 +25,6 @@ class FeishuIOAdapter(BotIOAdapter):
         self.allowed_chat_id = os.environ.get("FEISHU_CHAT_ID")
 
         self.current_chat_id = self.allowed_chat_id
-        self.input_queue = FeishuIOAdapter._shared_input_queue
 
         FeishuIOAdapter._adapters.append(self)
 
@@ -126,5 +124,4 @@ class FeishuIOAdapter(BotIOAdapter):
             return
 
         logger.info(f"Got user input: {text}")
-        if self.input_queue:
-            await self.input_queue.put(text)
+        await self.send_user_input(text)

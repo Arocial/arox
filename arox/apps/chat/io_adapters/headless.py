@@ -16,7 +16,7 @@ class HeadlessIOAdapter(AbstractIOAdapter):
     The final answer is taken from the ``AgentRunResultEvent`` emitted at the
     end of a step (its ``result.output``); streaming text, tool calls and
     thinking are dropped. The app executes the prompt directly with a
-    ``TaskRunner`` rather than starting the chat serve loop.
+    ``AgentRuntime`` rather than starting an interactive chat loop.
     """
 
     def __init__(self):

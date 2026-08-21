@@ -80,11 +80,9 @@ Server-specific frames include:
 | type | meaning |
 |---|---|
 | `state` | Committed UI message history and selected model; sent first and whenever the runtime refreshes its snapshot |
-| `cmd-input-request` | Runtime is waiting for user input |
 | `cmd-user-message` | A user message was added to the live stream; an optional top-level `client_message_id` correlates a client-originated message without overloading its UI message ID |
 | `cmd-user-turn` | A user-turn anchor was recorded |
 | `cmd-session-tree` | Updated recursive session view |
-| `stream-close` | Close the current UI message stream |
 | `ack` | Acknowledges a client payload and reports its status |
 
 Client payloads:
@@ -92,7 +90,7 @@ Client payloads:
 ```json
 { "cancel": true }
 { "command": { "type": "InfoEvent" } }
-{ "reply": { "id": "msg-1", "role": "user", "content": "hello", "metadata": { "custom": { "chatInputEventResult": { "req_id": "request-id" } } } } }
+{ "reply": { "id": "msg-1", "role": "user", "parts": [{ "type": "text", "text": "hello", "state": "done" }] } }
 ```
 
 Cancel acknowledgements report `cancelled`, `idle`, or `unavailable`. Command

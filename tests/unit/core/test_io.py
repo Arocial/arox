@@ -129,6 +129,27 @@ async def test_fire_and_forget_send_returns_none():
 
 
 @pytest.mark.asyncio
+async def test_agent_endpoint_dispatches_plain_events():
+    @dataclass
+    class Plain:
+        value: int
+
+    agent_ep = AgentIOEndpoint()
+    adapter_ep = IOEndpoint()
+    agent_ep.pair(adapter_ep)
+    received: asyncio.Queue[int] = asyncio.Queue()
+    result = agent_ep.register_event_handler(
+        Plain, lambda event: received.put(event.value)
+    )
+
+    async with agent_ep, adapter_ep:
+        await adapter_ep.send(Plain(42))
+        assert await asyncio.wait_for(received.get(), timeout=1) == 42
+
+    assert result is None
+
+
+@pytest.mark.asyncio
 async def test_unknown_reply_is_dropped():
     @dataclass
     class Plain:

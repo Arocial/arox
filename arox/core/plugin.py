@@ -84,6 +84,21 @@ class CommandDispatchResult:
     reply: CommandReply | None = None
 
 
+@dataclass(kw_only=True)
+class CommandInput(RequestEvent):
+    """Raw command input sent from an IO adapter to an agent runtime."""
+
+    command: str | dict[str, Any]
+
+
+@dataclass(kw_only=True)
+class CommandInputReply(ReplyEvent):
+    """IO reply describing how a raw command input was dispatched."""
+
+    status: CommandDispatchStatus
+    output: str | None = None
+
+
 @dataclass
 class CommandSpec:
     """Binding between a :class:`CommandEvent` subclass and its handler."""

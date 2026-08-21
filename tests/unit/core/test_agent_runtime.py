@@ -1,11 +1,12 @@
 import asyncio
+from collections import deque
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
-from pydantic_ai import RunContext
+from pydantic_ai import ModelRequestContext, RunContext
 from pydantic_ai.messages import (
     ModelRequest,
     TextContent,
@@ -21,9 +22,8 @@ from arox.core.app import app_setup
 from arox.core.background import BackgroundTaskBroker
 from arox.core.io import AbstractIOAdapter, RequestEvent
 from arox.core.plugin import Plugin, tool
-from arox.core.runner import TaskRunner
 from arox.core.session import AgentSession
-from arox.core.types import UserMessageEvent
+from arox.core.types import UserInput, UserMessageEvent
 from arox.plugins.core import SetModelEvent
 
 
@@ -42,6 +42,7 @@ class _FailingToolPlugin(Plugin):
 async def test_llm_notifications_are_injected_once_before_model_request():
     runtime = AgentRuntime.__new__(AgentRuntime)
     runtime.background_tasks = BackgroundTaskBroker()
+    runtime._pending_user_inputs = deque()
     runtime.message_history_fallback = []
     runtime.notify_llm("First task finished.")
     runtime.notify_llm("Second task finished.")
@@ -90,13 +91,8 @@ async def test_run_error_logs_exception_traceback(caplog):
 
 @asynccontextmanager
 async def _managed_runtime(runtime, config_loader, io_adapter):
-    runner = SimpleNamespace(runtime=runtime)
-    runtime.session.runner = runner
-    try:
-        async with runtime:
-            yield runtime
-    finally:
-        runtime.session.runner = None
+    async with runtime:
+        yield runtime
 
 
 @pytest.mark.asyncio
@@ -291,7 +287,7 @@ system_prompt = "Hi."
     async def handler(event):
         received.append(event)
 
-    runtime.agent_ep.register_request_handler(CustomEvent, handler)
+    runtime.agent_ep.register_event_handler(CustomEvent, handler)
 
     async with _managed_runtime(runtime, config_loader, runtime.io_adapter):
         ev = CustomEvent()
@@ -332,7 +328,7 @@ system_prompt = "Hi."
 
     async with _managed_runtime(runtime, config_loader, runtime.io_adapter):
         calls.clear()
-        runtime.agent_ep.register_request_handler(
+        runtime.agent_ep.register_event_handler(
             SetModelEvent, lambda e: runtime.set_model(e.model_ref)
         )
         endpoint = next(iter(runtime.io_adapter.adapter_ep_to_runtime))
@@ -580,7 +576,7 @@ system_prompt = "Hi."
     )
 
     assert runtime.uuid == session.id == "test-session-id"
-    assert session.runner is None
+    assert session.runtime is None
     assert session.is_active is False
     assert not hasattr(runtime, "status")
     assert runtime not in io_adapter.adapter_ep_to_runtime.values()
@@ -591,13 +587,13 @@ system_prompt = "Hi."
         endpoint = next(iter(io_adapter.adapter_ep_to_runtime))
         assert io_adapter.agent_io_for(endpoint) is runtime
 
-    assert session.runner is None
+    assert session.runtime is None
     assert session.is_active is False
     assert runtime not in io_adapter.adapter_ep_to_runtime.values()
 
 
 @pytest.mark.asyncio
-async def test_agent_manages_current_task(tmp_path, monkeypatch):
+async def test_agent_manages_current_turn(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
     config_file = tmp_path / ".arox" / "config.toml"
     config_file.parent.mkdir(parents=True, exist_ok=True)
@@ -614,55 +610,90 @@ system_prompt = "Hi."
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def blocking_turn(user_input=None):
+    consumed_inputs = []
+
+    async def blocking_turn(user_input):
+        consumed_inputs.append(user_input.text_content)
         started.set()
         await release.wait()
         return SimpleNamespace(output=user_input)
 
-    runtime.run_turn = blocking_turn  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
+    runtime._run_turn_input = blocking_turn  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
-    runner = TaskRunner(runtime.session, runtime.config_loader, runtime.io_adapter)
-    runner.runtime = runtime
-    runtime.session.runner = runner
-    assert runner.result is None
-    assert runner.error is None
     async with runtime:
-        task = runner.run("work")
+        turn = await runtime.accept_input("work")
+        assert turn is not None
+        task = turn.task
         await started.wait()
-        assert runner.task is task
-        with pytest.raises(RuntimeError, match="already running"):
-            runner.run("duplicate")
+        assert runtime.turn is turn
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(asyncio.shield(task), 0.01)
-        assert runner.task is task
+        parallel_turn = await runtime.accept_input("parallel work")
+        assert parallel_turn is turn
 
-        assert await runner.cancel_current_execution()
+        assert await runtime.cancel_turn()
         assert task.cancelled()
-        assert not await runner.cancel_current_execution()
-        assert runner.task is task
-        assert runner.result is None
-        assert runner.error == "Task interrupted."
+        assert not await runtime.cancel_turn()
+        assert turn.result is None
+        assert isinstance(turn.error, asyncio.CancelledError)
+        assert consumed_inputs == ["work"]
 
         release.set()
-        completed_task = runner.run("completed work")
-        assert runner.result is None
-        assert runner.error is None
-        completed_result = await completed_task
-        assert completed_result.output == "completed work"
-        assert runner.task is completed_task
-        assert runner.result is completed_result
-        assert runner.error is None
-        assert await runner.task is completed_result
+        completed_turn = await runtime.accept_input("completed work")
+        assert completed_turn is not None
+        completed_result = await completed_turn
+        assert isinstance(completed_result.output, UserInput)
+        assert completed_result.output.text_content == "completed work"
+        assert runtime.turn is completed_turn
+        assert completed_turn.result is completed_result
+        assert completed_turn.error is None
 
-        async def failed_turn(user_input=None):
+        started.clear()
+        release.clear()
+        consumed_inputs.clear()
+        queued_turn = await runtime.accept_input("first queued work")
+        assert queued_turn is not None
+        await started.wait()
+        assert await runtime.accept_input("second queued work") is queued_turn
+        request_context = SimpleNamespace(messages=[])
+        await runtime._before_model_request(
+            cast(RunContext[AgentDeps], None),
+            cast(ModelRequestContext, request_context),
+        )
+        injected = request_context.messages[0]
+        assert isinstance(injected, ModelRequest)
+        injected_content = injected.parts[0].content
+        assert not isinstance(injected_content, str)
+        assert isinstance(injected_content[0], TextContent)
+        assert injected_content[0].content == "second queued work"
+        assert not runtime._pending_user_inputs
+        release.set()
+        queued_result = await queued_turn
+        assert consumed_inputs == ["first queued work"]
+        assert queued_result.output.text_content == "first queued work"
+
+        started.clear()
+        release.clear()
+        consumed_inputs.clear()
+        trailing_turn = await runtime.accept_input("last model request")
+        assert trailing_turn is not None
+        await started.wait()
+        assert await runtime.accept_input("missed injection window") is trailing_turn
+        release.set()
+        trailing_result = await trailing_turn
+        assert consumed_inputs == ["last model request", "missed injection window"]
+        assert trailing_result.output.text_content == "missed injection window"
+
+        async def failed_turn(user_input):
             raise RuntimeError("model failed")
 
-        runtime.run_turn = failed_turn  # type: ignore[method-assign]
+        runtime._run_turn_input = failed_turn  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
         with pytest.raises(RuntimeError, match="model failed"):
-            await runner.run("failed work")
-        assert runner.result is None
-        assert runner.error == "RuntimeError: model failed"
-    runtime.session.runner = None
+            failed_turn_handle = await runtime.accept_input("failed work")
+            assert failed_turn_handle is not None
+            await failed_turn_handle
+        assert failed_turn_handle.result is None
+        assert isinstance(failed_turn_handle.error, RuntimeError)
 
 
 @pytest.mark.asyncio
@@ -689,7 +720,7 @@ system_prompt = "Hi."
         async with _managed_runtime(runtime, config_loader, io_adapter):
             raise RuntimeError("something broke")
 
-    assert session.runner is None
+    assert session.runtime is None
     assert session.events[-1].event_type == "error"
     assert "RuntimeError: something broke" in session.events[-1].error
     assert runtime not in io_adapter.adapter_ep_to_runtime.values()
@@ -721,14 +752,14 @@ system_prompt = "Hi."
         async with _managed_runtime(runtime, config_loader, io_adapter):
             raise asyncio.CancelledError()
 
-    assert session.runner is None
+    assert session.runtime is None
     assert session.events[-1].event_type == "error"
     assert session.events[-1].error == "Task interrupted."
     assert runtime not in io_adapter.adapter_ep_to_runtime.values()
 
 
 @pytest.mark.asyncio
-async def test_runner_creates_runtime(tmp_path, monkeypatch):
+async def test_runtime_uses_session_identity(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
     config_file = tmp_path / ".arox" / "config.toml"
     config_file.parent.mkdir(parents=True, exist_ok=True)
@@ -744,11 +775,8 @@ system_prompt = "Hi."
         agent_name="test_agent",
     )
 
-    runner = TaskRunner(session, config_loader, io_adapter)
-    runtime = await runner.start_runtime()
-    try:
+    runtime = AgentRuntime(config_loader, io_adapter, session)
+    async with runtime:
         assert runtime.uuid == "child-session-id"
         assert runtime.session is session
         assert runtime.name == "test_agent"
-    finally:
-        await runner.stop_runtime()
