@@ -13,8 +13,8 @@ class UserInput:
     """A unit of user input passed to :meth:`AgentRuntime.run`.
 
     ``client_message_id`` is an opaque id assigned by a client to the message that
-    produced this input; it is echoed back in :class:`ServerIdMapping` so the client
-    can map its own messages to backend session-event ids.
+    produced this input. Adapters echo it alongside the stable
+    ``server_message_id`` carried in the rendered message metadata.
     """
 
     input_content: Sequence[UserContent] | str | None = None
@@ -40,20 +40,17 @@ class UserInput:
 
 
 @dataclass
-class ServerIdMapping:
-    """Maps a UI-assigned ``client_message_id`` to the ``server_message_id`` of the recorded
-    user-input session event, so the UI can resolve stable backend event ids
-    (used for forking) without relying on positional ordering."""
-
-    server_message_id: str | None = None
-    client_message_id: str | None = None
-
-
-@dataclass
 class UserMessageEvent:
     """Requests that an adapter render a runtime-originated user message."""
 
     user_input: UserInput
+
+
+@dataclass(frozen=True)
+class TurnStateEvent:
+    """Reports whether the runtime's retained turn is currently executing."""
+
+    busy: bool
 
 
 @dataclass

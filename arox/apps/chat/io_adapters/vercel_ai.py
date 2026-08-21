@@ -16,7 +16,6 @@ from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from pydantic_ai import (
-    FinalResultEvent,
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartDeltaEvent,
@@ -35,8 +34,8 @@ from arox.core.io import AbstractIOAdapter, IOEndpoint, SnapshotEvent
 from arox.core.plugin import CommandInput, CommandInputReply
 from arox.core.session import AgentSession, ErrorEvent
 from arox.core.types import (
-    ServerIdMapping,
     SessionTreeUpdate,
+    TurnStateEvent,
     UserInput,
     UserMessageEvent,
 )
@@ -325,6 +324,8 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             return
         websocket, root_session, stream, model, session_id = context
         if isinstance(event, SnapshotEvent):
+            runtime = self.agent_io_for(adapter_ep)
+            turn = getattr(runtime, "turn", None)
             messages = event.snapshot
             visible_messages = [
                 msg
@@ -341,6 +342,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     "type": "state",
                     "history": build_state_history(visible_messages),
                     "model": model,
+                    "busy": bool(turn and not turn.done),
                 },
                 session_id,
             )
@@ -380,19 +382,11 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             async for chunk in stream.handle_event(event):
                 messages.append(chunk.model_dump(by_alias=True, exclude_none=True))
 
-        elif isinstance(event, FinalResultEvent):
-            messages.append({"type": "finish"})
+        elif isinstance(event, TurnStateEvent):
+            messages.append({"type": "cmd-turn-state", "busy": event.busy})
 
         elif isinstance(event, ErrorEvent):
             messages.append({"type": "error", "errorText": event.error})
-
-        elif isinstance(event, ServerIdMapping):
-            frame = {
-                "type": "cmd-user-turn",
-                "server_message_id": event.server_message_id,
-                "client_message_id": event.client_message_id,
-            }
-            messages.append(frame)
 
         elif isinstance(event, UserMessageEvent):
             input_content = event.user_input.input_content
@@ -509,6 +503,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                             target_session.build_io_snapshot()
                         ),
                         "model": model,
+                        "busy": False,
                     },
                     session_id,
                 )

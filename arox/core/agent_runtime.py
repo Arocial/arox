@@ -72,8 +72,8 @@ from arox.core.slot import (
 )
 from arox.core.turn import Turn
 from arox.core.types import (
-    ServerIdMapping,
     SessionTreeUpdate,
+    TurnStateEvent,
     UserInput,
     UserMessageEvent,
 )
@@ -716,6 +716,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         if not isinstance(user_input, UserInput):
             user_input = UserInput(input_content=user_input)
 
+        await self.agent_ep.send(TurnStateEvent(busy=True))
         try:
             result = await self._run_turn_input(user_input)
             while self._pending_user_inputs:
@@ -723,18 +724,12 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
             return result
         finally:
             self._pending_user_inputs.clear()
+            await self.agent_ep.send(TurnStateEvent(busy=False))
 
     async def _record_user_input(self, user_input: UserInput) -> None:
         if user_input.input_content is not None:
             await self.agent_ep.send(UserMessageEvent(user_input=user_input))
             self.session.record_user_input(user_input)
-            if user_input.client_message_id:
-                await self.agent_ep.send(
-                    ServerIdMapping(
-                        server_message_id=user_input.server_message_id,
-                        client_message_id=user_input.client_message_id,
-                    )
-                )
 
     async def _run_turn_input(self, user_input: UserInput) -> AgentRunResult[str]:
         """Execute and persist the input that started the current turn."""

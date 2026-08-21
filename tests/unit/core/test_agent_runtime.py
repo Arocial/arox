@@ -23,7 +23,7 @@ from arox.core.background import BackgroundTaskBroker
 from arox.core.io import AbstractIOAdapter, RequestEvent
 from arox.core.plugin import Plugin, tool
 from arox.core.session import AgentSession
-from arox.core.types import UserInput, UserMessageEvent
+from arox.core.types import TurnStateEvent, UserInput, UserMessageEvent
 from arox.plugins.core import SetModelEvent
 
 
@@ -551,7 +551,8 @@ system_prompt = "Hi."
         with pytest.raises(asyncio.CancelledError):
             await runtime.run_turn("cancel")
 
-    assert sent_events[-1] == "Task interrupted."
+    assert sent_events[-2] == "Task interrupted."
+    assert sent_events[-1] == TurnStateEvent(busy=False)
     assert all(event.event_type != "error" for event in runtime.session.events)
 
 

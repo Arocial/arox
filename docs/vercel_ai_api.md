@@ -80,8 +80,8 @@ Server-specific frames include:
 | type | meaning |
 |---|---|
 | `state` | Committed UI message history and selected model; sent first and whenever the runtime refreshes its snapshot |
-| `cmd-user-message` | A user message was added to the live stream; an optional top-level `client_message_id` correlates a client-originated message without overloading its UI message ID |
-| `cmd-user-turn` | A user-turn anchor was recorded |
+| `cmd-user-message` | An ordered user-message boundary. Its message metadata contains the stable `user_input_id` fork anchor, and an optional top-level `client_message_id` makes client-originated replay idempotent |
+| `cmd-turn-state` | The retained turn entered or left its busy reading epoch; `busy=false` is ordered after its final output chunk |
 | `cmd-session-tree` | Updated recursive session view |
 | `ack` | Acknowledges a client payload and reports its status |
 

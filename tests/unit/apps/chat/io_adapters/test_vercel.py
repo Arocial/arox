@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import WebSocket, WebSocketDisconnect
+from pydantic_ai import FinalResultEvent
 from pydantic_ai.messages import ModelRequest, TextContent, UserPromptPart
 from pydantic_ai.ui.vercel_ai import VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage
@@ -22,7 +23,12 @@ from arox.core.app import app_setup
 from arox.core.io import AgentIOEndpoint
 from arox.core.plugin import CommandInput, CommandInputReply
 from arox.core.session import AgentSession, ErrorEvent, FileSessionStore, SessionManager
-from arox.core.types import USER_INPUT_ID_KEY, UserInput, UserMessageEvent
+from arox.core.types import (
+    USER_INPUT_ID_KEY,
+    TurnStateEvent,
+    UserInput,
+    UserMessageEvent,
+)
 
 
 def test_websocket_debug_log_is_structured_and_compact(caplog):
@@ -54,6 +60,33 @@ async def test_error_event_becomes_error_message():
     )
 
     assert frames == [{"type": "error", "errorText": "ValueError: bad response"}]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy", [True, False])
+async def test_turn_state_event_becomes_command(busy):
+    adapter = VercelStreamIOAdapter()
+
+    frames = await adapter._to_ui_messages(
+        TurnStateEvent(busy=busy),
+        AgentSession(path=["root"], agent_name="coder"),
+        VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
+    )
+
+    assert frames == [{"type": "cmd-turn-state", "busy": busy}]
+
+
+@pytest.mark.asyncio
+async def test_final_result_does_not_close_retained_turn_stream():
+    adapter = VercelStreamIOAdapter()
+
+    frames = await adapter._to_ui_messages(
+        FinalResultEvent(tool_name=None, tool_call_id=None),
+        AgentSession(path=["root"], agent_name="coder"),
+        VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
+    )
+
+    assert frames == []
 
 
 @pytest.mark.asyncio
@@ -289,7 +322,9 @@ async def test_websocket_can_wait_for_active_runtime():
     await adapter.ws_handler(cast(WebSocket, websocket), session, session, "test")
 
     assert websocket.accepted
-    assert websocket.sent == [{"type": "state", "history": [], "model": "test"}]
+    assert websocket.sent == [
+        {"type": "state", "history": [], "model": "test", "busy": False}
+    ]
     assert websocket.closed is None
 
 
@@ -335,6 +370,7 @@ async def test_websocket_starts_with_runtime_snapshot():
                 }
             ],
             "model": "test",
+            "busy": False,
         }
     ]
 
