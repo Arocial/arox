@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
@@ -427,6 +428,27 @@ system_prompt = "Hello worker."
             assert runtime.message_history is session.message_history.messages
             assert runtime.name == "test_worker"
             assert type(runtime) is AgentRuntime
+
+    @pytest.mark.asyncio
+    async def test_ensure_runtime_starts_once(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+        config_file = tmp_path / ".arox" / "config.toml"
+        config_file.parent.mkdir(parents=True, exist_ok=True)
+        config_file.write_text("""
+model_ref = "test"
+[agent.test_worker]
+""")
+        config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
+        io_adapter = _StubIOAdapter()
+        session = AgentSession(agent_name="test_worker")
+
+        first, second = await asyncio.gather(
+            session.ensure_runtime(config_loader, io_adapter),
+            session.ensure_runtime(config_loader, io_adapter),
+        )
+
+        assert first is second is session.runtime
+        await first.close()
 
     @pytest.mark.asyncio
     async def test_create_runtime_missing_config_raises(self, tmp_path, monkeypatch):

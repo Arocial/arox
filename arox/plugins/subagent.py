@@ -141,10 +141,11 @@ class SubagentPlugin(Plugin):
         try:
             self.runtime.session.record_subagent_call(task_session.agent_name, message)
             if runtime is None:
-                runtime = AgentRuntime(
-                    self.runtime.config_loader, self.runtime.io_adapter, task_session
+                runtime = await task_session.ensure_runtime(
+                    self.runtime.config_loader,
+                    self.runtime.io_adapter,
+                    AgentRuntime,
                 )
-                await runtime.__aenter__()
             turn = await runtime.accept_input(message)
             assert turn is not None
             if self.mode is SubagentMode.ADVANCED:

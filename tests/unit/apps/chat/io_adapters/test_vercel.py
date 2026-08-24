@@ -533,3 +533,11 @@ main_agent = "coder"
         inactive = await manager.resolve(created.id)
         assert isinstance(inactive, AgentSession)
         assert not inactive.is_active
+
+        monkeypatch.setattr(
+            server.io_adapter, "suggestions", AsyncMock(return_value={"items": []})
+        )
+        suggestions = await server.suggestions(inactive.id, inactive.id)
+        assert suggestions == {"items": []}
+        assert inactive.is_active
+        await manager.stop_tree(inactive)

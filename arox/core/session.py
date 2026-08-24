@@ -8,12 +8,17 @@ import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Any, Literal, Protocol, Union
+from typing import TYPE_CHECKING, Annotated, Any, Callable, Literal, Protocol, Union
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from pydantic_ai.messages import ModelMessage, ModelRequest, TextContent, UserPromptPart
 
 from arox.core.types import USER_INPUT_ID_KEY, UserInput
+
+if TYPE_CHECKING:
+    from arox.core.agent_runtime import AgentRuntime
+    from arox.core.config import ConfigLoader
+    from arox.core.io import AbstractIOAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +197,7 @@ class AgentSession(Session):
 
     runtime: Any = Field(default=None, exclude=True, repr=False)
     _runtime_lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
+    _ensure_runtime_lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
 
     @property
     def task_id(self) -> str:
@@ -200,6 +206,29 @@ class AgentSession(Session):
     @property
     def is_active(self) -> bool:
         return self.runtime is not None
+
+    async def ensure_runtime(
+        self,
+        config_loader: ConfigLoader,
+        io_adapter: AbstractIOAdapter,
+        runtime_factory: Callable[
+            [ConfigLoader, AbstractIOAdapter, AgentSession], AgentRuntime
+        ]
+        | None = None,
+    ) -> AgentRuntime:
+        """Return the active runtime, starting it exactly once if necessary."""
+        async with self._ensure_runtime_lock:
+            if self.runtime is not None:
+                return self.runtime
+
+            if runtime_factory is None:
+                from arox.core.agent_runtime import AgentRuntime
+
+                runtime_factory = AgentRuntime
+
+            runtime = runtime_factory(config_loader, io_adapter, self)
+            await runtime.__aenter__()
+            return runtime
 
     async def create_child_session(
         self,

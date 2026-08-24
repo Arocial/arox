@@ -262,8 +262,9 @@ class _SessionConnection:
 
 
 class VercelStreamIOAdapter(AbstractIOAdapter):
-    def __init__(self):
+    def __init__(self, config_loader: ConfigLoader | None = None):
         super().__init__()
+        self.config_loader = config_loader
         self._connections: dict[str, _SessionConnection] = {}
         self._event_contexts: dict[
             IOEndpoint,
@@ -508,6 +509,9 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 payload = await websocket.receive_json()
                 _log_ws_payload("IN", session_id, payload)
 
+                if target_session.runtime is None and self.config_loader is not None:
+                    await target_session.ensure_runtime(self.config_loader, self)
+
                 async with connection_lock:
                     current = self._connections.get(session_id)
                     if current is not connection:
@@ -580,7 +584,7 @@ class VercelStreamServer:
         self.config_loader = config_loader
         self.host = host
         self.port = port
-        self.io_adapter = VercelStreamIOAdapter()
+        self.io_adapter = VercelStreamIOAdapter(config_loader)
         self.session_manager = session_manager
 
         @asynccontextmanager
@@ -656,8 +660,7 @@ class VercelStreamServer:
         session = await self._resolve_root_session(session_id)
         if session.is_active:
             raise HTTPException(status_code=409, detail="Session is already active.")
-        runtime = AgentRuntime(self.config_loader, self.io_adapter, session)
-        await runtime.__aenter__()
+        await session.ensure_runtime(self.config_loader, self.io_adapter)
         return await build_session_view(session)
 
     async def stop_session(self, session_id: str) -> SessionView:
@@ -693,11 +696,7 @@ class VercelStreamServer:
     ):
         root = await self._resolve_root_session(root_session_id)
         target = await self._resolve_child_session(root, target_session_id)
-        runtime = target.runtime
-        if runtime is None:
-            raise HTTPException(
-                status_code=409, detail="Session runtime is not active."
-            )
+        runtime = await target.ensure_runtime(self.config_loader, self.io_adapter)
         return await self.io_adapter.suggestions(runtime, command, q)
 
     def _model_for(self, session: AgentSession) -> str | None:
