@@ -271,6 +271,23 @@ async def test_pair_replays_snapshot_and_cached_events_then_streams_live_events(
 
 
 @pytest.mark.asyncio
+async def test_snapshot_is_only_sent_when_peer_connects():
+    endpoint = IOEndpoint()
+    peer = IOEndpoint()
+    endpoint.pair(peer)
+
+    endpoint.snapshot("state-1")
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(peer.receive(), timeout=0.01)
+
+    endpoint.disconnect()
+    replacement = IOEndpoint()
+    endpoint.pair(replacement)
+
+    assert await replacement.receive() == SnapshotEvent("state-1")
+
+
+@pytest.mark.asyncio
 async def test_adapter_connect_replaces_old_peer():
     adapter = _RecordingAdapter()
     agent_ep = AgentIOEndpoint()

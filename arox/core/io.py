@@ -169,8 +169,6 @@ class IOEndpoint:
                 raise RuntimeError("IO endpoint is closed.")
             self._snapshot_value = snapshot
             self._cached_events.clear()
-            if self._peer is not None:
-                self._peer._inbox.put_nowait(SnapshotEvent(snapshot))
 
     def close(self) -> None:
         with self._state_lock:
