@@ -6,7 +6,7 @@ import json
 import logging
 import os
 import secrets
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast, override
 from urllib.parse import parse_qs
@@ -22,7 +22,13 @@ from pydantic_ai import (
     PartEndEvent,
     PartStartEvent,
 )
-from pydantic_ai.messages import ModelMessage, ModelRequest, TextContent, UserPromptPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextContent,
+    UserPromptPart,
+)
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage, UIMessage
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -147,7 +153,15 @@ def _log_ws_payload(
     )
 
 
-def build_state_history(messages: Sequence[ModelMessage]) -> list[dict]:
+def build_state_history(
+    messages: Sequence[ModelMessage],
+    *,
+    generate_message_id: Callable[
+        [ModelRequest | ModelResponse, Literal["system", "user", "assistant"], int],
+        str,
+    ]
+    | None = None,
+) -> list[dict]:
     from arox.core.types import USER_INPUT_ID_KEY
 
     wrapped_messages = []
@@ -188,7 +202,9 @@ def build_state_history(messages: Sequence[ModelMessage]) -> list[dict]:
         else:
             wrapped_messages.append(msg)
 
-    ui_messages = VercelAIAdapter.dump_messages(wrapped_messages)
+    ui_messages = VercelAIAdapter.dump_messages(
+        wrapped_messages, generate_message_id=generate_message_id
+    )
     # `by_alias` to serialize keys as camel case, which assistant-ui
     # recognizes. See `pydantic_ai/ui/vercel_ai/_models.py:CamelBaseModel`
     history = [
@@ -386,7 +402,12 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             input_content = event.user_input.input_content
             if input_content is not None:
                 request = ModelRequest(parts=[UserPromptPart(content=input_content)])
-                history = build_state_history([request])
+                history = build_state_history(
+                    [request],
+                    generate_message_id=lambda _msg, _role, _index: (
+                        event.user_input.server_message_id
+                    ),
+                )
                 if history:
                     message = history[0]
                     frame = {"type": "cmd-user-message", "message": message}

@@ -190,14 +190,12 @@ async def test_user_message_event_becomes_command_with_complete_ui_message():
         VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
     )
 
-    message_id = frames[0]["message"].pop("id")
-    assert isinstance(message_id, str)
-    assert message_id != user_input.server_message_id
     assert frames == [
         {
             "type": "cmd-user-message",
             "client_message_id": "client-message-1",
             "message": {
+                "id": user_input.server_message_id,
                 "role": "user",
                 "parts": [{"type": "text", "text": "delegated task", "state": "done"}],
                 "metadata": {
