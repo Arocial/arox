@@ -2,9 +2,10 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from pydantic_ai import ModelMessage, ModelRequest, RunContext, UserPromptPart
+from pydantic_ai import ModelMessage, ModelRequest, RunContext
 
 from arox.core.completion import CompletionItem, CompletionRequest
+from arox.core.message_utils import internal_user_prompt_part
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin
 from arox.core.session import AgentSession, UserInputEvent
 from arox.plugins.slots import AGENT_INFO
@@ -203,10 +204,7 @@ class CorePlugin(Plugin):
                     "The following skills are manually loaded for reference:\n\n"
                     + "\n\n".join(extra_content)
                 )
-                new_request = ModelRequest(
-                    parts=[UserPromptPart(content=text_part)],
-                    metadata={"arox_internal": True},
-                )
+                new_request = ModelRequest(parts=[internal_user_prompt_part(text_part)])
                 messages.insert(-1, new_request)
 
         return messages

@@ -31,6 +31,7 @@ from arox.core.agent_runtime import AgentRuntime
 from arox.core.completion import parse_request
 from arox.core.config import ConfigLoader
 from arox.core.io import AbstractIOAdapter, IOEndpoint, SnapshotEvent
+from arox.core.message_utils import visible_message_history
 from arox.core.plugin import CommandInput, CommandInputReply
 from arox.core.session import AgentSession, ErrorEvent
 from arox.core.types import (
@@ -327,15 +328,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             runtime = self.agent_io_for(adapter_ep)
             turn = getattr(runtime, "turn", None)
             messages = event.snapshot
-            visible_messages = [
-                msg
-                for msg in messages
-                if not (
-                    isinstance(msg, ModelRequest)
-                    and msg.metadata
-                    and msg.metadata.get("arox_internal")
-                )
-            ]
+            visible_messages = visible_message_history(messages)
             await self._send_ws_json(
                 websocket,
                 {

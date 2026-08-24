@@ -12,11 +12,11 @@ from pydantic_ai import (
     ModelMessage,
     ModelRequest,
     RunContext,
-    UserPromptPart,
 )
 from rapidfuzz import fuzz
 
 from arox.core.completion import CompletionItem, CompletionRequest
+from arox.core.message_utils import internal_user_prompt_part
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, tool
 from arox.plugins.slots import (
     AGENT_INFO,
@@ -94,12 +94,7 @@ class FilePlugin(Plugin):
         for path, content in self.persistent_files.items():
             text += f'<file path="{path}">\n{content}\n</file>\n\n'
 
-        return [
-            ModelRequest(
-                parts=[UserPromptPart(content=text.strip())],
-                metadata={"arox_internal": True},
-            )
-        ]
+        return [ModelRequest(parts=[internal_user_prompt_part(text.strip())])]
 
     async def candidates(self):
         provided_files = []
@@ -546,8 +541,7 @@ class FilePlugin(Plugin):
 
             if extra_content:
                 new_request = ModelRequest(
-                    parts=[UserPromptPart(content=extra_content)],
-                    metadata={"arox_internal": True},
+                    parts=[internal_user_prompt_part(extra_content)]
                 )
                 messages.insert(-1, new_request)
 

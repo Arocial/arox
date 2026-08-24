@@ -8,8 +8,11 @@ from typing import cast
 import pytest
 from pydantic_ai import ModelRequestContext, RunContext
 from pydantic_ai.messages import (
+    BinaryContent,
     ModelRequest,
+    ModelResponse,
     TextContent,
+    TextPart,
     ToolCallPart,
     ToolReturnPart,
     UserPromptPart,
@@ -21,6 +24,11 @@ from arox.core.agent_runtime import AgentDeps, AgentRuntime
 from arox.core.app import app_setup
 from arox.core.background import BackgroundTaskBroker
 from arox.core.io import AbstractIOAdapter, RequestEvent
+from arox.core.message_utils import (
+    AROX_INTERNAL_KEY,
+    internal_user_prompt_part,
+    visible_message_history,
+)
 from arox.core.plugin import Plugin, tool
 from arox.core.session import AgentSession
 from arox.core.types import TurnStateEvent, UserInput, UserMessageEvent
@@ -93,6 +101,92 @@ async def test_run_error_logs_exception_traceback(caplog):
 async def _managed_runtime(runtime, config_loader, io_adapter):
     async with runtime:
         yield runtime
+
+
+def test_internal_binary_request_is_hidden_without_vendor_metadata():
+    binary = BinaryContent(data=b"contents", media_type="application/octet-stream")
+    internal = ModelRequest(parts=[internal_user_prompt_part([binary])])
+    marked_content = internal.parts[0].content
+    assert isinstance(marked_content, list)
+    assert isinstance(marked_content[0], TextContent)
+    assert marked_content[0].metadata == {AROX_INTERNAL_KEY: True}
+    assert marked_content[1] is binary
+    assert binary.vendor_metadata is None
+
+    merged = ModelRequest(
+        parts=[*internal.parts, UserPromptPart(content="visible question")]
+    )
+    visible = visible_message_history([merged])
+    assert len(visible) == 1
+    assert isinstance(visible[0], ModelRequest)
+    assert len(visible[0].parts) == 1
+    visible_part = visible[0].parts[0]
+    assert isinstance(visible_part, UserPromptPart)
+    assert visible_part.content == "visible question"
+
+
+@pytest.mark.asyncio
+async def test_internal_request_stays_hidden_after_next_turn(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text("""
+model_ref = "test"
+[agent.test_agent]
+system_prompt = "Hi."
+""")
+    session = AgentSession(path=["internal-history"], agent_name="test_agent")
+    session.replace_message_history(
+        [
+            ModelRequest(parts=[internal_user_prompt_part("<file>secret</file>")]),
+            ModelRequest(parts=[UserPromptPart(content="first question")]),
+            ModelResponse(parts=[TextPart(content="first answer")]),
+        ]
+    )
+    config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
+    runtime = AgentRuntime(
+        config_loader,
+        io_adapter=_StubIOAdapter(),
+        session=session,
+    )
+
+    async def stream_function(messages, info):
+        yield "done"
+
+    async with _managed_runtime(runtime, config_loader, runtime.io_adapter):
+        with runtime._pydantic_agent.override(
+            model=FunctionModel(stream_function=stream_function)
+        ):
+            await runtime.run_turn("second question")
+
+    first_request = session.message_history.messages[0]
+    assert isinstance(first_request, ModelRequest)
+    assert not first_request.metadata
+    internal_content = first_request.parts[0].content
+    assert isinstance(internal_content, list)
+    assert isinstance(internal_content[0], TextContent)
+    assert internal_content[0].metadata == {AROX_INTERNAL_KEY: True}
+
+    visible = visible_message_history(session.message_history.messages)
+    visible_text_parts = []
+    for message in visible:
+        if not isinstance(message, ModelRequest):
+            continue
+        for part in message.parts:
+            if not isinstance(part, UserPromptPart):
+                continue
+            if isinstance(part.content, str):
+                visible_text_parts.append(part.content)
+            else:
+                visible_text_parts.extend(
+                    item.content
+                    for item in part.content
+                    if isinstance(item, TextContent)
+                )
+    visible_text = "\n".join(visible_text_parts)
+    assert "<file>secret</file>" not in visible_text
+    assert "first question" in visible_text
+    assert "second question" in visible_text
 
 
 @pytest.mark.asyncio
