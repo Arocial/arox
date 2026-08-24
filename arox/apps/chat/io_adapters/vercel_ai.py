@@ -410,9 +410,12 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 )
                 if history:
                     message = history[0]
-                    frame = {"type": "cmd-user-message", "message": message}
-                    if event.user_input.client_message_id is not None:
-                        frame["client_message_id"] = event.user_input.client_message_id
+                    frame = {
+                        "type": "cmd-user-message",
+                        "client_message_id": event.user_input.client_message_id,
+                        "server_message_id": event.user_input.server_message_id,
+                        "message": message,
+                    }
                     messages.append(frame)
 
         elif isinstance(event, SessionTreeUpdate):

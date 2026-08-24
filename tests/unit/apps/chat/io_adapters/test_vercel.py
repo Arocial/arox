@@ -194,6 +194,7 @@ async def test_user_message_event_becomes_command_with_complete_ui_message():
         {
             "type": "cmd-user-message",
             "client_message_id": "client-message-1",
+            "server_message_id": user_input.server_message_id,
             "message": {
                 "id": user_input.server_message_id,
                 "role": "user",
@@ -207,17 +208,20 @@ async def test_user_message_event_becomes_command_with_complete_ui_message():
 
 
 @pytest.mark.asyncio
-async def test_runtime_user_message_omits_client_message_id():
+async def test_runtime_user_message_includes_generated_client_and_server_message_ids():
     adapter = VercelStreamIOAdapter()
     root_session = AgentSession(path=["root"], agent_name="coder")
+    user_input = UserInput(input_content="delegated task")
 
     frames = await adapter._to_ui_messages(
-        UserMessageEvent(UserInput(input_content="delegated task")),
+        UserMessageEvent(user_input),
         root_session,
         VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
     )
 
-    assert "client_message_id" not in frames[0]
+    assert frames[0]["client_message_id"] == user_input.client_message_id
+    assert frames[0]["client_message_id"]
+    assert frames[0]["server_message_id"] == user_input.server_message_id
 
 
 def test_build_state_history_carries_user_input_id():

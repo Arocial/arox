@@ -79,8 +79,8 @@ Server-specific frames include:
 
 | type | meaning |
 |---|---|
-| `state` | Committed UI message history and selected model; sent first and whenever the runtime refreshes its snapshot |
-| `cmd-user-message` | An ordered user-message boundary. Its message metadata contains the stable `user_input_id` fork anchor, and an optional top-level `client_message_id` makes client-originated replay idempotent |
+| `state` | Committed UI message history and selected model; sent when the IO connection is established or reconnected |
+| `cmd-user-message` | An ordered user-message boundary with top-level `client_message_id` and `server_message_id`. A missing client ID is generated when `UserInput` is created; message metadata also contains the stable `user_input_id` fork anchor |
 | `cmd-turn-state` | The retained turn entered or left its busy reading epoch; `busy=false` is ordered after its final output chunk |
 | `cmd-session-tree` | Updated recursive session view |
 | `ack` | Acknowledges a client payload and reports its status |

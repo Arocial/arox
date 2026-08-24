@@ -13,8 +13,9 @@ class UserInput:
     """A unit of user input passed to :meth:`AgentRuntime.run`.
 
     ``client_message_id`` is an opaque id assigned by a client to the message that
-    produced this input. Adapters echo it alongside the stable
-    ``server_message_id`` carried in the rendered message metadata.
+    produced this input. When the client does not provide one, Arox generates it.
+    Adapters echo it alongside the stable ``server_message_id`` carried in the
+    rendered message metadata.
     """
 
     input_content: Sequence[UserContent] | str | None = None
@@ -22,6 +23,8 @@ class UserInput:
     server_message_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
     def __post_init__(self):
+        if not self.client_message_id:
+            self.client_message_id = str(uuid.uuid4())
         if isinstance(self.input_content, str):
             self.input_content = [
                 TextContent(
