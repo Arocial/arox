@@ -146,8 +146,7 @@ class SubagentPlugin(Plugin):
                     self.runtime.io_adapter,
                     AgentRuntime,
                 )
-            turn = await runtime.accept_input(message)
-            assert turn is not None
+            turn = runtime.start_message(message)
             if self.mode is SubagentMode.ADVANCED:
                 self.runtime.background_tasks.register(task_session.target)
                 turn.task.add_done_callback(

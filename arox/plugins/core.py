@@ -8,6 +8,7 @@ from arox.core.completion import CompletionItem, CompletionRequest
 from arox.core.message_utils import internal_user_prompt_part
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin
 from arox.core.session import AgentSession, UserInputEvent
+from arox.core.types import MessagePayload
 from arox.plugins.slots import AGENT_INFO
 
 if TYPE_CHECKING:
@@ -68,7 +69,12 @@ def user_turns_from_session(session: AgentSession) -> list[tuple[str, str]]:
     turns: list[tuple[str, str]] = []
     for event in session.events:
         if isinstance(event, UserInputEvent):
-            text = event.user_input.text_content or ""
+            payload = event.client_input.payload
+            text = (
+                payload.text_content or ""
+                if isinstance(payload, MessagePayload)
+                else ""
+            )
             turns.append((event.id, text))
     return turns
 

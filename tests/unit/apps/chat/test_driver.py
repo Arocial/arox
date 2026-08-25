@@ -12,9 +12,13 @@ from pydantic_ai.models.test import TestModel
 from arox.apps.chat.io_adapters.text import CommandCompleter, TextIOAdapter
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.app import app_setup
-from arox.core.plugin import CommandDispatchResult, CommandInput, CommandReply
 from arox.core.session import AgentSession
-from arox.core.types import UserInput
+from arox.core.types import (
+    ClientInput,
+    CommandPayload,
+    MessagePayload,
+    normalize_client_input,
+)
 
 
 def multiply(a: int, b: int) -> int:
@@ -24,57 +28,64 @@ def multiply(a: int, b: int) -> int:
 
 @pytest.mark.asyncio
 async def test_runtime_handles_slash_commands_without_starting_turn():
-    dispatch_command = AsyncMock()
     start_turn = Mock()
     runtime = cast(
         AgentRuntime,
         SimpleNamespace(
-            _dispatch_command=dispatch_command,
+            _run_command=AsyncMock(),
+            _command_tasks=set(),
+            session=SimpleNamespace(id="session"),
+            agent_ep=SimpleNamespace(send=AsyncMock()),
             start_turn=start_turn,
         ),
     )
-    result = await AgentRuntime.accept_input(runtime, UserInput(input_content="/info"))
+    client_input = normalize_client_input(
+        ClientInput(payload=MessagePayload(content="/info"))
+    )
+    result = await AgentRuntime.accept_input(runtime, client_input)
 
-    assert result is None
-    dispatch_command.assert_awaited_once_with("/info")
+    assert result is client_input
+    assert isinstance(client_input.payload, CommandPayload)
+    assert client_input.payload.status == "accepted"
     start_turn.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_runtime_starts_regular_user_input():
     turn = object()
-    dispatch_command = AsyncMock()
     runtime = cast(
         AgentRuntime,
         SimpleNamespace(
-            _dispatch_command=dispatch_command,
             start_turn=lambda event: turn,
         ),
     )
-    event = UserInput(input_content="hello")
-    assert await AgentRuntime.accept_input(runtime, event) is turn
-    dispatch_command.assert_not_awaited()
+    event = normalize_client_input(ClientInput(payload=MessagePayload(content="hello")))
+    result = await AgentRuntime.accept_input(runtime, event)
+    assert result is event
+    assert isinstance(event.payload, MessagePayload)
+    assert event.payload.status is None
 
 
 @pytest.mark.asyncio
-async def test_runtime_handles_command_input_from_io():
-    dispatch_command = AsyncMock(
-        return_value=CommandDispatchResult(
-            "handled", CommandReply(req_id="command", output="details")
-        )
-    )
+async def test_runtime_accepts_structured_command_input():
     runtime = cast(
         AgentRuntime,
-        SimpleNamespace(_dispatch_command=dispatch_command),
+        SimpleNamespace(
+            _run_command=AsyncMock(),
+            _command_tasks=set(),
+            session=SimpleNamespace(id="session"),
+            agent_ep=SimpleNamespace(send=AsyncMock()),
+        ),
     )
-    command_input = CommandInput(command={"type": "InfoCommand"})
+    structured_input = ClientInput(
+        payload=CommandPayload(command={"type": "InfoCommand"})
+    )
 
-    reply = await AgentRuntime.accept_command(runtime, command_input)
+    result = await AgentRuntime.accept_input(runtime, structured_input)
 
-    dispatch_command.assert_awaited_once_with({"type": "InfoCommand"})
-    assert reply.req_id == command_input.req_id
-    assert reply.status == "handled"
-    assert reply.output == "details"
+    assert result is structured_input
+    assert isinstance(result.payload, CommandPayload)
+    assert result.payload.status == "accepted"
 
 
 @pytest.mark.asyncio

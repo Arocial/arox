@@ -50,8 +50,6 @@ from arox.core.io import (
 )
 from arox.core.plugin import (
     CommandDispatchResult,
-    CommandInput,
-    CommandInputReply,
     CommandManager,
     load_plugins,
 )
@@ -72,10 +70,12 @@ from arox.core.slot import (
 )
 from arox.core.turn import Turn
 from arox.core.types import (
+    ClientInput,
+    CommandPayload,
+    MessagePayload,
     SessionTreeUpdate,
     TurnStateEvent,
-    UserInput,
-    UserMessageEvent,
+    normalize_client_input,
 )
 from arox.plugins.slots import SYSTEM_PROMPT
 
@@ -99,12 +99,12 @@ class AgentRuntime:
         self.uuid = session.id
         self.io_adapter = io_adapter
         self.agent_ep = AgentIOEndpoint()
-        self.agent_ep.register_event_handler(UserInput, self.accept_input)
-        self.agent_ep.register_event_handler(CommandInput, self.accept_command)
+        self.agent_ep.register_event_handler(ClientInput, self.accept_input)
         self._stack = contextlib.AsyncExitStack()
         self._entered = False
         self.turn: Turn | None = None
-        self._pending_user_inputs: deque[UserInput] = deque()
+        self._pending_user_inputs: deque[ClientInput] = deque()
+        self._command_tasks: set[asyncio.Task[None]] = set()
         self.agent_ep.snapshot(session.build_io_snapshot())
         self._slots: dict[Any, Any] = {}
         self.config_loader = parent_config_loader.for_workspace(self.workspace)
@@ -309,6 +309,11 @@ class AgentRuntime:
         exc_tb: TracebackType | None,
     ) -> None:
         await self.cancel_turn()
+        command_tasks = list(self._command_tasks)
+        for task in command_tasks:
+            task.cancel()
+        if command_tasks:
+            await asyncio.gather(*command_tasks, return_exceptions=True)
         async with self.session._runtime_lock:
             if self.session.runtime is not self:
                 return
@@ -324,18 +329,20 @@ class AgentRuntime:
         await self.__aexit__(None, None, None)
 
     async def _dispatch_command(
-        self, command: str | dict[str, Any]
+        self, client_input: ClientInput
     ) -> CommandDispatchResult:
         """Dispatch either command representation and render its outcome."""
-        requested = self.session.record_command_requested(command)
+        payload = client_input.payload
+        assert isinstance(payload, CommandPayload)
         try:
-            result = await self.command_manager.dispatch(command)
+            result = await self.command_manager.dispatch(payload.command)
         except BaseException as error:
-            self.session.record_command_completed(
-                requested.id,
+            completed = self.session.record_command_completed(
+                client_input,
                 "error",
                 error=AgentSession.format_error(error),
             )
+            await self.agent_ep.send(completed)
             raise
 
         if result.status == "handled":
@@ -347,44 +354,48 @@ class AgentRuntime:
         else:
             output = None
 
-        self.session.record_command_completed(
-            requested.id,
+        completed = self.session.record_command_completed(
+            client_input,
             result.status,
             output=output,
         )
         if output:
             await self.agent_ep.send(output)
+        await self.agent_ep.send(completed)
         self.agent_ep.snapshot(self.session.build_io_snapshot())
         return result
 
-    async def accept_command(self, command_input: CommandInput) -> CommandInputReply:
-        """Handle command input received through the agent IO endpoint."""
-        result = await self._dispatch_command(command_input.command)
-        return CommandInputReply(
-            req_id=command_input.req_id,
-            status=result.status,
-            output=result.reply.output if result.reply is not None else None,
-        )
+    async def accept_input(self, client_input: ClientInput) -> ClientInput:
+        """Normalize one client input and schedule its typed processing path."""
+        client_input = normalize_client_input(client_input)
+        if isinstance(client_input.payload, CommandPayload):
+            client_input.payload.status = "accepted"
+            await self.agent_ep.send(client_input)
+            task = asyncio.create_task(
+                self._run_command(client_input),
+                name=f"agent-command:{self.session.id}",
+            )
+            self._command_tasks.add(task)
+            task.add_done_callback(self._command_tasks.discard)
+        else:
+            self.start_turn(client_input)
+        return client_input
 
-    async def accept_input(self, user_input: UserInput | str | None) -> Turn | None:
-        """Handle a command or start one turn for a regular user input."""
-        if not isinstance(user_input, UserInput):
-            user_input = UserInput(input_content=user_input)
-        text_input = user_input.text_content
-        if text_input and text_input.startswith("/"):
-            await self._dispatch_command(text_input)
-            return None
-        return self.start_turn(user_input)
+    async def _run_command(self, client_input: ClientInput) -> None:
+        try:
+            await self._dispatch_command(client_input)
+        except Exception:
+            logger.exception("Command processing failed")
 
-    def start_turn(self, user_input: UserInput) -> Turn:
+    def start_turn(self, client_input: ClientInput) -> Turn:
         """Consume input in the active turn, or start a new turn when idle."""
         if not self._entered or self.session.runtime is not self:
             raise RuntimeError("Agent runtime must be entered before starting a turn.")
         if self.turn is not None and not self.turn.done:
-            self._pending_user_inputs.append(user_input)
+            self._pending_user_inputs.append(client_input)
             return self.turn
         task = asyncio.create_task(
-            self.run_turn(user_input), name=f"agent-turn:{self.session.id}"
+            self.run_turn(client_input), name=f"agent-turn:{self.session.id}"
         )
 
         # Adapter-originated turns are intentionally fire-and-forget. Retrieve
@@ -395,8 +406,15 @@ class AgentRuntime:
                 completed.exception()
 
         task.add_done_callback(consume_exception)
-        self.turn = Turn(user_input, task)
+        self.turn = Turn(client_input, task)
         return self.turn
+
+    def start_message(self, content: Sequence[UserContent] | str | None) -> Turn:
+        """Start a programmatic message without crossing the client IO boundary."""
+        client_input = normalize_client_input(
+            ClientInput(payload=MessagePayload(content=content))
+        )
+        return self.start_turn(client_input)
 
     async def cancel_turn(self) -> bool:
         turn = self.turn
@@ -603,13 +621,13 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         request_context: ModelRequestContext,
     ) -> ModelRequestContext:
         while self._pending_user_inputs:
-            user_input = self._pending_user_inputs.popleft()
-            if user_input.input_content is not None:
-                await self._record_user_input(user_input)
+            client_input = self._pending_user_inputs.popleft()
+            payload = client_input.payload
+            assert isinstance(payload, MessagePayload)
+            if payload.content is not None:
+                await self._record_user_input(client_input)
                 request_context.messages.append(
-                    ModelRequest(
-                        parts=[UserPromptPart(content=user_input.input_content)]
-                    )
+                    ModelRequest(parts=[UserPromptPart(content=payload.content)])
                 )
         notifications = self._drain_llm_notifications()
         if notifications:
@@ -725,17 +743,20 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 
     async def run_turn(
         self,
-        user_input: UserInput | str | None = None,
+        client_input: ClientInput | str | None = None,
     ) -> AgentRunResult[str]:
         """Execute one request, continuing from this session's message history."""
         if not self._entered or self.session.runtime is not self:
             raise RuntimeError("Agent runtime must be entered before running a turn.")
-        if not isinstance(user_input, UserInput):
-            user_input = UserInput(input_content=user_input)
+        if not isinstance(client_input, ClientInput):
+            client_input = ClientInput(payload=MessagePayload(content=client_input))
+        client_input = normalize_client_input(client_input)
+        if not isinstance(client_input.payload, MessagePayload):
+            raise TypeError("run_turn requires a message input")
 
         await self.agent_ep.send(TurnStateEvent(busy=True))
         try:
-            result = await self._run_turn_input(user_input)
+            result = await self._run_turn_input(client_input)
             while self._pending_user_inputs:
                 result = await self._run_turn_input(self._pending_user_inputs.popleft())
             return result
@@ -743,15 +764,20 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
             self._pending_user_inputs.clear()
             await self.agent_ep.send(TurnStateEvent(busy=False))
 
-    async def _record_user_input(self, user_input: UserInput) -> None:
-        if user_input.input_content is not None:
-            await self.agent_ep.send(UserMessageEvent(user_input=user_input))
-            self.session.record_user_input(user_input)
+    async def _record_user_input(self, client_input: ClientInput) -> None:
+        payload = client_input.payload
+        assert isinstance(payload, MessagePayload)
+        if payload.content is not None:
+            payload.status = "started"
+            await self.agent_ep.send(client_input)
+            self.session.record_user_input(client_input)
 
-    async def _run_turn_input(self, user_input: UserInput) -> AgentRunResult[str]:
+    async def _run_turn_input(self, client_input: ClientInput) -> AgentRunResult[str]:
         """Execute and persist the input that started the current turn."""
-        await self._record_user_input(user_input)
-        input_content = user_input.input_content
+        await self._record_user_input(client_input)
+        payload = client_input.payload
+        assert isinstance(payload, MessagePayload)
+        input_content = payload.content
 
         self.reload_config()
         result = await self._run_inference(
@@ -761,7 +787,7 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 
         self.session.record_step(
             result.all_messages(),
-            input_event_id=user_input.server_message_id
+            input_event_id=client_input.server_message_id
             if input_content is not None
             else None,
             new_messages=result.new_messages(),

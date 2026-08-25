@@ -17,7 +17,7 @@ from arox.core.agent_runtime import AgentRuntime
 from arox.core.io import AbstractIOAdapter
 from arox.core.session import AgentSession, CompactionEvent
 from arox.core.turn import Turn
-from arox.core.types import UserInput
+from arox.core.types import ClientInput, MessagePayload, normalize_client_input
 from arox.plugins.compaction import CompactionPlugin
 from arox.plugins.slots import PERSISTENT_CONTEXT
 
@@ -35,8 +35,10 @@ class _FakeAgent:
         self.message_history = []
         self.name = "compaction"
 
-    async def run(self, user_input: UserInput):
-        self.last_prompt = user_input.text_content or ""
+    async def run(self, client_input: ClientInput):
+        payload = client_input.payload
+        assert isinstance(payload, MessagePayload)
+        self.last_prompt = payload.text_content or ""
         return SimpleNamespace(output=self._summary)
 
     async def __aenter__(self):
@@ -45,9 +47,11 @@ class _FakeAgent:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         return None
 
-    async def accept_input(self, prompt):
-        user_input = UserInput(input_content=prompt)
-        return Turn(user_input, asyncio.create_task(self.run(user_input)))
+    def start_message(self, prompt):
+        client_input = normalize_client_input(
+            ClientInput(payload=MessagePayload(content=prompt))
+        )
+        return Turn(client_input, asyncio.create_task(self.run(client_input)))
 
 
 @pytest.fixture(autouse=True)

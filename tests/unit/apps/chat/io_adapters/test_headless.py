@@ -33,7 +33,7 @@ system_prompt = "Hi there."
         runtime = AgentRuntime(config_loader, io_adapter, session)
         async with runtime:
             with runtime._pydantic_agent.override(model=test_model):
-                turn = await runtime.accept_input("say hello")
+                turn = runtime.start_message("say hello")
                 assert turn is not None
                 await turn
 
@@ -72,7 +72,7 @@ system_prompt = "Hi there."
         async with runtime:
             runtime._run_inference = failing_inference  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
             with pytest.raises(RuntimeError, match="step blew up"):
-                turn = await runtime.accept_input("boom")
+                turn = runtime.start_message("boom")
                 assert turn is not None
                 await turn
 

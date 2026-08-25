@@ -38,13 +38,13 @@ from arox.core.completion import parse_request
 from arox.core.config import ConfigLoader
 from arox.core.io import AbstractIOAdapter, IOEndpoint, SnapshotEvent
 from arox.core.message_utils import visible_message_history
-from arox.core.plugin import CommandInput, CommandInputReply
-from arox.core.session import AgentSession, ErrorEvent
+from arox.core.session import AgentSession, CommandCompletedEvent, ErrorEvent
 from arox.core.types import (
+    ClientInput,
+    CommandPayload,
+    MessagePayload,
     SessionTreeUpdate,
     TurnStateEvent,
-    UserInput,
-    UserMessageEvent,
 )
 
 if TYPE_CHECKING:
@@ -236,6 +236,50 @@ def build_state_history(
     return history
 
 
+def build_state_timeline(
+    session: AgentSession,
+    fallback_messages: Sequence[ModelMessage] = (),
+) -> list[dict]:
+    """Build one ordered state history without folding commands into AI messages."""
+    items: Sequence[ModelMessage | CommandCompletedEvent] = (
+        session.build_io_timeline() if session.events else fallback_messages
+    )
+
+    timeline: list[dict] = []
+    message_batch: list[ModelMessage] = []
+
+    def flush_messages() -> None:
+        if not message_batch:
+            return
+        visible_messages = visible_message_history(message_batch)
+        timeline.extend(
+            {"type": "message", "message": message}
+            for message in build_state_history(visible_messages)
+        )
+        message_batch.clear()
+
+    for item in items:
+        if isinstance(item, CommandCompletedEvent):
+            flush_messages()
+            payload = item.client_input.payload
+            assert isinstance(payload, CommandPayload)
+            timeline.append(
+                {
+                    "type": "command",
+                    "client_message_id": item.client_input.client_message_id,
+                    "server_message_id": item.client_input.server_message_id,
+                    "command": payload.command,
+                    "status": item.status,
+                    "output": item.output,
+                    "error": item.error,
+                }
+            )
+        else:
+            message_batch.append(item)
+    flush_messages()
+    return timeline
+
+
 class SuggestionItem(BaseModel):
     id: str
     value: str
@@ -284,7 +328,13 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         self._connections: dict[str, _SessionConnection] = {}
         self._event_contexts: dict[
             IOEndpoint,
-            tuple[WebSocket, AgentSession, VercelAIEventStream, str | None, str],
+            tuple[
+                WebSocket,
+                AgentSession,
+                VercelAIEventStream,
+                str | None,
+                AgentSession,
+            ],
         ] = {}
         self._connection_locks: WeakValueDictionary[str, asyncio.Lock] = (
             WeakValueDictionary()
@@ -323,7 +373,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             connection.root_session,
             connection.stream,
             connection.model,
-            connection.target_session.id,
+            connection.target_session,
         )
 
     async def _detach_runtime(
@@ -340,17 +390,16 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         context = self._event_contexts.get(adapter_ep)
         if context is None:
             return
-        websocket, root_session, stream, model, session_id = context
+        websocket, root_session, stream, model, target_session = context
+        session_id = target_session.id
         if isinstance(event, SnapshotEvent):
             runtime = self.agent_io_for(adapter_ep)
             turn = getattr(runtime, "turn", None)
-            messages = event.snapshot
-            visible_messages = visible_message_history(messages)
             await self._send_ws_json(
                 websocket,
                 {
                     "type": "state",
-                    "history": build_state_history(visible_messages),
+                    "history": build_state_timeline(target_session, event.snapshot),
                     "model": model,
                     "busy": bool(turn and not turn.done),
                 },
@@ -398,25 +447,57 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
         elif isinstance(event, ErrorEvent):
             messages.append({"type": "error", "errorText": event.error})
 
-        elif isinstance(event, UserMessageEvent):
-            input_content = event.user_input.input_content
-            if input_content is not None:
+        elif isinstance(event, ClientInput):
+            client_input = event
+            payload = client_input.payload
+            if isinstance(payload, MessagePayload) and payload.status == "started":
+                input_content = payload.content
+                if input_content is None:
+                    return messages
                 request = ModelRequest(parts=[UserPromptPart(content=input_content)])
                 history = build_state_history(
                     [request],
                     generate_message_id=lambda _msg, _role, _index: (
-                        event.user_input.server_message_id
+                        client_input.server_message_id
                     ),
                 )
                 if history:
                     message = history[0]
                     frame = {
-                        "type": "cmd-user-message",
-                        "client_message_id": event.user_input.client_message_id,
-                        "server_message_id": event.user_input.server_message_id,
-                        "message": message,
+                        "type": "cmd-client-input",
+                        "client_message_id": client_input.client_message_id,
+                        "server_message_id": client_input.server_message_id,
+                        "payload": {
+                            "type": "message",
+                            "status": payload.status,
+                            "message": message,
+                        },
                     }
                     messages.append(frame)
+            elif isinstance(payload, CommandPayload) and payload.status == "accepted":
+                messages.append(
+                    {
+                        "type": "cmd-client-input",
+                        "client_message_id": client_input.client_message_id,
+                        "server_message_id": client_input.server_message_id,
+                        "payload": {
+                            "type": "command",
+                            "status": payload.status,
+                            "command": payload.command,
+                        },
+                    }
+                )
+
+        elif isinstance(event, CommandCompletedEvent):
+            messages.append(
+                {
+                    "type": "cmd-command-completed",
+                    "input": dataclasses.asdict(event.client_input),
+                    "status": event.status,
+                    "output": event.output,
+                    "error": event.error,
+                }
+            )
 
         elif isinstance(event, SessionTreeUpdate):
             if event.session_id == root_session.id:
@@ -429,21 +510,22 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
         return messages
 
-    async def _apply_input(self, target, adapter_ep: IOEndpoint, payload: dict) -> dict:
+    async def _apply_input(self, target, adapter_ep: IOEndpoint, payload: dict) -> None:
         if payload.get("cancel"):
             runtime = target.session.runtime
-            if runtime is None:
-                return {"status": "unavailable"}
-            cancelled = await runtime.cancel_turn()
-            return {"status": "cancelled" if cancelled else "idle"}
+            if runtime is not None:
+                await runtime.cancel_turn()
+            return None
 
         cmd = payload.get("command")
         if cmd is not None:
-            reply = await adapter_ep.send(CommandInput(command=cmd))
-            assert isinstance(reply, CommandInputReply)
-            if reply.status != "handled":
-                return {"status": reply.status}
-            return {"status": "ok", "output": reply.output}
+            await adapter_ep.send(
+                ClientInput(
+                    payload=CommandPayload(command=cmd),
+                    client_message_id=payload.get("client_message_id"),
+                )
+            )
+            return
 
         reply = payload.get("reply")
         if reply is not None:
@@ -454,7 +536,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 custom_metadata = {}
             reply_metadata = custom_metadata.get("chatInputEventResult")
             if not isinstance(reply_metadata, dict):
-                return {"status": "error", "message": "no chatInputEventResult"}
+                raise ValueError("no chatInputEventResult")
 
             user_msg = VercelAIAdapter.load_messages([reply_message])
             parts = user_msg[0].parts
@@ -464,15 +546,12 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
             part = parts[0]
             assert isinstance(part, UserPromptPart)
             input_content = part.content
-            chat_input = UserInput(
-                input_content=input_content,
+            chat_input = ClientInput(
+                payload=MessagePayload(content=input_content),
                 client_message_id=reply_metadata.get("client_message_id"),
             )
 
             await adapter_ep.send(chat_input)
-            return {"status": "ok"}
-
-        return {"status": "noop"}
 
     async def ws_handler(
         self,
@@ -517,8 +596,8 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     websocket,
                     {
                         "type": "state",
-                        "history": build_state_history(
-                            target_session.build_io_snapshot()
+                        "history": build_state_timeline(
+                            target_session,
                         ),
                         "model": model,
                         "busy": False,
@@ -538,9 +617,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
 
                 async with connection_lock:
                     current = self._connections.get(session_id)
-                    if current is not connection:
-                        ack = {"status": "replaced"}
-                    else:
+                    if current is connection:
                         current_runtime = target_session.runtime
                         adapter_ep = connection.adapter_ep
                         if (
@@ -548,12 +625,8 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                             or connection.runtime is not current_runtime
                             or adapter_ep is None
                         ):
-                            ack = {"status": "unavailable"}
-                        else:
-                            ack = await self._apply_input(
-                                current_runtime, adapter_ep, payload
-                            )
-                await self._send_ws_json(websocket, {"type": "ack", **ack}, session_id)
+                            continue
+                        await self._apply_input(current_runtime, adapter_ep, payload)
 
         in_task = asyncio.create_task(pump_in())
         try:

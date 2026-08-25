@@ -27,7 +27,7 @@ from arox.core.io import (
     IOEndpoint,
 )
 from arox.core.session import ErrorEvent
-from arox.core.types import UserInput
+from arox.core.types import ClientInput, CommandPayload, MessagePayload
 
 logger = logging.getLogger(__name__)
 
@@ -139,8 +139,12 @@ class TextIOAdapter(AbstractIOAdapter):
                     return
                 if runtime.session.runtime is not runtime:
                     return
-                turn = await runtime.accept_input(UserInput(input_content=text))
-                if turn is not None:
+                client_input = ClientInput(payload=MessagePayload(content=text))
+                accepted = await runtime.accept_input(client_input)
+                turn = runtime.turn
+                if turn is not None and not isinstance(
+                    accepted.payload, CommandPayload
+                ):
                     await asyncio.gather(turn.task, return_exceptions=True)
         finally:
             adapter_ep.close()

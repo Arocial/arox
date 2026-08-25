@@ -22,7 +22,6 @@ from arox.core.completion import (
     CompletionProvider,
     CompletionRouter,
 )
-from arox.core.io import ReplyEvent, RequestEvent
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +48,7 @@ class ToolErrorResult(TypedDict):
 
 
 @dataclass(kw_only=True)
-class CommandEvent(RequestEvent):
+class CommandEvent:
     """Base class for slash / control command events.
 
     Subclasses declare the slash names they answer to via :attr:`slashes`
@@ -67,7 +66,7 @@ class CommandEvent(RequestEvent):
 
 
 @dataclass(kw_only=True)
-class CommandReply(ReplyEvent):
+class CommandReply:
     """Reply produced by :meth:`CommandManager.execute`."""
 
     output: str | None = None
@@ -82,21 +81,6 @@ class CommandDispatchResult:
 
     status: CommandDispatchStatus
     reply: CommandReply | None = None
-
-
-@dataclass(kw_only=True)
-class CommandInput(RequestEvent):
-    """Raw command input sent from an IO adapter to an agent runtime."""
-
-    command: str | dict[str, Any]
-
-
-@dataclass(kw_only=True)
-class CommandInputReply(ReplyEvent):
-    """IO reply describing how a raw command input was dispatched."""
-
-    status: CommandDispatchStatus
-    output: str | None = None
 
 
 @dataclass
@@ -363,20 +347,19 @@ class CommandManager:
                 "No handler registered for CommandEvent %s",
                 type(event).__name__,
             )
-            return CommandReply(req_id=event.req_id)
+            return CommandReply()
         try:
             result = handler(event)
             if asyncio.iscoroutine(result):
                 result = await result
             if isinstance(result, CommandReply):
-                result.req_id = event.req_id
                 return result
             if isinstance(result, str):
-                return CommandReply(req_id=event.req_id, output=result)
-            return CommandReply(req_id=event.req_id)
+                return CommandReply(output=result)
+            return CommandReply()
         except Exception as e:
             logger.exception("Error executing CommandEvent %s", type(event).__name__)
-            return CommandReply(req_id=event.req_id, output=f"Error: {e}")
+            return CommandReply(output=f"Error: {e}")
 
 
 class Plugin:

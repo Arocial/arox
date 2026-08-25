@@ -3,7 +3,7 @@ from typing import Any
 
 from pydantic_ai import AgentRunResult
 
-from arox.core.types import UserInput
+from arox.core.types import ClientInput
 
 
 class Turn:
@@ -11,7 +11,7 @@ class Turn:
 
     def __init__(
         self,
-        user_input: UserInput,
+        user_input: ClientInput,
         task: asyncio.Task[AgentRunResult[str]],
     ) -> None:
         self.user_input = user_input

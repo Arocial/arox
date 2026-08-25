@@ -11,7 +11,7 @@ os.environ["FASTMCP_LOG_ENABLED"] = "false"
 
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.app import app_setup
-from arox.core.types import UserInput
+from arox.core.types import ClientInput, MessagePayload, normalize_client_input
 
 logger = logging.getLogger(__name__)
 
@@ -161,10 +161,11 @@ def main(profile: str | None = None):
                 if args.ui == "headless":
                     runtime = AgentRuntime(config_loader, io_adapter, session)
                     async with runtime:
-                        turn = await runtime.accept_input(
-                            UserInput(input_content=prompt)
+                        turn = runtime.start_turn(
+                            normalize_client_input(
+                                ClientInput(payload=MessagePayload(content=prompt))
+                            )
                         )
-                        assert turn is not None
                         await turn
                     return
 

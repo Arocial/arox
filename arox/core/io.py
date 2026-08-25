@@ -1,10 +1,9 @@
 import asyncio
 import logging
 import threading
-import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import (
@@ -27,32 +26,8 @@ class SnapshotEvent:
     snapshot: Any
 
 
-@dataclass
-class RequestEvent:
-    """Marker base class for events that expect a matching :class:`ReplyEvent`.
-
-    When passed to :meth:`IOEndpoint.send`, the call awaits a reply with
-    the same ``req_id`` and returns it. ``RequestEvent`` is direction-
-    agnostic.
-    """
-
-    req_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-
-
-@dataclass
-class ReplyEvent:
-    """Reply to a :class:`RequestEvent`. ``req_id`` must match the request."""
-
-    req_id: str
-
-
 class IOEndpoint:
-    """Channel endpoint with request/reply correlation and event streaming.
-
-    Reply correlation relies on someone calling :meth:`receive` concurrently
-    with senders awaiting their requests; in the agent runtime these are the
-    event loops owned by :class:`AgentIOEndpoint` and :class:`AbstractIOAdapter`.
-    """
+    """Channel endpoint for event streaming."""
 
     _SYNTHETIC_INDEX_MIN = -(2**31)
     _state_lock = threading.RLock()
@@ -64,7 +39,6 @@ class IOEndpoint:
         self._inbox: asyncio.Queue[Any] = asyncio.Queue()
         self._closed = False
         self._disconnected = asyncio.Event()
-        self._pending: dict[str, asyncio.Future[ReplyEvent]] = {}
         self._synthetic_index = 0
 
     def pair(self, peer: "IOEndpoint") -> None:
@@ -123,7 +97,7 @@ class IOEndpoint:
             self._synthetic_index = -1
         return self._synthetic_index
 
-    async def send(self, event: Any) -> Any:
+    async def send(self, event: Any) -> None:
         if isinstance(event, str):
             with self._state_lock:
                 index = self._next_synthetic_index()
@@ -131,15 +105,6 @@ class IOEndpoint:
                 self._send_event(PartStartEvent(part=part, index=index))
                 self._send_event(PartEndEvent(part=part, index=index))
             return None
-        if isinstance(event, RequestEvent):
-            loop = asyncio.get_running_loop()
-            fut: asyncio.Future[ReplyEvent] = loop.create_future()
-            self._pending[event.req_id] = fut
-            try:
-                self._send_event(event)
-                return await fut
-            finally:
-                self._pending.pop(event.req_id, None)
         self._send_event(event)
         return None
 
@@ -150,17 +115,6 @@ class IOEndpoint:
             event = await self._inbox.get()
             if event is _STREAM_CLOSED:
                 raise StopAsyncIteration
-            if isinstance(event, ReplyEvent):
-                fut = self._pending.pop(event.req_id, None)
-                if fut is not None and not fut.done():
-                    fut.set_result(event)
-                else:
-                    logger.warning(
-                        "Reply for unknown or expired req_id %s (%s)",
-                        event.req_id,
-                        type(event).__name__,
-                    )
-                continue
             return event
 
     def snapshot(self, snapshot: Any) -> None:
@@ -178,10 +132,6 @@ class IOEndpoint:
             while not self._inbox.empty():
                 self._inbox.get_nowait()
             self._inbox.put_nowait(_STREAM_CLOSED)
-            for fut in self._pending.values():
-                if not fut.done():
-                    fut.cancel()
-            self._pending.clear()
             self._closed = True
 
     async def __aenter__(self):
@@ -287,27 +237,14 @@ class AgentIOEndpoint(IOEndpoint):
                 return
             handler = self._event_handlers.get(type(event))
             if handler is None:
-                if isinstance(event, RequestEvent):
-                    logger.warning(
-                        "No handler registered for RequestEvent %s",
-                        type(event).__name__,
-                    )
-                    await self.send(ReplyEvent(req_id=event.req_id))
-                else:
-                    logger.warning(
-                        "No handler registered for event %s", type(event).__name__
-                    )
+                logger.warning(
+                    "No handler registered for event %s", type(event).__name__
+                )
                 continue
             try:
                 result = handler(event)
                 if asyncio.iscoroutine(result):
-                    result = await result
-                if isinstance(event, RequestEvent):
-                    if isinstance(result, ReplyEvent):
-                        result.req_id = event.req_id
-                        await self.send(result)
-                    else:
-                        await self.send(ReplyEvent(req_id=event.req_id))
+                    await result
             except asyncio.CancelledError:
                 raise
             except Exception:

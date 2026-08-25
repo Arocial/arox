@@ -36,11 +36,13 @@ separate history request.
 Endpoints expose `send` / `receive`, and the adapter maps each connected peer
 back to its runtime. Because the main runtime and each subagent runtime have
 independent endpoints, their output can be routed and rendered independently.
-`RequestEvent` / `ReplyEvent` add request/reply correlation: passing a
-`RequestEvent` to `send` awaits and returns the matching `ReplyEvent`.
-Adapter-originated events such as `UserInput` are dispatched by
+Events sent through an `IOEndpoint` are delivered asynchronously to its peer.
+Adapter-originated events such as `ClientInput` are dispatched by
 `AgentIOEndpoint` to registered synchronous or asynchronous handlers without a
 paired reply.
+`AgentRuntime.accept_input()` returns the normalized input with an `accepted`
+status. When a message begins a model turn, the same input is emitted with a
+`started` status for adapters to render.
 
 ### App-level adapter
 

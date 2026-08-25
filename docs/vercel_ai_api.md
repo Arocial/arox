@@ -79,22 +79,26 @@ Server-specific frames include:
 
 | type | meaning |
 |---|---|
-| `state` | Committed UI message history and selected model; sent when the IO connection is established or reconnected |
-| `cmd-user-message` | An ordered user-message boundary with top-level `client_message_id` and `server_message_id`. A missing client ID is generated when `UserInput` is created; message metadata also contains the stable `user_input_id` fork anchor |
+| `state` | One ordered, discriminated history containing UI messages and completed commands, plus the selected model; sent when the IO connection is established or reconnected |
+| `cmd-client-input` | A normalized client input changed lifecycle state. Message payloads are emitted when `started`; command payloads when `accepted` |
+| `cmd-command-completed` | A normalized command input finished dispatch, with its status and optional output or error |
 | `cmd-turn-state` | The retained turn entered or left its busy reading epoch; `busy=false` is ordered after its final output chunk |
 | `cmd-session-tree` | Updated recursive session view |
-| `ack` | Acknowledges a client payload and reports its status |
 
 Client payloads:
 
 ```json
 { "cancel": true }
-{ "command": { "type": "InfoEvent" } }
+{ "command": { "type": "InfoEvent" }, "client_message_id": "client-command-1" }
 { "reply": { "id": "msg-1", "role": "user", "parts": [{ "type": "text", "text": "hello", "state": "done" }] } }
 ```
 
-Cancel acknowledgements report `cancelled`, `idle`, or `unavailable`. Command
-acknowledgements report `ok`, `unknown`, or `invalid`.
+The runtime does not send acknowledgement frames. A `cmd-client-input` frame
+contains `client_message_id`, `server_message_id`, and a discriminated `payload`.
+Message payloads carry `status: "started"` plus their Vercel UI message when model
+processing starts. Command payloads carry `status: "accepted"` plus the normalized
+command. A slash-prefixed message may therefore be normalized into a command,
+whose result subsequently arrives in `cmd-command-completed`.
 
 The former HTTP `.../state` endpoint is no longer exposed. State bootstrap and
 recovery are part of the WebSocket stream, so clients must start the target

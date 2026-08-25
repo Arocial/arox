@@ -20,7 +20,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from arox.core.types import USER_INPUT_ID_KEY, UserInput
+from arox.core.types import USER_INPUT_ID_KEY, ClientInput, MessagePayload
 
 if TYPE_CHECKING:
     from arox.core.agent_runtime import AgentRuntime
@@ -46,15 +46,9 @@ class StepEvent(SessionEvent):
     model_message_ids: list[str] = Field(default_factory=list)
 
 
-class CommandRequestedEvent(SessionEvent):
-    event_type: Literal["command_requested"] = "command_requested"
-    command: str | dict[str, Any]
-    display_text: str
-
-
 class CommandCompletedEvent(SessionEvent):
     event_type: Literal["command_completed"] = "command_completed"
-    command_event_id: str
+    client_input: ClientInput
     status: Literal["handled", "not_command", "unknown", "invalid", "error"]
     output: str | None = None
     error: str | None = None
@@ -62,7 +56,7 @@ class CommandCompletedEvent(SessionEvent):
 
 class UserInputEvent(SessionEvent):
     event_type: Literal["user_input"] = "user_input"
-    user_input: UserInput
+    client_input: ClientInput
 
 
 class ErrorEvent(SessionEvent):
@@ -97,7 +91,6 @@ class CompactionEvent(SessionEvent):
 AnySessionEvent = Annotated[
     Union[
         StepEvent,
-        CommandRequestedEvent,
         CommandCompletedEvent,
         UserInputEvent,
         ErrorEvent,
@@ -297,18 +290,23 @@ class AgentSession(Session):
                     messages[message_id] = message
         return messages
 
-    def build_io_snapshot(self) -> tuple[ModelMessage, ...]:
+    def build_io_timeline(
+        self,
+    ) -> tuple[ModelMessage | CommandCompletedEvent, ...]:
         stored_messages = self._stored_model_messages()
-        timeline: list[ModelMessage] = []
+        timeline: list[ModelMessage | CommandCompletedEvent] = []
+        rendered_user_input_ids: set[str] = set()
 
         for event in self.events:
             if isinstance(event, UserInputEvent):
-                if event.user_input.input_content is not None:
+                rendered_user_input_ids.add(event.id)
+                payload = event.client_input.payload
+                if isinstance(payload, MessagePayload) and payload.content is not None:
                     timeline.append(
                         ModelRequest(
                             parts=[
                                 UserPromptPart(
-                                    content=event.user_input.input_content,
+                                    content=payload.content,
                                     timestamp=event.timestamp,
                                 )
                             ]
@@ -319,33 +317,13 @@ class AgentSession(Session):
                     message = stored_messages.get(message_id)
                     if message is None:
                         continue
-                    if (
-                        event.input_event_id is not None
-                        and event.input_event_id
-                        in MessageHistorySegment._user_input_ids_on(message)
+                    if rendered_user_input_ids.intersection(
+                        MessageHistorySegment._user_input_ids_on(message)
                     ):
                         continue
                     timeline.append(message)
-            elif isinstance(event, CommandRequestedEvent):
-                timeline.append(
-                    ModelRequest(
-                        parts=[
-                            UserPromptPart(
-                                content=event.display_text,
-                                timestamp=event.timestamp,
-                            )
-                        ]
-                    )
-                )
             elif isinstance(event, CommandCompletedEvent):
-                content = event.output or event.error
-                if content:
-                    timeline.append(
-                        ModelResponse(
-                            parts=[TextPart(content=content)],
-                            timestamp=event.timestamp,
-                        )
-                    )
+                timeline.append(event)
             elif isinstance(event, ErrorEvent):
                 timeline.append(
                     ModelResponse(
@@ -355,6 +333,45 @@ class AgentSession(Session):
                 )
 
         return tuple(timeline)
+
+    def build_io_snapshot(
+        self, *, include_commands: bool = True
+    ) -> tuple[ModelMessage, ...]:
+        snapshot: list[ModelMessage] = []
+        for item in self.build_io_timeline():
+            if isinstance(item, CommandCompletedEvent):
+                if not include_commands:
+                    continue
+                payload = item.client_input.payload
+                assert not isinstance(payload, MessagePayload)
+                command = payload.command
+                display_text = (
+                    command
+                    if isinstance(command, str)
+                    else json.dumps(command, ensure_ascii=False, sort_keys=True)
+                )
+                snapshot.append(
+                    ModelRequest(
+                        parts=[
+                            UserPromptPart(
+                                content=display_text,
+                                timestamp=item.timestamp,
+                            )
+                        ]
+                    )
+                )
+                content = item.output or item.error
+                if content:
+                    snapshot.append(
+                        ModelResponse(
+                            parts=[TextPart(content=content)],
+                            timestamp=item.timestamp,
+                        )
+                    )
+            else:
+                snapshot.append(item)
+
+        return tuple(snapshot)
 
     def _start_message_history(
         self,
@@ -397,33 +414,19 @@ class AgentSession(Session):
         self.add_event(event)
         return event
 
-    @staticmethod
-    def _command_display_text(command: str | dict[str, Any]) -> str:
-        if isinstance(command, str):
-            return command
-        return json.dumps(command, ensure_ascii=False, sort_keys=True)
-
-    def record_command_requested(
-        self, command: str | dict[str, Any]
-    ) -> CommandRequestedEvent:
-        event = CommandRequestedEvent(
-            command=command,
-            display_text=self._command_display_text(command),
-            agent_name=self.agent_name,
-        )
-        self.add_event(event)
-        return event
-
     def record_command_completed(
         self,
-        command_event_id: str,
+        client_input: ClientInput,
         status: Literal["handled", "not_command", "unknown", "invalid", "error"],
         *,
         output: str | None = None,
         error: str | None = None,
     ) -> CommandCompletedEvent:
+        input_id = client_input.server_message_id
+        assert input_id is not None
         event = CommandCompletedEvent(
-            command_event_id=command_event_id,
+            id=input_id,
+            client_input=client_input,
             status=status,
             output=output,
             error=error,
@@ -432,16 +435,19 @@ class AgentSession(Session):
         self.add_event(event)
         return event
 
-    def record_user_input(self, user_input: UserInput) -> None:
-        input_id = user_input.server_message_id
+    def record_user_input(self, client_input: ClientInput) -> None:
+        input_id = client_input.server_message_id
+        assert input_id is not None
+        payload = client_input.payload
+        assert isinstance(payload, MessagePayload)
 
         self.add_event(
             UserInputEvent(
-                id=input_id, user_input=user_input, agent_name=self.agent_name
+                id=input_id, client_input=client_input, agent_name=self.agent_name
             )
         )
         last_user_messages = self.metadata.get("last_user_messages", [])
-        text = user_input.text_content
+        text = payload.text_content
         if text:
             last_user_messages.append(text)
         self.metadata["last_user_messages"] = last_user_messages[-2:]

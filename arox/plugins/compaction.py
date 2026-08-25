@@ -207,8 +207,7 @@ class CompactionPlugin(Plugin):
             )
             async with compaction_runtime:
                 compaction_runtime.message_history = messages.copy()
-                turn = await compaction_runtime.accept_input(prompt)
-                assert turn is not None
+                turn = compaction_runtime.start_message(prompt)
                 result = await turn
                 summary = (
                     result.output if result and isinstance(result.output, str) else ""

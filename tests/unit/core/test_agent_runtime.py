@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic_ai import ModelRequestContext, RunContext
@@ -23,7 +24,7 @@ from pydantic_ai.usage import RunUsage
 from arox.core.agent_runtime import AgentDeps, AgentRuntime
 from arox.core.app import app_setup
 from arox.core.background import BackgroundTaskBroker
-from arox.core.io import AbstractIOAdapter, RequestEvent
+from arox.core.io import AbstractIOAdapter
 from arox.core.message_utils import (
     AROX_INTERNAL_KEY,
     internal_user_prompt_part,
@@ -38,9 +39,13 @@ from arox.core.plugin import (
 from arox.core.session import (
     AgentSession,
     CommandCompletedEvent,
-    CommandRequestedEvent,
 )
-from arox.core.types import TurnStateEvent, UserInput, UserMessageEvent
+from arox.core.types import (
+    ClientInput,
+    CommandPayload,
+    MessagePayload,
+    TurnStateEvent,
+)
 from arox.plugins.core import SetModelEvent
 
 
@@ -63,7 +68,7 @@ async def test_command_dispatch_records_request_and_completion_timeline():
         assert command == "/info"
         return CommandDispatchResult(
             "handled",
-            CommandReply(req_id="reply", output="details"),
+            CommandReply(output="details"),
         )
 
     class Endpoint:
@@ -87,18 +92,43 @@ async def test_command_dispatch_records_request_and_completion_timeline():
         ),
     )
 
-    result = await AgentRuntime._dispatch_command(runtime, "/info")
+    client_input = ClientInput(
+        payload=CommandPayload(command="/info"),
+        server_message_id="command-id",
+    )
+    result = await AgentRuntime._dispatch_command(runtime, client_input)
 
     assert result.status == "handled"
-    assert endpoint.sent == ["details"]
-    assert len(session.events) == 2
-    requested, completed = session.events
-    assert isinstance(requested, CommandRequestedEvent)
-    assert requested.display_text == "/info"
+    assert endpoint.sent[0] == "details"
+    assert isinstance(endpoint.sent[1], CommandCompletedEvent)
+    assert len(session.events) == 1
+    completed = session.events[0]
     assert isinstance(completed, CommandCompletedEvent)
-    assert completed.command_event_id == requested.id
+    assert completed.client_input is client_input
     assert completed.output == "details"
     assert endpoint.snapshot_value == session.build_io_snapshot()
+
+
+@pytest.mark.asyncio
+async def test_accept_command_emits_accepted_client_input(monkeypatch):
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.session = AgentSession(path=["command-session"], agent_name="main")
+    runtime._command_tasks = set()
+    runtime.agent_ep = SimpleNamespace(send=AsyncMock())
+    run_command = AsyncMock()
+    monkeypatch.setattr(runtime, "_run_command", run_command)
+    client_input = ClientInput(
+        payload=CommandPayload(command="/info"),
+        client_message_id="client-command-1",
+    )
+
+    accepted = await runtime.accept_input(client_input)
+    await asyncio.gather(*runtime._command_tasks)
+
+    assert accepted.payload.status == "accepted"
+    assert accepted.server_message_id
+    runtime.agent_ep.send.assert_awaited_once_with(accepted)
+    run_command.assert_awaited_once_with(accepted)
 
 
 @pytest.mark.asyncio
@@ -409,7 +439,7 @@ system_prompt = "Hi there."
 
 
 @pytest.mark.asyncio
-async def test_request_event_dispatches_to_handler(tmp_path, monkeypatch):
+async def test_event_dispatches_to_handler(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
     config_file = tmp_path / ".arox" / "config.toml"
     config_file.parent.mkdir(parents=True, exist_ok=True)
@@ -422,10 +452,10 @@ system_prompt = "Hi."
         cli_args={"workspace": str(tmp_path)},
     )
 
-    class CustomEvent(RequestEvent):
+    class CustomEvent:
         pass
 
-    received: list[RequestEvent] = []
+    received: list[CustomEvent] = []
 
     runtime = AgentRuntime(
         config_loader,
@@ -655,9 +685,13 @@ system_prompt = "Hi."
             await runtime.run_turn("fail")
 
     user_message = next(
-        event for event in sent_events if isinstance(event, UserMessageEvent)
+        event
+        for event in sent_events
+        if isinstance(event, ClientInput)
+        and isinstance(event.payload, MessagePayload)
+        and event.payload.status == "started"
     )
-    assert user_message.user_input.text_content == "fail"
+    assert user_message.payload.text_content == "fail"
     session_snapshot = runtime.session.build_io_snapshot()
     assert len(session_snapshot) == 2
     assert isinstance(session_snapshot[0], ModelRequest)
@@ -769,23 +803,23 @@ system_prompt = "Hi."
 
     consumed_inputs = []
 
-    async def blocking_turn(user_input):
-        consumed_inputs.append(user_input.text_content)
+    async def blocking_turn(client_input):
+        consumed_inputs.append(client_input.payload.text_content)
         started.set()
         await release.wait()
-        return SimpleNamespace(output=user_input)
+        return SimpleNamespace(output=client_input)
 
     runtime._run_turn_input = blocking_turn  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
     async with runtime:
-        turn = await runtime.accept_input("work")
+        turn = runtime.start_message("work")
         assert turn is not None
         task = turn.task
         await started.wait()
         assert runtime.turn is turn
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(asyncio.shield(task), 0.01)
-        parallel_turn = await runtime.accept_input("parallel work")
+        parallel_turn = runtime.start_message("parallel work")
         assert parallel_turn is turn
 
         assert await runtime.cancel_turn()
@@ -796,11 +830,11 @@ system_prompt = "Hi."
         assert consumed_inputs == ["work"]
 
         release.set()
-        completed_turn = await runtime.accept_input("completed work")
+        completed_turn = runtime.start_message("completed work")
         assert completed_turn is not None
         completed_result = await completed_turn
-        assert isinstance(completed_result.output, UserInput)
-        assert completed_result.output.text_content == "completed work"
+        assert isinstance(completed_result.output, ClientInput)
+        assert completed_result.output.payload.text_content == "completed work"
         assert runtime.turn is completed_turn
         assert completed_turn.result is completed_result
         assert completed_turn.error is None
@@ -808,10 +842,10 @@ system_prompt = "Hi."
         started.clear()
         release.clear()
         consumed_inputs.clear()
-        queued_turn = await runtime.accept_input("first queued work")
+        queued_turn = runtime.start_message("first queued work")
         assert queued_turn is not None
         await started.wait()
-        assert await runtime.accept_input("second queued work") is queued_turn
+        assert runtime.start_message("second queued work") is queued_turn
         request_context = SimpleNamespace(messages=[])
         await runtime._before_model_request(
             cast(RunContext[AgentDeps], None),
@@ -827,26 +861,26 @@ system_prompt = "Hi."
         release.set()
         queued_result = await queued_turn
         assert consumed_inputs == ["first queued work"]
-        assert queued_result.output.text_content == "first queued work"
+        assert queued_result.output.payload.text_content == "first queued work"
 
         started.clear()
         release.clear()
         consumed_inputs.clear()
-        trailing_turn = await runtime.accept_input("last model request")
+        trailing_turn = runtime.start_message("last model request")
         assert trailing_turn is not None
         await started.wait()
-        assert await runtime.accept_input("missed injection window") is trailing_turn
+        assert runtime.start_message("missed injection window") is trailing_turn
         release.set()
         trailing_result = await trailing_turn
         assert consumed_inputs == ["last model request", "missed injection window"]
-        assert trailing_result.output.text_content == "missed injection window"
+        assert trailing_result.output.payload.text_content == "missed injection window"
 
         async def failed_turn(user_input):
             raise RuntimeError("model failed")
 
         runtime._run_turn_input = failed_turn  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
         with pytest.raises(RuntimeError, match="model failed"):
-            failed_turn_handle = await runtime.accept_input("failed work")
+            failed_turn_handle = runtime.start_message("failed work")
             assert failed_turn_handle is not None
             await failed_turn_handle
         assert failed_turn_handle.result is None

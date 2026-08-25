@@ -1,4 +1,5 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -7,7 +8,13 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import WebSocket, WebSocketDisconnect
 from pydantic_ai import FinalResultEvent
-from pydantic_ai.messages import ModelRequest, TextContent, UserPromptPart
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextContent,
+    TextPart,
+    UserPromptPart,
+)
 from pydantic_ai.ui.vercel_ai import VercelAIEventStream
 from pydantic_ai.ui.vercel_ai.request_types import SubmitMessage
 
@@ -17,17 +24,25 @@ from arox.apps.chat.io_adapters.vercel_ai import (
     VercelStreamServer,
     _log_ws_payload,
     build_state_history,
+    build_state_timeline,
 )
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.app import app_setup
 from arox.core.io import AgentIOEndpoint
-from arox.core.plugin import CommandInput, CommandInputReply
-from arox.core.session import AgentSession, ErrorEvent, FileSessionStore, SessionManager
+from arox.core.session import (
+    AgentSession,
+    CommandCompletedEvent,
+    ErrorEvent,
+    FileSessionStore,
+    SessionManager,
+)
 from arox.core.types import (
     USER_INPUT_ID_KEY,
+    ClientInput,
+    CommandPayload,
+    MessagePayload,
     TurnStateEvent,
-    UserInput,
-    UserMessageEvent,
+    normalize_client_input,
 )
 
 
@@ -90,42 +105,37 @@ async def test_final_result_does_not_close_retained_turn_stream():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("cancelled", "status"), [(True, "cancelled"), (False, "idle")]
-)
-async def test_cancel_uses_runtime_turn_api(cancelled, status):
+async def test_cancel_uses_runtime_turn_api():
     adapter = VercelStreamIOAdapter()
-    runtime = SimpleNamespace(cancel_turn=AsyncMock(return_value=cancelled))
+    runtime = SimpleNamespace(cancel_turn=AsyncMock(return_value=True))
     target = SimpleNamespace(session=SimpleNamespace(runtime=runtime))
 
     result = await adapter._apply_input(
         target, cast(AgentIOEndpoint, SimpleNamespace()), {"cancel": True}
     )
 
-    assert result == {"status": status}
+    assert result is None
     runtime.cancel_turn.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio
 async def test_structured_command_is_forwarded_through_io():
     adapter = VercelStreamIOAdapter()
-    adapter_ep = SimpleNamespace(
-        send=AsyncMock(
-            return_value=CommandInputReply(
-                req_id="reply", status="handled", output="done"
-            )
-        )
-    )
     command = {"type": "MissingCommand"}
+    adapter_ep = SimpleNamespace(send=AsyncMock())
 
     result = await adapter._apply_input(
-        SimpleNamespace(), cast(AgentIOEndpoint, adapter_ep), {"command": command}
+        SimpleNamespace(),
+        cast(AgentIOEndpoint, adapter_ep),
+        {"command": command, "client_message_id": "client-command-1"},
     )
 
-    assert result == {"status": "ok", "output": "done"}
+    assert result is None
     event = adapter_ep.send.await_args.args[0]
-    assert isinstance(event, CommandInput)
-    assert event.command == command
+    assert isinstance(event, ClientInput)
+    assert isinstance(event.payload, CommandPayload)
+    assert event.payload.command == command
+    assert event.client_message_id == "client-command-1"
 
 
 @pytest.mark.asyncio
@@ -149,10 +159,11 @@ async def test_reply_payload_is_forwarded_as_chat_input_event():
         SimpleNamespace(), cast(AgentIOEndpoint, adapter_ep), payload
     )
 
-    assert result == {"status": "ok"}
+    assert result is None
     event = adapter_ep.send.await_args.args[0]
-    assert isinstance(event, UserInput)
-    assert event.text_content == "hello"
+    assert isinstance(event, ClientInput)
+    assert isinstance(event.payload, MessagePayload)
+    assert event.payload.text_content == "hello"
     assert event.client_message_id == "client-message-1"
 
 
@@ -168,39 +179,49 @@ async def test_reply_payload_without_chat_input_metadata_is_rejected():
         }
     }
 
-    result = await adapter._apply_input(
-        SimpleNamespace(), cast(AgentIOEndpoint, adapter_ep), payload
-    )
-
-    assert result == {"status": "error", "message": "no chatInputEventResult"}
+    with pytest.raises(ValueError, match="no chatInputEventResult"):
+        await adapter._apply_input(
+            SimpleNamespace(), cast(AgentIOEndpoint, adapter_ep), payload
+        )
     adapter_ep.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_user_message_event_becomes_command_with_complete_ui_message():
+async def test_started_message_input_becomes_client_input_frame():
     adapter = VercelStreamIOAdapter()
     root_session = AgentSession(path=["root"], agent_name="coder")
-    user_input = UserInput(
-        input_content="delegated task", client_message_id="client-message-1"
+    user_input = normalize_client_input(
+        ClientInput(
+            payload=MessagePayload(content="delegated task"),
+            client_message_id="client-message-1",
+        )
     )
+    assert isinstance(user_input.payload, MessagePayload)
+    user_input.payload.status = "started"
 
     frames = await adapter._to_ui_messages(
-        UserMessageEvent(user_input),
+        user_input,
         root_session,
         VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
     )
 
     assert frames == [
         {
-            "type": "cmd-user-message",
+            "type": "cmd-client-input",
             "client_message_id": "client-message-1",
             "server_message_id": user_input.server_message_id,
-            "message": {
-                "id": user_input.server_message_id,
-                "role": "user",
-                "parts": [{"type": "text", "text": "delegated task", "state": "done"}],
-                "metadata": {
-                    "custom": {USER_INPUT_ID_KEY: user_input.server_message_id}
+            "payload": {
+                "type": "message",
+                "status": "started",
+                "message": {
+                    "id": user_input.server_message_id,
+                    "role": "user",
+                    "parts": [
+                        {"type": "text", "text": "delegated task", "state": "done"}
+                    ],
+                    "metadata": {
+                        "custom": {USER_INPUT_ID_KEY: user_input.server_message_id}
+                    },
                 },
             },
         }
@@ -211,10 +232,14 @@ async def test_user_message_event_becomes_command_with_complete_ui_message():
 async def test_runtime_user_message_includes_generated_client_and_server_message_ids():
     adapter = VercelStreamIOAdapter()
     root_session = AgentSession(path=["root"], agent_name="coder")
-    user_input = UserInput(input_content="delegated task")
+    user_input = normalize_client_input(
+        ClientInput(payload=MessagePayload(content="delegated task"))
+    )
+    assert isinstance(user_input.payload, MessagePayload)
+    user_input.payload.status = "started"
 
     frames = await adapter._to_ui_messages(
-        UserMessageEvent(user_input),
+        user_input,
         root_session,
         VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
     )
@@ -222,6 +247,120 @@ async def test_runtime_user_message_includes_generated_client_and_server_message
     assert frames[0]["client_message_id"] == user_input.client_message_id
     assert frames[0]["client_message_id"]
     assert frames[0]["server_message_id"] == user_input.server_message_id
+
+
+@pytest.mark.asyncio
+async def test_accepted_command_input_becomes_client_input_frame():
+    adapter = VercelStreamIOAdapter()
+    client_input = normalize_client_input(
+        ClientInput(
+            payload=CommandPayload(command={"type": "InfoEvent"}),
+            client_message_id="client-command-1",
+        )
+    )
+    assert isinstance(client_input.payload, CommandPayload)
+    client_input.payload.status = "accepted"
+
+    frames = await adapter._to_ui_messages(
+        client_input,
+        AgentSession(path=["root"], agent_name="coder"),
+        VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
+    )
+
+    assert frames == [
+        {
+            "type": "cmd-client-input",
+            "client_message_id": "client-command-1",
+            "server_message_id": client_input.server_message_id,
+            "payload": {
+                "type": "command",
+                "status": "accepted",
+                "command": {"type": "InfoEvent"},
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_command_completion_includes_normalized_input():
+    adapter = VercelStreamIOAdapter()
+    root_session = AgentSession(path=["root"], agent_name="coder")
+    client_input = ClientInput(
+        payload=CommandPayload(command="/info"),
+        client_message_id="client-1",
+        server_message_id="server-1",
+    )
+
+    frames = await adapter._to_ui_messages(
+        CommandCompletedEvent(
+            client_input=client_input, status="handled", output="details"
+        ),
+        root_session,
+        VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
+    )
+
+    assert frames == [
+        {
+            "type": "cmd-command-completed",
+            "input": {
+                "payload": {
+                    "command": "/info",
+                    "status": None,
+                    "type": "command",
+                },
+                "client_message_id": "client-1",
+                "server_message_id": "server-1",
+            },
+            "status": "handled",
+            "output": "details",
+            "error": None,
+        }
+    ]
+
+
+def test_state_timeline_preserves_message_command_order():
+    session = AgentSession(path=["root"], agent_name="coder")
+    base = datetime.now(UTC)
+    message_input = normalize_client_input(
+        ClientInput(payload=MessagePayload(content="before"))
+    )
+    session.record_user_input(message_input)
+    session.record_command_completed(
+        normalize_client_input(
+            ClientInput(
+                payload=CommandPayload(command="/info", status="accepted"),
+                client_message_id="client-command-1",
+                server_message_id="server-command-1",
+            )
+        ),
+        "handled",
+        output="details",
+    )
+    payload = message_input.payload
+    assert isinstance(payload, MessagePayload)
+    assert payload.content is not None
+    request = ModelRequest(
+        parts=[UserPromptPart(content=payload.content)],
+        timestamp=base + timedelta(seconds=2),
+    )
+    response = ModelResponse(
+        parts=[TextPart(content="after")],
+        timestamp=base,
+    )
+    session.record_step(
+        [request, response],
+        input_event_id=message_input.server_message_id,
+        new_messages=[request, response],
+    )
+
+    timeline = build_state_timeline(session)
+
+    assert [entry["type"] for entry in timeline] == [
+        "message",
+        "command",
+        "message",
+    ]
+    assert timeline[1]["client_message_id"] == "client-command-1"
 
 
 def test_build_state_history_carries_user_input_id():
@@ -325,7 +464,12 @@ async def test_websocket_can_wait_for_active_runtime():
 
     assert websocket.accepted
     assert websocket.sent == [
-        {"type": "state", "history": [], "model": "test", "busy": False}
+        {
+            "type": "state",
+            "history": [],
+            "model": "test",
+            "busy": False,
+        }
     ]
     assert websocket.closed is None
 
@@ -361,14 +505,23 @@ async def test_websocket_starts_with_runtime_snapshot():
     websocket = FakeWebSocket()
     await adapter.ws_handler(cast(WebSocket, websocket), session, session, "test")
 
-    websocket.sent[0]["history"][0].pop("id")
+    websocket.sent[0]["history"][0]["message"].pop("id")
     assert websocket.sent == [
         {
             "type": "state",
             "history": [
                 {
-                    "role": "user",
-                    "parts": [{"type": "text", "text": "committed", "state": "done"}],
+                    "type": "message",
+                    "message": {
+                        "role": "user",
+                        "parts": [
+                            {
+                                "type": "text",
+                                "text": "committed",
+                                "state": "done",
+                            }
+                        ],
+                    },
                 }
             ],
             "model": "test",
@@ -473,7 +626,10 @@ async def test_websocket_survives_runtime_restart():
     await asyncio.wait_for(websocket.state_sent.wait(), timeout=1)
 
     assert adapter._connections[session.id].runtime is second_runtime
-    assert websocket.sent[-1]["history"][0]["parts"][0]["text"] == "after restart"
+    assert (
+        websocket.sent[-1]["history"][0]["message"]["parts"][0]["text"]
+        == "after restart"
+    )
 
     websocket_task.cancel()
     await asyncio.gather(websocket_task, return_exceptions=True)

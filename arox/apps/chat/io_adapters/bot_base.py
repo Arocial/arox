@@ -20,7 +20,7 @@ from arox.core.io import (
     IOEndpoint,
 )
 from arox.core.session import ErrorEvent
-from arox.core.types import UserInput
+from arox.core.types import ClientInput, MessagePayload
 
 logger = logging.getLogger(__name__)
 
@@ -80,4 +80,4 @@ class BotIOAdapter(AbstractIOAdapter, ABC):
     async def send_user_input(self, text: str) -> None:
         for adapter_ep, runtime in list(self.adapter_ep_to_runtime.items()):
             if runtime.session.owner is None:
-                await adapter_ep.send(UserInput(input_content=text))
+                await adapter_ep.send(ClientInput(payload=MessagePayload(content=text)))
