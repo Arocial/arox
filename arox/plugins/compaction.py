@@ -14,6 +14,12 @@ logger = logging.getLogger(__name__)
 COMPACTION_AGENT_NAME = "compaction"
 
 
+@dataclass
+class CompactionOutcome:
+    messages: list[ModelMessage]
+    output: str
+
+
 @dataclass(kw_only=True)
 class CompactEvent(CommandEvent):
     slashes: ClassVar[tuple[str, ...]] = ("compact",)
@@ -84,24 +90,24 @@ class CompactionPlugin(Plugin):
         self._compaction_instructions = instruction.strip()
         return "Conversation history compaction requested."
 
-    async def handle_compact(self, event: CompactEvent):
+    async def handle_compact(self, event: CompactEvent) -> str:
         runtime = self.runtime
         messages_to_compact = list(runtime.message_history)
 
         if not messages_to_compact:
-            await runtime.agent_ep.send("No history to compact.")
-            return
+            return "No history to compact."
 
-        compacted_messages = await self._compact(
+        outcome = await self._compact(
             messages_to_compact, extra_instructions=event.extra_instructions
         )
 
-        if compacted_messages is messages_to_compact:
-            return
+        if outcome.messages is messages_to_compact:
+            return outcome.output
 
         await self._record_compaction(
-            compacted_messages, True, previous_messages=messages_to_compact
+            outcome.messages, True, previous_messages=messages_to_compact
         )
+        return outcome.output
 
     async def _record_compaction(
         self,
@@ -148,7 +154,8 @@ class CompactionPlugin(Plugin):
                 "Triggering automatic compaction."
             )
 
-        compacted = await self._compact(messages, extra_instructions=extra_instructions)
+        outcome = await self._compact(messages, extra_instructions=extra_instructions)
+        compacted = outcome.messages
         if compacted is messages:
             return messages
 
@@ -166,22 +173,22 @@ class CompactionPlugin(Plugin):
 
     async def _compact(
         self, messages: list[ModelMessage], extra_instructions: str = ""
-    ) -> list[ModelMessage]:
+    ) -> CompactionOutcome:
         runtime = self.runtime
 
         if not messages:
-            return messages
+            return CompactionOutcome(messages, "No history to compact.")
 
         agent_config = runtime.config.agent.get(COMPACTION_AGENT_NAME)
         if not agent_config:
-            await runtime.agent_ep.send(
-                "Compaction agent not configured; skipping compaction."
-            )
             logger.warning(
                 "CompactionPlugin could not find an agent config named '%s'.",
                 COMPACTION_AGENT_NAME,
             )
-            return messages
+            return CompactionOutcome(
+                messages,
+                "Compaction agent not configured; skipping compaction.",
+            )
 
         prompt = agent_config.task_prompt
         if not prompt:
@@ -191,9 +198,7 @@ class CompactionPlugin(Plugin):
         if extra_instructions:
             prompt = f"{prompt}\n\nAdditional instructions: {extra_instructions}"
 
-        await runtime.agent_ep.send(
-            "Context size is large. Compacting conversation history..."
-        )
+        logger.info("Compacting conversation history")
 
         compaction_session = await runtime.session.create_child_session(
             agent_name=COMPACTION_AGENT_NAME,
@@ -218,7 +223,10 @@ class CompactionPlugin(Plugin):
 
         if not summary:
             logger.warning("Compaction returned no summary. Skipping.")
-            return messages
+            return CompactionOutcome(
+                messages,
+                "Compaction returned no summary; skipping compaction.",
+            )
 
         new_request = ModelRequest(
             parts=[UserPromptPart(content=f"Previous conversation summary:\n{summary}")]
@@ -229,5 +237,7 @@ class CompactionPlugin(Plugin):
         for persistent_messages in await runtime.invoke_slot(PERSISTENT_CONTEXT) or []:
             compacted_messages.extend(persistent_messages)
 
-        await runtime.agent_ep.send("Conversation history compacted successfully.")
-        return compacted_messages
+        return CompactionOutcome(
+            compacted_messages,
+            "Conversation history compacted successfully.",
+        )

@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from arox.plugins.file import FilePlugin
+from arox.plugins.file import FileAddEvent, FilePlugin
 
 original_content = """import yaml
 import os
@@ -68,6 +68,24 @@ class TestFileEdit:
     @classmethod
     def teardown_class(cls):
         cls.temp_dir.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_file_add_command_returns_final_result(self):
+        file_path = self.workspace / "command-file.txt"
+        file_path.write_text("content")
+
+        result = await self.tool.handle_file_add(
+            FileAddEvent(files=[file_path.name, "missing.txt"])
+        )
+
+        assert result.startswith("Added 1 file(s) to the chat context.")
+        assert "Error reading file missing.txt:" in result
+
+    @pytest.mark.asyncio
+    async def test_file_add_command_requires_files(self):
+        result = await self.tool.handle_file_add(FileAddEvent(files=[]))
+
+        assert result == "Please specify files."
 
     @pytest.mark.asyncio
     async def test_write_to_file_new_file(self):

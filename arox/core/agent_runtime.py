@@ -359,8 +359,6 @@ class AgentRuntime:
             result.status,
             output=output,
         )
-        if output:
-            await self.agent_ep.send(output)
         await self.agent_ep.send(completed)
         self.agent_ep.snapshot(self.session.build_io_snapshot())
         return result

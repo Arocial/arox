@@ -99,8 +99,9 @@ async def test_command_dispatch_records_request_and_completion_timeline():
     result = await AgentRuntime._dispatch_command(runtime, client_input)
 
     assert result.status == "handled"
-    assert endpoint.sent[0] == "details"
-    assert isinstance(endpoint.sent[1], CommandCompletedEvent)
+    assert len(endpoint.sent) == 1
+    assert isinstance(endpoint.sent[0], CommandCompletedEvent)
+    assert endpoint.sent[0].output == "details"
     assert len(session.events) == 1
     completed = session.events[0]
     assert isinstance(completed, CommandCompletedEvent)

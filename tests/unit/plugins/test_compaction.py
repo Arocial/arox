@@ -88,6 +88,7 @@ class _MockAgent:
             self.config.compaction_threshold = None  # type: ignore
 
         self.model_params = {}
+        self.sent = []
         self.agent_ep = SimpleNamespace(send=self._send, snapshot=lambda snapshot: None)
         self.session = AgentSession(agent_name="main")
         self.workspace = "fake-workspace"
@@ -108,8 +109,8 @@ class _MockAgent:
     def message_history(self, value):
         self.session.replace_message_history(value)
 
-    async def _send(self, _msg):
-        return None
+    async def _send(self, msg):
+        self.sent.append(msg)
 
     async def broadcast_session_tree(self):
         pass
@@ -291,8 +292,10 @@ async def test_manual_compact_records_event_and_replaces_history():
     plugin = _plugin(agent)
     agent.message_history = [_user("old"), _reply("reply")]
 
-    await plugin.handle_compact(CompactEvent(extra_instructions=""))
+    result = await plugin.handle_compact(CompactEvent(extra_instructions=""))
 
+    assert result == "Conversation history compacted successfully."
+    assert agent.sent == []
     assert [e.event_type for e in agent.session.events] == ["compaction"]
     assert agent.run_info.llm_context_id != "ctx-original"
     # Manual compaction replaces the live history with the summary base.

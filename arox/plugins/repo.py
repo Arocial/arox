@@ -64,8 +64,9 @@ class RepoPlugin(Plugin):
     def commands(self):
         return [CommandSpec(AddFileListEvent, self.handle_add_file_list)]
 
-    async def handle_add_file_list(self, event: AddFileListEvent):
+    async def handle_add_file_list(self, event: AddFileListEvent) -> str:
         self.add_project_files()
+        return "Project file list will be added to the chat context."
 
     async def history_processor(
         self, ctx: RunContext[Any], messages: list[ModelMessage]

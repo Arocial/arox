@@ -129,7 +129,8 @@ class FilePlugin(Plugin):
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             return f.readlines()
 
-    async def read_by_user(self, file_paths: list[str]):
+    async def read_by_user(self, file_paths: list[str]) -> list[str]:
+        errors = []
         for file_path in file_paths:
             try:
                 path = self._normalize_path(file_path)
@@ -141,9 +142,8 @@ class FilePlugin(Plugin):
                     self._pending_text_files[file_path] = "".join(lines)
                 self._add_to_session(path)
             except Exception as e:
-                await self.runtime.agent_ep.send(
-                    f"Error reading file {file_path}: {e!s}"
-                )
+                errors.append(f"Error reading file {file_path}: {e!s}")
+        return errors
 
     def consume_pending(self) -> tuple[dict[str, str], dict[str, bytes]]:
         text_files = self._pending_text_files
@@ -488,11 +488,17 @@ class FilePlugin(Plugin):
     def commands(self):
         return [CommandSpec(FileAddEvent, self.handle_file_add, self.get_completions)]
 
-    async def handle_file_add(self, event: "FileAddEvent"):
+    async def handle_file_add(self, event: "FileAddEvent") -> str:
         if not event.files:
-            await self.runtime.agent_ep.send("Please specify files.")
-            return
-        await self.read_by_user(event.files)
+            return "Please specify files."
+
+        errors = await self.read_by_user(event.files)
+        loaded_count = len(event.files) - len(errors)
+        results = []
+        if loaded_count:
+            results.append(f"Added {loaded_count} file(s) to the chat context.")
+        results.extend(errors)
+        return "\n".join(results)
 
     async def get_completions(self, req: CompletionRequest):
         current_word = req.current_token
