@@ -825,6 +825,24 @@ class TestFileSessionStore:
         assert deleted == 1
 
     @pytest.mark.asyncio
+    async def test_manager_does_not_save_empty_root_session(self, store):
+        manager = SessionManager(store)
+        manager.register_session_type(AgentSession)
+        session = AgentSession(agent_name="main", path=["empty"], manager=manager)
+
+        await manager.persist(session)
+
+        assert await store.load_session(session.path) is None
+        assert await manager.resolve(session.id) is session
+
+        session.record_user_input(_message_input("hello"))
+        await manager.persist(session)
+
+        loaded = await store.load_session(session.path)
+        assert isinstance(loaded, AgentSession)
+        assert len(loaded.events) == 1
+
+    @pytest.mark.asyncio
     async def test_manager_tree_api(self, store):
         manager = SessionManager(store)
         manager.register_session_type(AgentSession)

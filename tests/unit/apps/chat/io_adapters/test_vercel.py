@@ -691,6 +691,7 @@ main_agent = "coder"
         inactive = await manager.resolve(created.id)
         assert isinstance(inactive, AgentSession)
         assert not inactive.is_active
+        assert await store.load_session(inactive.path) is None
 
         monkeypatch.setattr(
             server.io_adapter, "suggestions", AsyncMock(return_value={"items": []})

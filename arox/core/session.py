@@ -221,6 +221,18 @@ class AgentSession(Session):
     def is_active(self) -> bool:
         return self.runtime is not None
 
+    @property
+    def is_empty(self) -> bool:
+        return not (
+            self.events
+            or self.children
+            or self.archived_message_histories
+            or self.message_history.messages
+            or self.task_name
+            or self.target
+            or self.initial_message
+        )
+
     async def ensure_runtime(
         self,
         config_loader: ConfigLoader,
@@ -665,6 +677,12 @@ class SessionManager:
         for session in sessions:
             self._dirty_sessions.pop(session.id, None)
             self._track(session, session.owner)
+            if (
+                isinstance(session, AgentSession)
+                and len(session.path) == 1
+                and session.is_empty
+            ):
+                continue
             await self.session_store.save_session(session)
 
     def register_session_type(self, cls: type[Session]) -> None:
