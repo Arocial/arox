@@ -11,7 +11,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Callable, Literal, Protocol, Union
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
-from pydantic_ai.messages import ModelMessage, ModelRequest, TextContent, UserPromptPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    TextContent,
+    TextPart,
+    UserPromptPart,
+)
 
 from arox.core.types import USER_INPUT_ID_KEY, UserInput
 
@@ -23,6 +30,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+MODEL_MESSAGE_ID_KEY = "arox_model_message_id"
+
+
 class SessionEvent(BaseModel):
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -32,12 +42,22 @@ class SessionEvent(BaseModel):
 
 class StepEvent(SessionEvent):
     event_type: Literal["agent_step"] = "agent_step"
+    input_event_id: str | None = None
+    model_message_ids: list[str] = Field(default_factory=list)
 
 
-class CommandEvent(SessionEvent):
-    event_type: Literal["command"] = "command"
-    command: str = ""
-    arg: str | None = None
+class CommandRequestedEvent(SessionEvent):
+    event_type: Literal["command_requested"] = "command_requested"
+    command: str | dict[str, Any]
+    display_text: str
+
+
+class CommandCompletedEvent(SessionEvent):
+    event_type: Literal["command_completed"] = "command_completed"
+    command_event_id: str
+    status: Literal["handled", "not_command", "unknown", "invalid", "error"]
+    output: str | None = None
+    error: str | None = None
 
 
 class UserInputEvent(SessionEvent):
@@ -77,7 +97,8 @@ class CompactionEvent(SessionEvent):
 AnySessionEvent = Annotated[
     Union[
         StepEvent,
-        CommandEvent,
+        CommandRequestedEvent,
+        CommandCompletedEvent,
         UserInputEvent,
         ErrorEvent,
         SubagentCallEvent,
@@ -267,8 +288,73 @@ class AgentSession(Session):
     def replace_message_history(self, messages: Sequence[ModelMessage]) -> None:
         self.message_history.messages = list(messages)
 
+    def _stored_model_messages(self) -> dict[str, ModelMessage]:
+        messages: dict[str, ModelMessage] = {}
+        for history in [*self.archived_message_histories, self.message_history]:
+            for message in history.messages:
+                message_id = (message.metadata or {}).get(MODEL_MESSAGE_ID_KEY)
+                if isinstance(message_id, str):
+                    messages[message_id] = message
+        return messages
+
     def build_io_snapshot(self) -> tuple[ModelMessage, ...]:
-        return tuple(self.message_history.messages)
+        stored_messages = self._stored_model_messages()
+        timeline: list[ModelMessage] = []
+
+        for event in self.events:
+            if isinstance(event, UserInputEvent):
+                if event.user_input.input_content is not None:
+                    timeline.append(
+                        ModelRequest(
+                            parts=[
+                                UserPromptPart(
+                                    content=event.user_input.input_content,
+                                    timestamp=event.timestamp,
+                                )
+                            ]
+                        )
+                    )
+            elif isinstance(event, StepEvent):
+                for message_id in event.model_message_ids:
+                    message = stored_messages.get(message_id)
+                    if message is None:
+                        continue
+                    if (
+                        event.input_event_id is not None
+                        and event.input_event_id
+                        in MessageHistorySegment._user_input_ids_on(message)
+                    ):
+                        continue
+                    timeline.append(message)
+            elif isinstance(event, CommandRequestedEvent):
+                timeline.append(
+                    ModelRequest(
+                        parts=[
+                            UserPromptPart(
+                                content=event.display_text,
+                                timestamp=event.timestamp,
+                            )
+                        ]
+                    )
+                )
+            elif isinstance(event, CommandCompletedEvent):
+                content = event.output or event.error
+                if content:
+                    timeline.append(
+                        ModelResponse(
+                            parts=[TextPart(content=content)],
+                            timestamp=event.timestamp,
+                        )
+                    )
+            elif isinstance(event, ErrorEvent):
+                timeline.append(
+                    ModelResponse(
+                        parts=[TextPart(content=event.error)],
+                        timestamp=event.timestamp,
+                    )
+                )
+
+        return tuple(timeline)
 
     def _start_message_history(
         self,
@@ -288,14 +374,63 @@ class AgentSession(Session):
     def record_step(
         self,
         message_history: Sequence[ModelMessage],
-    ) -> None:
-        self.add_event(StepEvent(agent_name=self.agent_name))
-        self.replace_message_history(message_history)
+        *,
+        input_event_id: str | None,
+        new_messages: Sequence[ModelMessage],
+    ) -> StepEvent:
+        message_ids: list[str] = []
+        for message in new_messages:
+            metadata = dict(message.metadata or {})
+            message_id = metadata.get(MODEL_MESSAGE_ID_KEY)
+            if not isinstance(message_id, str):
+                message_id = uuid.uuid4().hex
+                metadata[MODEL_MESSAGE_ID_KEY] = message_id
+                message.metadata = metadata
+            message_ids.append(message_id)
 
-    def record_command(self, command: str, arg: str | None) -> None:
-        self.add_event(
-            CommandEvent(command=command, arg=arg, agent_name=self.agent_name)
+        self.replace_message_history(message_history)
+        event = StepEvent(
+            agent_name=self.agent_name,
+            input_event_id=input_event_id,
+            model_message_ids=message_ids,
         )
+        self.add_event(event)
+        return event
+
+    @staticmethod
+    def _command_display_text(command: str | dict[str, Any]) -> str:
+        if isinstance(command, str):
+            return command
+        return json.dumps(command, ensure_ascii=False, sort_keys=True)
+
+    def record_command_requested(
+        self, command: str | dict[str, Any]
+    ) -> CommandRequestedEvent:
+        event = CommandRequestedEvent(
+            command=command,
+            display_text=self._command_display_text(command),
+            agent_name=self.agent_name,
+        )
+        self.add_event(event)
+        return event
+
+    def record_command_completed(
+        self,
+        command_event_id: str,
+        status: Literal["handled", "not_command", "unknown", "invalid", "error"],
+        *,
+        output: str | None = None,
+        error: str | None = None,
+    ) -> CommandCompletedEvent:
+        event = CommandCompletedEvent(
+            command_event_id=command_event_id,
+            status=status,
+            output=output,
+            error=error,
+            agent_name=self.agent_name,
+        )
+        self.add_event(event)
+        return event
 
     def record_user_input(self, user_input: UserInput) -> None:
         input_id = user_input.server_message_id

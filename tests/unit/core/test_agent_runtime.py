@@ -29,8 +29,17 @@ from arox.core.message_utils import (
     internal_user_prompt_part,
     visible_message_history,
 )
-from arox.core.plugin import Plugin, tool
-from arox.core.session import AgentSession
+from arox.core.plugin import (
+    CommandDispatchResult,
+    CommandReply,
+    Plugin,
+    tool,
+)
+from arox.core.session import (
+    AgentSession,
+    CommandCompletedEvent,
+    CommandRequestedEvent,
+)
 from arox.core.types import TurnStateEvent, UserInput, UserMessageEvent
 from arox.plugins.core import SetModelEvent
 
@@ -44,6 +53,52 @@ class _FailingToolPlugin(Plugin):
     @tool()
     def fail(self) -> None:
         raise RuntimeError("expected failure")
+
+
+@pytest.mark.asyncio
+async def test_command_dispatch_records_request_and_completion_timeline():
+    session = AgentSession(agent_name="main")
+
+    async def dispatch(command):
+        assert command == "/info"
+        return CommandDispatchResult(
+            "handled",
+            CommandReply(req_id="reply", output="details"),
+        )
+
+    class Endpoint:
+        def __init__(self):
+            self.sent = []
+            self.snapshot_value = None
+
+        async def send(self, event):
+            self.sent.append(event)
+
+        def snapshot(self, value):
+            self.snapshot_value = value
+
+    endpoint = Endpoint()
+    runtime = cast(
+        AgentRuntime,
+        SimpleNamespace(
+            session=session,
+            command_manager=SimpleNamespace(dispatch=dispatch),
+            agent_ep=endpoint,
+        ),
+    )
+
+    result = await AgentRuntime._dispatch_command(runtime, "/info")
+
+    assert result.status == "handled"
+    assert endpoint.sent == ["details"]
+    assert len(session.events) == 2
+    requested, completed = session.events
+    assert isinstance(requested, CommandRequestedEvent)
+    assert requested.display_text == "/info"
+    assert isinstance(completed, CommandCompletedEvent)
+    assert completed.command_event_id == requested.id
+    assert completed.output == "details"
+    assert endpoint.snapshot_value == session.build_io_snapshot()
 
 
 @pytest.mark.asyncio
@@ -562,9 +617,7 @@ plugins = ["failing"]
 
 
 @pytest.mark.asyncio
-async def test_inference_error_is_raised_without_updating_io_snapshot(
-    tmp_path, monkeypatch
-):
+async def test_inference_error_is_recorded_in_session_timeline(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
     config_file = tmp_path / ".arox" / "config.toml"
     config_file.parent.mkdir(parents=True, exist_ok=True)
@@ -581,6 +634,7 @@ system_prompt = "Hi."
     error_result = SimpleNamespace(
         output=RuntimeError("model failed"),
         all_messages=lambda: [],
+        new_messages=lambda: [],
     )
 
     async def fail_agent_run(*args, **kwargs):
@@ -604,8 +658,15 @@ system_prompt = "Hi."
         event for event in sent_events if isinstance(event, UserMessageEvent)
     )
     assert user_message.user_input.text_content == "fail"
-    assert runtime.session.build_io_snapshot() == ()
-    assert runtime.agent_ep._snapshot_value == ()
+    session_snapshot = runtime.session.build_io_snapshot()
+    assert len(session_snapshot) == 2
+    assert isinstance(session_snapshot[0], ModelRequest)
+    assert isinstance(session_snapshot[1], ModelResponse)
+    assert session_snapshot[1].text == "RuntimeError: model failed"
+
+    endpoint_snapshot = runtime.agent_ep._snapshot_value
+    assert len(endpoint_snapshot) == 1
+    assert isinstance(endpoint_snapshot[0], ModelRequest)
 
 
 @pytest.mark.asyncio
@@ -626,6 +687,7 @@ system_prompt = "Hi."
     cancelled_result = SimpleNamespace(
         output=asyncio.CancelledError(),
         all_messages=lambda: [],
+        new_messages=lambda: [],
     )
 
     async def cancel_agent_run(*args, **kwargs):

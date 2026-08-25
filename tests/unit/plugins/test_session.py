@@ -63,11 +63,18 @@ async def test_handle_fork_success():
     e0, request0 = _user_turn("hi")
     ag.add_event(e0)
     response0 = ModelResponse(parts=[TextPart(content="hello")])
-    ag.record_step([request0, response0])
+    ag.record_step(
+        [request0, response0],
+        input_event_id=e0.id,
+        new_messages=[request0, response0],
+    )
     e2, request2 = _user_turn("again")
     ag.add_event(e2)
+    response2 = ModelResponse(parts=[TextPart(content="ok")])
     ag.record_step(
-        [request0, response0, request2, ModelResponse(parts=[TextPart(content="ok")])]
+        [request0, response0, request2, response2],
+        input_event_id=e2.id,
+        new_messages=[request2, response2],
     )
     plugin = _make_plugin(ag)
 
@@ -83,7 +90,12 @@ async def test_handle_fork_requires_user_input_event():
     ag = AgentSession(agent_name="main")
     e0, request = _user_turn("hi")
     ag.add_event(e0)
-    ag.record_step([request, ModelResponse(parts=[TextPart(content="hello")])])
+    response = ModelResponse(parts=[TextPart(content="hello")])
+    ag.record_step(
+        [request, response],
+        input_event_id=e0.id,
+        new_messages=[request, response],
+    )
     e1 = ag.events[-1]
     plugin = _make_plugin(ag)
 

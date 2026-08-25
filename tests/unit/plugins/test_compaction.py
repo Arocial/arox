@@ -244,7 +244,11 @@ async def test_auto_compaction_records_event_and_stays_consistent():
     response = _reply("answer")
     complete_history = [*out, response]
 
-    agent.session.record_step(complete_history)
+    agent.session.record_step(
+        complete_history,
+        input_event_id=None,
+        new_messages=[response],
+    )
     assert agent.session.message_history.messages == complete_history
 
 

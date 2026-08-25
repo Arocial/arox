@@ -64,6 +64,7 @@ system_prompt = "Hi there."
         return SimpleNamespace(
             output=RuntimeError("step blew up"),
             all_messages=lambda: [],
+            new_messages=lambda: [],
         )
 
     async with io_adapter:

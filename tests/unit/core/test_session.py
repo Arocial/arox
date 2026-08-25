@@ -19,9 +19,11 @@ from arox.core.app import app_setup
 from arox.core.io import AbstractIOAdapter
 from arox.core.session import (
     AgentSession,
-    CommandEvent,
+    CommandCompletedEvent,
+    CommandRequestedEvent,
     ErrorEvent,
     FileSessionStore,
+    MessageHistorySegment,
     SessionManager,
     UserInputEvent,
 )
@@ -39,6 +41,24 @@ def _user_turn(text: str) -> tuple[UserInputEvent, ModelRequest]:
     event = UserInputEvent(id=user_input.server_message_id, user_input=user_input)
     request = ModelRequest(parts=[UserPromptPart(content=user_input.input_content)])
     return event, request
+
+
+def _record_step(
+    session: AgentSession,
+    messages: list[ModelMessage],
+) -> None:
+    previous = {id(message) for message in session.message_history.messages}
+    new_messages = [message for message in messages if id(message) not in previous]
+    input_ids = [
+        input_id
+        for message in new_messages
+        for input_id in MessageHistorySegment._user_input_ids_on(message)
+    ]
+    session.record_step(
+        messages,
+        input_event_id=input_ids[-1] if input_ids else None,
+        new_messages=new_messages,
+    )
 
 
 class TestAgentSession:
@@ -75,7 +95,7 @@ class TestAgentSession:
             first_request,
             ModelResponse(parts=[TextPart(content="hi")]),
         ]
-        agent_session.record_step(messages_step1)
+        _record_step(agent_session, messages_step1)
         second_input, second_request = _user_turn("bye")
         agent_session.add_event(second_input)
         messages_step2 = [
@@ -83,7 +103,7 @@ class TestAgentSession:
             second_request,
             ModelResponse(parts=[TextPart(content="goodbye")]),
         ]
-        agent_session.record_step(messages_step2)
+        _record_step(agent_session, messages_step2)
 
         history = agent_session.message_history
         assert history.messages == messages_step2
@@ -96,16 +116,17 @@ class TestAgentSession:
         first_input, first_request = _user_turn("first")
         agent_session.add_event(first_input)
         response = ModelResponse(parts=[TextPart(content="reply")])
-        agent_session.record_step([first_request, response])
+        _record_step(agent_session, [first_request, response])
         second_input, second_request = _user_turn("second")
         agent_session.add_event(second_input)
-        agent_session.record_step(
+        _record_step(
+            agent_session,
             [
                 first_request,
                 response,
                 second_request,
                 ModelResponse(parts=[TextPart(content="second reply")]),
-            ]
+            ],
         )
 
         inserted = ModelRequest(parts=[UserPromptPart(content="inserted context")])
@@ -126,7 +147,7 @@ class TestAgentSession:
             old_request,
             ModelResponse(parts=[TextPart(content="old reply")]),
         ]
-        agent_session.record_step(old_messages)
+        _record_step(agent_session, old_messages)
 
         compacted: list[ModelMessage] = [
             ModelRequest(parts=[UserPromptPart(content="summary of conversation")])
@@ -138,7 +159,7 @@ class TestAgentSession:
             ModelRequest(parts=[UserPromptPart(content="new msg")]),
             ModelResponse(parts=[TextPart(content="new reply")]),
         ]
-        agent_session.record_step(new_messages)
+        _record_step(agent_session, new_messages)
 
         assert len(agent_session.archived_message_histories) == 1
         archived = agent_session.archived_message_histories[0]
@@ -156,15 +177,16 @@ class TestAgentSession:
             first_request,
             ModelResponse(parts=[TextPart(content="r1")]),
         ]
-        agent_session.record_step(first_messages)
+        _record_step(agent_session, first_messages)
         anchor, second_request = _user_turn("second")
         agent_session.add_event(anchor)
-        agent_session.record_step(
+        _record_step(
+            agent_session,
             [
                 *first_messages,
                 second_request,
                 ModelResponse(parts=[TextPart(content="r2")]),
-            ]
+            ],
         )
 
         agent_session.owner = AgentSession(agent_name="parent", path=["parent"])
@@ -193,7 +215,7 @@ class TestAgentSession:
             first_request,
             ModelResponse(parts=[TextPart(content="r1")]),
         ]
-        agent_session.record_step(first_messages)
+        _record_step(agent_session, first_messages)
         second_input, second_request = _user_turn("second")
         agent_session.add_event(second_input)
 
@@ -206,8 +228,8 @@ class TestAgentSession:
             "ctx-compact",
             previous_messages=[*first_messages, second_request],
         )
-        agent_session.record_step(
-            [*compacted, ModelResponse(parts=[TextPart(content="r2")])]
+        _record_step(
+            agent_session, [*compacted, ModelResponse(parts=[TextPart(content="r2")])]
         )
 
         forked = await agent_session.fork_at(second_input.id)
@@ -260,16 +282,17 @@ class TestAgentSession:
         first_input, first_request = _user_turn("first")
         agent_session.add_event(first_input)
         first_response = ModelResponse(parts=[TextPart(content="r1")])
-        agent_session.record_step([first_request, first_response])
+        _record_step(agent_session, [first_request, first_response])
         anchor, second_request = _user_turn("second")
         agent_session.add_event(anchor)
-        agent_session.record_step(
+        _record_step(
+            agent_session,
             [
                 first_request,
                 first_response,
                 second_request,
                 ModelResponse(parts=[TextPart(content="r2")]),
-            ]
+            ],
         )
 
         forked = await agent_session.fork_at(anchor.id)
@@ -277,12 +300,73 @@ class TestAgentSession:
         assert forked.path[:-1] == owner.path
         assert forked.id in owner.children
 
+    def test_io_snapshot_interleaves_commands_with_model_turns(self):
+        agent_session = AgentSession(agent_name="main")
+        user_event, request = _user_turn("analyze")
+        response = ModelResponse(parts=[TextPart(content="analysis complete")])
+        agent_session.add_event(user_event)
+
+        command = agent_session.record_command_requested("/info")
+        agent_session.record_command_completed(
+            command.id,
+            "handled",
+            output="model details",
+        )
+        agent_session.record_step(
+            [request, response],
+            input_event_id=user_event.id,
+            new_messages=[request, response],
+        )
+
+        snapshot = agent_session.build_io_snapshot()
+        assert len(snapshot) == 4
+        assert isinstance(snapshot[0], ModelRequest)
+        assert snapshot[0].parts[0].content == user_event.user_input.input_content
+        assert isinstance(snapshot[1], ModelRequest)
+        assert snapshot[1].parts[0].content == "/info"
+        assert isinstance(snapshot[2], ModelResponse)
+        assert snapshot[2].text == "model details"
+        assert isinstance(snapshot[3], ModelResponse)
+        assert snapshot[3].text == "analysis complete"
+
+    def test_io_snapshot_reads_step_messages_from_archived_history(self):
+        agent_session = AgentSession(agent_name="main")
+        user_event, request = _user_turn("old question")
+        response = ModelResponse(parts=[TextPart(content="old answer")])
+        agent_session.add_event(user_event)
+        agent_session.record_step(
+            [request, response],
+            input_event_id=user_event.id,
+            new_messages=[request, response],
+        )
+
+        agent_session.record_compaction(
+            [ModelRequest.user_text_prompt("summary")],
+            True,
+            "compacted-context",
+        )
+
+        snapshot = agent_session.build_io_snapshot()
+        assert len(snapshot) == 2
+        assert isinstance(snapshot[0], ModelRequest)
+        assert isinstance(snapshot[1], ModelResponse)
+        assert snapshot[1].text == "old answer"
+
     def test_non_history_events_do_not_change_message_history(self):
         agent_session = AgentSession(agent_name="main")
         agent_session.add_event(
             UserInputEvent(user_input=UserInput(input_content="hello"))
         )
-        agent_session.add_event(CommandEvent(command="/info"))
+        requested = agent_session.add_event(
+            CommandRequestedEvent(command="/info", display_text="/info")
+        )
+        agent_session.add_event(
+            CommandCompletedEvent(
+                command_event_id=requested.id,
+                status="handled",
+                output="details",
+            )
+        )
         agent_session.add_event(ErrorEvent(error="something"))
         assert agent_session.message_history.messages == []
 
@@ -513,7 +597,7 @@ class TestFileSessionStore:
             first_request,
             ModelResponse(parts=[TextPart(content="hi there")]),
         ]
-        agent_session.record_step(messages)
+        _record_step(agent_session, messages)
         second_input, second_request = _user_turn("follow-up")
         agent_session.add_event(second_input)
         compacted = [

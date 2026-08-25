@@ -327,7 +327,17 @@ class AgentRuntime:
         self, command: str | dict[str, Any]
     ) -> CommandDispatchResult:
         """Dispatch either command representation and render its outcome."""
-        result = await self.command_manager.dispatch(command)
+        requested = self.session.record_command_requested(command)
+        try:
+            result = await self.command_manager.dispatch(command)
+        except BaseException as error:
+            self.session.record_command_completed(
+                requested.id,
+                "error",
+                error=AgentSession.format_error(error),
+            )
+            raise
+
         if result.status == "handled":
             output = result.reply.output if result.reply is not None else None
         elif result.status == "unknown":
@@ -336,8 +346,15 @@ class AgentRuntime:
             output = "Invalid command."
         else:
             output = None
+
+        self.session.record_command_completed(
+            requested.id,
+            result.status,
+            output=output,
+        )
         if output:
             await self.agent_ep.send(output)
+        self.agent_ep.snapshot(self.session.build_io_snapshot())
         return result
 
     async def accept_command(self, command_input: CommandInput) -> CommandInputReply:
@@ -742,7 +759,13 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
             message_history=self.message_history,
         )
 
-        self.session.record_step(result.all_messages())
+        self.session.record_step(
+            result.all_messages(),
+            input_event_id=user_input.server_message_id
+            if input_content is not None
+            else None,
+            new_messages=result.new_messages(),
+        )
         self.agent_ep.snapshot(self.session.build_io_snapshot())
         if isinstance(result.output, asyncio.CancelledError):
             await self.agent_ep.send(AgentSession.format_error(result.output))

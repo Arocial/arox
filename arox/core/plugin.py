@@ -282,7 +282,6 @@ class CommandManager:
             logger.warning("Command not found: /%s", name)
             return None
         try:
-            self.runtime.session.record_command(name, arg)
             event = event_cls.from_slash(name, arg)
             if event is not None and not isinstance(event, CommandEvent):
                 logger.warning(
