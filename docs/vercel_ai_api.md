@@ -65,9 +65,10 @@ node routes. `target_session_id` must belong to the tree identified by
 
 Open the Vercel AI event stream for an active session node. After accepting the
 connection, the server sends a `state` frame containing the committed Vercel UI
-message history and the selected model, then replays any events emitted since
-that snapshot before streaming new events. Internal Arox messages are omitted
-from the history.
+history and the selected model, then replays any events emitted since that
+snapshot before streaming new events. The ordered history can contain messages,
+completed commands, and compaction markers. Internal Arox model messages are
+omitted from the history.
 
 Only one WebSocket may be connected to a session node at a time. A newer
 connection closes the previous one with code `4000`; this lets a reconnect pick
@@ -79,7 +80,7 @@ Server-specific frames include:
 
 | type | meaning |
 |---|---|
-| `state` | One ordered, discriminated history containing UI messages and completed commands, plus the selected model; sent when the IO connection is established or reconnected |
+| `state` | One ordered, discriminated history containing UI messages, completed commands, and compaction markers, plus the selected model; sent when the IO connection is established or reconnected |
 | `cmd-client-input` | A normalized client input changed lifecycle state. Message payloads are emitted when `started`; command payloads when `accepted` |
 | `cmd-command-completed` | A normalized command input finished dispatch, with its status and optional output or error |
 | `cmd-turn-state` | The retained turn entered or left its busy reading epoch; `busy=false` is ordered after its final output chunk |
@@ -99,6 +100,11 @@ Message payloads carry `status: "started"` plus their Vercel UI message when mod
 processing starts. Command payloads carry `status: "accepted"` plus the normalized
 command. A slash-prefixed message may therefore be normalized into a command,
 whose result subsequently arrives in `cmd-command-completed`.
+
+A state-history compaction item carries `event_id`, `trigger`, `step_boundary`,
+`llm_context_id`, and `timestamp`. It reports the context boundary without
+exposing the generated summary. Message IDs in state history reuse persisted
+Arox model-message IDs or user-input server IDs when available.
 
 The former HTTP `.../state` endpoint is no longer exposed. State bootstrap and
 recovery are part of the WebSocket stream, so clients must start the target

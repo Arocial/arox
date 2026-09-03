@@ -61,6 +61,24 @@ class _FailingToolPlugin(Plugin):
 
 
 @pytest.mark.asyncio
+async def test_turn_input_waits_for_history_lock():
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.history_lock = asyncio.Lock()
+    runtime._record_user_input = AsyncMock()
+    await runtime.history_lock.acquire()
+
+    task = asyncio.create_task(
+        runtime._run_turn_input(ClientInput(payload=MessagePayload(content="hello")))
+    )
+    await asyncio.sleep(0)
+
+    runtime._record_user_input.assert_not_awaited()
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    runtime.history_lock.release()
+
+
+@pytest.mark.asyncio
 async def test_command_dispatch_records_request_and_completion_timeline():
     session = AgentSession(agent_name="main")
 

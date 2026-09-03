@@ -85,6 +85,7 @@ class SubagentDeletedEvent(SessionEvent):
 class CompactionEvent(SessionEvent):
     event_type: Literal["compaction"] = "compaction"
     step_boundary: bool = False
+    trigger: Literal["manual", "token_threshold", "tool_request"] = "manual"
     llm_context_id: str = ""
 
 
@@ -293,6 +294,16 @@ class AgentSession(Session):
     def replace_message_history(self, messages: Sequence[ModelMessage]) -> None:
         self.message_history.messages = list(messages)
 
+    @staticmethod
+    def _ensure_model_message_id(message: ModelMessage) -> str:
+        metadata = dict(message.metadata or {})
+        message_id = metadata.get(MODEL_MESSAGE_ID_KEY)
+        if not isinstance(message_id, str):
+            message_id = uuid.uuid4().hex
+            metadata[MODEL_MESSAGE_ID_KEY] = message_id
+            message.metadata = metadata
+        return message_id
+
     def _stored_model_messages(self) -> dict[str, ModelMessage]:
         messages: dict[str, ModelMessage] = {}
         for history in [*self.archived_message_histories, self.message_history]:
@@ -304,9 +315,9 @@ class AgentSession(Session):
 
     def build_io_timeline(
         self,
-    ) -> tuple[ModelMessage | CommandCompletedEvent, ...]:
+    ) -> tuple[ModelMessage | CommandCompletedEvent | CompactionEvent, ...]:
         stored_messages = self._stored_model_messages()
-        timeline: list[ModelMessage | CommandCompletedEvent] = []
+        timeline: list[ModelMessage | CommandCompletedEvent | CompactionEvent] = []
         rendered_user_input_ids: set[str] = set()
 
         for event in self.events:
@@ -321,7 +332,8 @@ class AgentSession(Session):
                                     content=payload.content,
                                     timestamp=event.timestamp,
                                 )
-                            ]
+                            ],
+                            metadata={MODEL_MESSAGE_ID_KEY: event.id},
                         )
                     )
             elif isinstance(event, StepEvent):
@@ -336,11 +348,14 @@ class AgentSession(Session):
                     timeline.append(message)
             elif isinstance(event, CommandCompletedEvent):
                 timeline.append(event)
+            elif isinstance(event, CompactionEvent):
+                timeline.append(event)
             elif isinstance(event, ErrorEvent):
                 timeline.append(
                     ModelResponse(
                         parts=[TextPart(content=event.error)],
                         timestamp=event.timestamp,
+                        metadata={MODEL_MESSAGE_ID_KEY: event.id},
                     )
                 )
 
@@ -351,6 +366,8 @@ class AgentSession(Session):
     ) -> tuple[ModelMessage, ...]:
         snapshot: list[ModelMessage] = []
         for item in self.build_io_timeline():
+            if isinstance(item, CompactionEvent):
+                continue
             if isinstance(item, CommandCompletedEvent):
                 if not include_commands:
                     continue
@@ -407,15 +424,9 @@ class AgentSession(Session):
         input_event_id: str | None,
         new_messages: Sequence[ModelMessage],
     ) -> StepEvent:
-        message_ids: list[str] = []
-        for message in new_messages:
-            metadata = dict(message.metadata or {})
-            message_id = metadata.get(MODEL_MESSAGE_ID_KEY)
-            if not isinstance(message_id, str):
-                message_id = uuid.uuid4().hex
-                metadata[MODEL_MESSAGE_ID_KEY] = message_id
-                message.metadata = metadata
-            message_ids.append(message_id)
+        message_ids = [
+            self._ensure_model_message_id(message) for message in new_messages
+        ]
 
         self.replace_message_history(message_history)
         event = StepEvent(
@@ -511,18 +522,28 @@ class AgentSession(Session):
         step_boundary: bool,
         llm_context_id: str,
         *,
+        trigger: Literal["manual", "token_threshold", "tool_request"] = "manual",
         previous_messages: Sequence[ModelMessage] | None = None,
     ) -> None:
+        history_to_archive = (
+            self.message_history.messages
+            if previous_messages is None
+            else previous_messages
+        )
+        for message in [*history_to_archive, *compacted_messages]:
+            self._ensure_model_message_id(message)
+
         self.run_info.llm_context_id = llm_context_id
+        self._start_message_history(
+            compacted_messages, previous_messages=previous_messages
+        )
         self.add_event(
             CompactionEvent(
                 step_boundary=step_boundary,
+                trigger=trigger,
                 llm_context_id=llm_context_id,
                 agent_name=self.agent_name,
             )
-        )
-        self._start_message_history(
-            compacted_messages, previous_messages=previous_messages
         )
 
     def _fork_message_histories(

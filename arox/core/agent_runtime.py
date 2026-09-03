@@ -105,6 +105,7 @@ class AgentRuntime:
         self.turn: Turn | None = None
         self._pending_user_inputs: deque[ClientInput] = deque()
         self._command_tasks: set[asyncio.Task[None]] = set()
+        self.history_lock = asyncio.Lock()
         self.agent_ep.snapshot(session.build_io_snapshot())
         self._slots: dict[Any, Any] = {}
         self.config_loader = parent_config_loader.for_workspace(self.workspace)
@@ -772,37 +773,37 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
 
     async def _run_turn_input(self, client_input: ClientInput) -> AgentRunResult[str]:
         """Execute and persist the input that started the current turn."""
-        await self._record_user_input(client_input)
-        payload = client_input.payload
-        assert isinstance(payload, MessagePayload)
-        input_content = payload.content
+        async with self.history_lock:
+            await self._record_user_input(client_input)
+            payload = client_input.payload
+            assert isinstance(payload, MessagePayload)
+            input_content = payload.content
 
-        self.reload_config()
-        result = await self._run_inference(
-            input_content,
-            message_history=self.message_history,
-        )
-
-        self.session.record_step(
-            result.all_messages(),
-            input_event_id=client_input.server_message_id
-            if input_content is not None
-            else None,
-            new_messages=result.new_messages(),
-        )
-        self.agent_ep.snapshot(self.session.build_io_snapshot())
-        if isinstance(result.output, asyncio.CancelledError):
-            await self.agent_ep.send(AgentSession.format_error(result.output))
-            raise result.output
-        if isinstance(result.output, BaseException):
-            self.session.record_error_event(result.output)
-            await self.agent_ep.send(
-                ErrorEvent(
-                    error=AgentSession.format_error(result.output),
-                    agent_name=self.name,
-                )
+            self.reload_config()
+            result = await self._run_inference(
+                input_content,
+                message_history=self.message_history,
             )
-            raise result.output
-        else:
+
+            self.session.record_step(
+                result.all_messages(),
+                input_event_id=client_input.server_message_id
+                if input_content is not None
+                else None,
+                new_messages=result.new_messages(),
+            )
+            self.agent_ep.snapshot(self.session.build_io_snapshot())
+            if isinstance(result.output, asyncio.CancelledError):
+                await self.agent_ep.send(AgentSession.format_error(result.output))
+                raise result.output
+            if isinstance(result.output, BaseException):
+                self.session.record_error_event(result.output)
+                await self.agent_ep.send(
+                    ErrorEvent(
+                        error=AgentSession.format_error(result.output),
+                        agent_name=self.name,
+                    )
+                )
+                raise result.output
             await self.agent_ep.send(AgentRunResultEvent(result))
-        return result
+            return result

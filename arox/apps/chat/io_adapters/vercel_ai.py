@@ -38,7 +38,13 @@ from arox.core.completion import parse_request
 from arox.core.config import ConfigLoader
 from arox.core.io import AbstractIOAdapter, IOEndpoint, SnapshotEvent
 from arox.core.message_utils import visible_message_history
-from arox.core.session import AgentSession, CommandCompletedEvent, ErrorEvent
+from arox.core.session import (
+    MODEL_MESSAGE_ID_KEY,
+    AgentSession,
+    CommandCompletedEvent,
+    CompactionEvent,
+    ErrorEvent,
+)
 from arox.core.types import (
     ClientInput,
     CommandPayload,
@@ -153,6 +159,17 @@ def _log_ws_payload(
     )
 
 
+def _default_ui_message_id(
+    message: ModelRequest | ModelResponse,
+    role: Literal["system", "user", "assistant"],
+    index: int,
+) -> str:
+    message_id = (message.metadata or {}).get(MODEL_MESSAGE_ID_KEY)
+    if isinstance(message_id, str):
+        return message_id
+    return f"arox-{role}-{index}-{secrets.token_hex(8)}"
+
+
 def build_state_history(
     messages: Sequence[ModelMessage],
     *,
@@ -163,6 +180,9 @@ def build_state_history(
     | None = None,
 ) -> list[dict]:
     from arox.core.types import USER_INPUT_ID_KEY
+
+    if generate_message_id is None:
+        generate_message_id = _default_ui_message_id
 
     wrapped_messages = []
     for msg in messages:
@@ -241,7 +261,7 @@ def build_state_timeline(
     fallback_messages: Sequence[ModelMessage] = (),
 ) -> list[dict]:
     """Build one ordered state history without folding commands into AI messages."""
-    items: Sequence[ModelMessage | CommandCompletedEvent] = (
+    items: Sequence[ModelMessage | CommandCompletedEvent | CompactionEvent] = (
         session.build_io_timeline() if session.events else fallback_messages
     )
 
@@ -259,7 +279,19 @@ def build_state_timeline(
         message_batch.clear()
 
     for item in items:
-        if isinstance(item, CommandCompletedEvent):
+        if isinstance(item, CompactionEvent):
+            flush_messages()
+            timeline.append(
+                {
+                    "type": "compaction",
+                    "event_id": item.id,
+                    "trigger": item.trigger,
+                    "step_boundary": item.step_boundary,
+                    "llm_context_id": item.llm_context_id,
+                    "timestamp": item.timestamp.isoformat(),
+                }
+            )
+        elif isinstance(item, CommandCompletedEvent):
             flush_messages()
             payload = item.client_input.payload
             assert isinstance(payload, CommandPayload)

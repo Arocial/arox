@@ -1,7 +1,7 @@
 import asyncio
 import contextlib
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from pydantic_ai.messages import (
@@ -14,7 +14,7 @@ from pydantic_ai.messages import (
 )
 
 from arox.core.agent_runtime import AgentRuntime
-from arox.core.io import AbstractIOAdapter
+from arox.core.io import AbstractIOAdapter, AgentIOEndpoint, IOEndpoint, SnapshotEvent
 from arox.core.session import AgentSession, CompactionEvent
 from arox.core.turn import Turn
 from arox.core.types import ClientInput, MessagePayload, normalize_client_input
@@ -89,7 +89,12 @@ class _MockAgent:
 
         self.model_params = {}
         self.sent = []
-        self.agent_ep = SimpleNamespace(send=self._send, snapshot=lambda snapshot: None)
+        self.snapshots = []
+        self.agent_ep: Any = SimpleNamespace(
+            send=self._send,
+            snapshot=self.snapshots.append,
+        )
+        self.history_lock = asyncio.Lock()
         self.session = AgentSession(agent_name="main")
         self.workspace = "fake-workspace"
 
@@ -204,7 +209,31 @@ async def test_auto_compaction_compacts_mid_tool_loop():
         for p in m.parts
     )
     assert [e.event_type for e in agent.session.events] == ["compaction"]
+    compaction = cast(CompactionEvent, agent.session.events[0])
+    assert compaction.trigger == "token_threshold"
+    assert compaction.step_boundary is False
+    assert agent.snapshots == []
     assert agent.run_info.llm_context_id != "ctx-original"
+
+
+@pytest.mark.asyncio
+async def test_auto_compaction_preserves_events_for_reconnect_replay():
+    agent = _MockAgent(threshold=100)
+    agent.run_info.context_tokens = 500
+    agent.agent_ep = AgentIOEndpoint()
+    agent.agent_ep.snapshot("committed")
+    await agent.agent_ep.send("tool output before compaction")
+    plugin = _plugin(agent)
+
+    await plugin.history_processor(_ctx(500), [_user("question")])
+
+    replacement = IOEndpoint()
+    agent.agent_ep.pair(replacement)
+    assert await replacement.receive() == SnapshotEvent("committed")
+    start = await replacement.receive()
+    end = await replacement.receive()
+    assert start.part.content == "tool output before compaction"
+    assert end.part.content == "tool output before compaction"
 
 
 @pytest.mark.asyncio
@@ -237,6 +266,9 @@ async def test_auto_compaction_records_event_and_stays_consistent():
     events = agent.session.events
     assert [e.event_type for e in events] == ["compaction"]
     compaction = cast(CompactionEvent, events[0])
+    assert compaction.trigger == "token_threshold"
+    assert compaction.step_boundary is False
+    assert agent.snapshots == []
     assert agent.run_info.llm_context_id != "ctx-original"
     assert compaction.llm_context_id == agent.run_info.llm_context_id
 
@@ -277,6 +309,10 @@ async def test_compact_tool_defers_compaction_until_history_processing():
         "summary\n\nAdditional instructions: Preserve implementation details."
     )
     assert [e.event_type for e in agent.session.events] == ["compaction"]
+    compaction = cast(CompactionEvent, agent.session.events[0])
+    assert compaction.trigger == "tool_request"
+    assert compaction.step_boundary is False
+    assert agent.snapshots == []
 
     second_out = await plugin.history_processor(_ctx(0), out)
 
@@ -297,7 +333,45 @@ async def test_manual_compact_records_event_and_replaces_history():
     assert result == "Conversation history compacted successfully."
     assert agent.sent == []
     assert [e.event_type for e in agent.session.events] == ["compaction"]
+    compaction = cast(CompactionEvent, agent.session.events[0])
+    assert compaction.trigger == "manual"
+    assert compaction.step_boundary is True
+    assert len(agent.snapshots) == 1
     assert agent.run_info.llm_context_id != "ctx-original"
     # Manual compaction replaces the live history with the summary base.
     assert "SUMMARY" in _first_text(agent.message_history[0])
     assert len(agent.message_history) == 1
+
+
+@pytest.mark.asyncio
+async def test_manual_compact_waits_for_history_lock_and_uses_latest_history():
+    from arox.plugins.compaction import CompactEvent
+
+    agent = _MockAgent(threshold=None)
+    plugin = _plugin(agent)
+    agent.message_history = [_user("old")]
+    await agent.history_lock.acquire()
+
+    task = asyncio.create_task(
+        plugin.handle_compact(CompactEvent(extra_instructions=""))
+    )
+    await asyncio.sleep(0)
+    assert agent.session.events == []
+
+    latest_history = [_user("old"), _reply("new answer")]
+    agent.message_history = latest_history
+    agent.history_lock.release()
+
+    assert await task == "Conversation history compacted successfully."
+    assert agent.session.archived_message_histories[0].messages == latest_history
+
+
+def test_token_threshold_is_recomputed_after_config_change():
+    agent = _MockAgent(threshold=100)
+    plugin = _plugin(agent)
+
+    assert plugin._resolve_token_threshold() == 100
+
+    agent.config.compaction_threshold = 250
+
+    assert plugin._resolve_token_threshold() == 250

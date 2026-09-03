@@ -1,7 +1,7 @@
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic_ai import ModelMessage, ModelRequest, RunContext, UserPromptPart
 
@@ -16,6 +16,7 @@ COMPACTION_AGENT_NAME = "compaction"
 
 @dataclass
 class CompactionOutcome:
+    status: Literal["compacted", "skipped", "failed"]
     messages: list[ModelMessage]
     output: str
 
@@ -37,22 +38,15 @@ class CompactEvent(CommandEvent):
 class CompactionPlugin(Plugin):
     def __init__(self, runtime: AgentRuntime):
         super().__init__(runtime)
-        self._last_total_tokens = 0
-        self._cached_threshold_resolved = False
-        self._cached_threshold_value = None
         self._compaction_requested = False
         self._compaction_instructions = ""
 
     def _resolve_token_threshold(self) -> int | None:
-        """Resolve effective token threshold for the runtime's current model.
+        """Resolve the effective threshold for the runtime's current model.
 
-        Order of precedence: model-level `compaction_threshold`, then global
-        `compaction_threshold`. Float values in (0, 1] are treated as a ratio
-        of `ModelSettings.max_tokens`; otherwise the value is absolute.
+        Model and configuration settings may change between turns, so this value
+        is intentionally recomputed instead of cached on the plugin instance.
         """
-        if self._cached_threshold_resolved:
-            return self._cached_threshold_value
-
         runtime = self.runtime
         model_cfg = runtime.model_config
         threshold: int | float | None = None
@@ -71,9 +65,6 @@ class CompactionPlugin(Plugin):
                 resolved_val = int(threshold)
 
         logger.info("Resolved compaction token threshold: %s", resolved_val)
-
-        self._cached_threshold_value = resolved_val
-        self._cached_threshold_resolved = True
         return resolved_val
 
     def commands(self):
@@ -92,43 +83,47 @@ class CompactionPlugin(Plugin):
 
     async def handle_compact(self, event: CompactEvent) -> str:
         runtime = self.runtime
-        messages_to_compact = list(runtime.message_history)
+        async with runtime.history_lock:
+            messages_to_compact = list(runtime.message_history)
 
-        if not messages_to_compact:
-            return "No history to compact."
+            if not messages_to_compact:
+                return "No history to compact."
 
-        outcome = await self._compact(
-            messages_to_compact, extra_instructions=event.extra_instructions
-        )
+            outcome = await self._compact(
+                messages_to_compact, extra_instructions=event.extra_instructions
+            )
 
-        if outcome.messages is messages_to_compact:
+            if outcome.status != "compacted":
+                return outcome.output
+
+            await self._record_compaction(
+                outcome.messages,
+                True,
+                trigger="manual",
+                previous_messages=messages_to_compact,
+            )
             return outcome.output
-
-        await self._record_compaction(
-            outcome.messages, True, previous_messages=messages_to_compact
-        )
-        return outcome.output
 
     async def _record_compaction(
         self,
         compacted: list[ModelMessage],
         step_boundary: bool,
         *,
+        trigger: Literal["manual", "token_threshold", "tool_request"],
         previous_messages: list[ModelMessage],
     ) -> None:
-        """Record a ``compaction`` event.
-
-        ``step_boundary`` indicates if the compaction is inside one runtime turn.
-        """
+        """Record compaction and checkpoint only at a completed step boundary."""
         runtime = self.runtime
         runtime.run_info.llm_context_id = str(uuid.uuid4())
         runtime.session.record_compaction(
             compacted,
             step_boundary,
             runtime.run_info.llm_context_id,
+            trigger=trigger,
             previous_messages=previous_messages,
         )
-        runtime.agent_ep.snapshot(runtime.session.build_io_snapshot())
+        if step_boundary:
+            runtime.agent_ep.snapshot(runtime.session.build_io_snapshot())
 
     async def history_processor(
         self,
@@ -136,10 +131,12 @@ class CompactionPlugin(Plugin):
         messages: list[ModelMessage],
     ) -> list[ModelMessage]:
         extra_instructions = ""
+        trigger: Literal["token_threshold", "tool_request"] = "token_threshold"
         if self._compaction_requested:
             self._compaction_requested = False
             extra_instructions = self._compaction_instructions
             self._compaction_instructions = ""
+            trigger = "tool_request"
         else:
             threshold = self._resolve_token_threshold()
             if threshold is None:
@@ -155,11 +152,16 @@ class CompactionPlugin(Plugin):
             )
 
         outcome = await self._compact(messages, extra_instructions=extra_instructions)
-        compacted = outcome.messages
-        if compacted is messages:
+        if outcome.status != "compacted":
             return messages
 
-        await self._record_compaction(compacted, False, previous_messages=messages)
+        compacted = outcome.messages
+        await self._record_compaction(
+            compacted,
+            False,
+            trigger=trigger,
+            previous_messages=messages,
+        )
         from pydantic_ai._agent_graph import _first_new_message_index
 
         if ctx.run_id:
@@ -177,7 +179,7 @@ class CompactionPlugin(Plugin):
         runtime = self.runtime
 
         if not messages:
-            return CompactionOutcome(messages, "No history to compact.")
+            return CompactionOutcome("skipped", messages, "No history to compact.")
 
         agent_config = runtime.config.agent.get(COMPACTION_AGENT_NAME)
         if not agent_config:
@@ -186,6 +188,7 @@ class CompactionPlugin(Plugin):
                 COMPACTION_AGENT_NAME,
             )
             return CompactionOutcome(
+                "skipped",
                 messages,
                 "Compaction agent not configured; skipping compaction.",
             )
@@ -206,6 +209,7 @@ class CompactionPlugin(Plugin):
             workspace=runtime.workspace,
             initial_message=prompt,
         )
+        compaction_failed = False
         try:
             compaction_runtime = AgentRuntime(
                 runtime.config_loader, runtime.io_adapter, compaction_session
@@ -220,12 +224,16 @@ class CompactionPlugin(Plugin):
         except Exception:
             logger.exception("Compaction agent task failed")
             summary = ""
+            compaction_failed = True
 
         if not summary:
             logger.warning("Compaction returned no summary. Skipping.")
             return CompactionOutcome(
+                "failed" if compaction_failed else "skipped",
                 messages,
-                "Compaction returned no summary; skipping compaction.",
+                "Compaction failed; skipping compaction."
+                if compaction_failed
+                else "Compaction returned no summary; skipping compaction.",
             )
 
         new_request = ModelRequest(
@@ -238,6 +246,7 @@ class CompactionPlugin(Plugin):
             compacted_messages.extend(persistent_messages)
 
         return CompactionOutcome(
+            "compacted",
             compacted_messages,
             "Conversation history compacted successfully.",
         )

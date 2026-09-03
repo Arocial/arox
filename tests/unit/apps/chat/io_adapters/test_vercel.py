@@ -30,6 +30,7 @@ from arox.core.agent_runtime import AgentRuntime
 from arox.core.app import app_setup
 from arox.core.io import AgentIOEndpoint
 from arox.core.session import (
+    MODEL_MESSAGE_ID_KEY,
     AgentSession,
     CommandCompletedEvent,
     ErrorEvent,
@@ -361,6 +362,57 @@ def test_state_timeline_preserves_message_command_order():
         "message",
     ]
     assert timeline[1]["client_message_id"] == "client-command-1"
+
+
+def test_state_timeline_includes_compaction_marker_and_stable_message_ids():
+    session = AgentSession(path=["root"], agent_name="coder")
+    client_input = normalize_client_input(
+        ClientInput(payload=MessagePayload(content="question"))
+    )
+    session.record_user_input(client_input)
+    response = ModelResponse(parts=[TextPart(content="answer")])
+    session.record_step(
+        [response],
+        input_event_id=client_input.server_message_id,
+        new_messages=[response],
+    )
+    assert response.metadata is not None
+    response_id = response.metadata[MODEL_MESSAGE_ID_KEY]
+    session.record_compaction(
+        [ModelRequest.user_text_prompt("summary")],
+        False,
+        "context-2",
+        trigger="token_threshold",
+    )
+
+    timeline = build_state_timeline(session)
+
+    assert [entry["type"] for entry in timeline] == [
+        "message",
+        "message",
+        "compaction",
+    ]
+    assert timeline[0]["message"]["id"] == client_input.server_message_id
+    assert timeline[1]["message"]["id"] == response_id
+    assert timeline[2] == {
+        "type": "compaction",
+        "event_id": session.events[-1].id,
+        "trigger": "token_threshold",
+        "step_boundary": False,
+        "llm_context_id": "context-2",
+        "timestamp": session.events[-1].timestamp.isoformat(),
+    }
+
+
+def test_build_state_history_uses_stored_model_message_id():
+    response = ModelResponse(
+        parts=[TextPart(content="answer")],
+        metadata={MODEL_MESSAGE_ID_KEY: "response-1"},
+    )
+
+    history = build_state_history([response])
+
+    assert history[0]["id"] == "response-1"
 
 
 def test_build_state_history_carries_user_input_id():
