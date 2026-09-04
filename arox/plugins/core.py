@@ -67,7 +67,7 @@ class SkillEvent(CommandEvent):
 def user_turns_from_session(session: AgentSession) -> list[tuple[str, str]]:
     """List ``(input_id, text)`` for every user turn present in session."""
     turns: list[tuple[str, str]] = []
-    for event in session.events:
+    for event in session.journal:
         if isinstance(event, UserInputEvent):
             payload = event.client_input.payload
             text = (

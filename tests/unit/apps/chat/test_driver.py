@@ -150,7 +150,7 @@ system_prompt = "Hi there."
             assert not session.is_active
 
         # Verify that the tool was called
-        messages = runtime.message_history
+        messages = runtime.session.message_history
         from pydantic_ai.messages import ModelRequest, ModelResponse
 
         tool_calls = [

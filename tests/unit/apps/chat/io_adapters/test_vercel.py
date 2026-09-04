@@ -28,7 +28,7 @@ from arox.apps.chat.io_adapters.vercel_ai import (
 )
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.app import app_setup
-from arox.core.io import AgentIOEndpoint
+from arox.core.io import AgentIOEndpoint, IOEndpoint, SnapshotEvent
 from arox.core.session import (
     MODEL_MESSAGE_ID_KEY,
     AgentSession,
@@ -45,6 +45,36 @@ from arox.core.types import (
     TurnStateEvent,
     normalize_client_input,
 )
+from tests.history import compact_history, record_messages, reset_history
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("empty_snapshot", [False, True])
+async def test_snapshot_rebuild_stops_at_captured_journal_boundary(empty_snapshot):
+    session = AgentSession(agent_name="coder")
+    record_messages(session, [ModelRequest.user_text_prompt("committed")])
+    boundary = None if empty_snapshot else session.journal[-1].id
+    record_messages(session, [ModelResponse(parts=[TextPart(content="later answer")])])
+    adapter = VercelStreamIOAdapter()
+    endpoint = IOEndpoint()
+    websocket = SimpleNamespace(send_json=AsyncMock())
+    adapter.adapter_ep_to_runtime[endpoint] = cast(
+        AgentRuntime, SimpleNamespace(turn=None)
+    )
+    adapter._event_contexts[endpoint] = (
+        cast(WebSocket, websocket),
+        session,
+        VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
+        "test",
+        session,
+    )
+    await adapter.handle_event(endpoint, SnapshotEvent(boundary))
+    frame = websocket.send_json.call_args.args[0]
+    if empty_snapshot:
+        assert frame["history"] == []
+    else:
+        assert len(frame["history"]) == 1
+        assert frame["history"][0]["message"]["parts"][0]["text"] == "committed"
 
 
 def test_websocket_debug_log_is_structured_and_compact(caplog):
@@ -348,11 +378,7 @@ def test_state_timeline_preserves_message_command_order():
         parts=[TextPart(content="after")],
         timestamp=base,
     )
-    session.record_step(
-        [request, response],
-        input_event_id=message_input.server_message_id,
-        new_messages=[request, response],
-    )
+    record_messages(session, [request, response])
 
     timeline = build_state_timeline(session)
 
@@ -371,19 +397,12 @@ def test_state_timeline_includes_compaction_marker_and_stable_message_ids():
     )
     session.record_user_input(client_input)
     response = ModelResponse(parts=[TextPart(content="answer")])
-    session.record_step(
-        [response],
-        input_event_id=client_input.server_message_id,
-        new_messages=[response],
+    record_messages(session, [response])
+    response_event = next(
+        entry for entry in session.journal if entry.event_type == "model_message"
     )
-    assert response.metadata is not None
-    response_id = response.metadata[MODEL_MESSAGE_ID_KEY]
-    session.record_compaction(
-        [ModelRequest.user_text_prompt("summary")],
-        False,
-        "context-2",
-        trigger="token_threshold",
-    )
+    response_id = response_event.id
+    compact_history(session, [], False, "context-2", trigger="token_threshold")
 
     timeline = build_state_timeline(session)
 
@@ -396,11 +415,11 @@ def test_state_timeline_includes_compaction_marker_and_stable_message_ids():
     assert timeline[1]["message"]["id"] == response_id
     assert timeline[2] == {
         "type": "compaction",
-        "event_id": session.events[-1].id,
+        "event_id": session.journal[-2].id,
         "trigger": "token_threshold",
         "step_boundary": False,
         "llm_context_id": "context-2",
-        "timestamp": session.events[-1].timestamp.isoformat(),
+        "timestamp": session.journal[-2].timestamp.isoformat(),
     }
 
 
@@ -531,10 +550,8 @@ async def test_websocket_starts_with_runtime_snapshot():
     adapter = VercelStreamIOAdapter()
     session = AgentSession(path=["root"], agent_name="coder")
     runtime = SimpleNamespace(uuid=session.id)
-    runtime.agent_ep = AgentIOEndpoint()
-    runtime.agent_ep.snapshot(
-        (ModelRequest(parts=[UserPromptPart(content="committed")]),)
-    )
+    record_messages(session, [ModelRequest.user_text_prompt("committed")])
+    runtime.agent_ep = AgentIOEndpoint(session)
     session.runtime = runtime
 
     class FakeWebSocket:
@@ -558,6 +575,7 @@ async def test_websocket_starts_with_runtime_snapshot():
     await adapter.ws_handler(cast(WebSocket, websocket), session, session, "test")
 
     websocket.sent[0]["history"][0]["message"].pop("id")
+    websocket.sent[0]["history"][0]["message"].pop("metadata")
     assert websocket.sent == [
         {
             "type": "state",
@@ -587,8 +605,7 @@ async def test_new_websocket_replaces_existing_connection():
     adapter = VercelStreamIOAdapter()
     session = AgentSession(path=["root"], agent_name="coder")
     runtime = SimpleNamespace(uuid=session.id)
-    runtime.agent_ep = AgentIOEndpoint()
-    runtime.agent_ep.snapshot(())
+    runtime.agent_ep = AgentIOEndpoint(session)
     session.runtime = runtime
 
     class FakeWebSocket:
@@ -637,8 +654,7 @@ async def test_websocket_survives_runtime_restart():
     session = AgentSession(path=["root"], agent_name="coder")
 
     first_runtime = SimpleNamespace(uuid=session.id, session=session)
-    first_runtime.agent_ep = AgentIOEndpoint()
-    first_runtime.agent_ep.snapshot(())
+    first_runtime.agent_ep = AgentIOEndpoint(session)
     session.runtime = first_runtime
 
     class FakeWebSocket:
@@ -669,10 +685,8 @@ async def test_websocket_survives_runtime_restart():
 
     websocket.state_sent.clear()
     second_runtime = SimpleNamespace(uuid=session.id, session=session)
-    second_runtime.agent_ep = AgentIOEndpoint()
-    second_runtime.agent_ep.snapshot(
-        (ModelRequest(parts=[UserPromptPart(content="after restart")]),)
-    )
+    record_messages(session, [ModelRequest.user_text_prompt("after restart")])
+    second_runtime.agent_ep = AgentIOEndpoint(session)
     session.runtime = second_runtime
     await adapter.on_runtime_start(cast(AgentRuntime, second_runtime))
     await asyncio.wait_for(websocket.state_sent.wait(), timeout=1)
@@ -708,9 +722,7 @@ main_agent = "coder"
         agent_name="coder",
         manager=manager,
     )
-    session.message_history.messages = [
-        ModelRequest(parts=[UserPromptPart(content="hello")])
-    ]
+    reset_history(session, [ModelRequest(parts=[UserPromptPart(content="hello")])])
     await manager.persist(session)
 
     server = VercelStreamServer(manager, config_loader)

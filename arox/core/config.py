@@ -80,7 +80,6 @@ class AgentConfig(BaseModel):
     system_prompt: str = ""
     task_prompt: str = ""
     model_ref: str = ""
-    fallback_model_ref: str | list[str] = Field(default_factory=list)
     request_limit: int | None = Field(default=50, gt=0)
     request_limit_prompt: str | None = None
     plugins: list[str] = Field(default_factory=list)
@@ -103,7 +102,6 @@ class AppConfig(BaseModel):
 
 class Config(BaseModel):
     model_ref: str = "deepseek:deepseek-chat"
-    fallback_model_ref: str | list[str] = Field(default_factory=list)
     available_models: list[str] = Field(default_factory=list)
     compaction_threshold: int | float = 0.7
     app: AppConfig = Field(default_factory=AppConfig)

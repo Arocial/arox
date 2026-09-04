@@ -19,16 +19,19 @@ from pydantic_ai import (
     AgentStreamEvent,
     FunctionToolset,
     ModelRequestContext,
+    ModelRequestNode,
     ModelSettings,
     RunContext,
     UsageLimits,
+    UserPromptNode,
 )
 from pydantic_ai.capabilities import (
     AbstractCapability,
     Hooks,
     WrapModelRequestHandler,
+    WrapNodeRunHandler,
 )
-from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
+from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import (
     ModelMessage,
@@ -55,6 +58,7 @@ from arox.core.session import (
     AgentRunInfo,
     AgentSession,
     ErrorEvent,
+    ModelMessageEvent,
 )
 from arox.core.slot import (
     BaseSlot,
@@ -86,12 +90,12 @@ class AgentDeps:
     runtime: "AgentRuntime"
 
 
-class RestartAgentRun(Exception):
-    """Internal signal to continue inference in a fresh Pydantic AI run."""
+class ContinueAgentRun(Exception):
+    """Continue inference after a plugin has committed replacement context."""
 
     def __init__(self, message_history: list[ModelMessage]):
         self.message_history = message_history
-        super().__init__("Restart the agent run with replacement message history.")
+        super().__init__("Continue inference with the committed model context.")
 
 
 class AgentRuntime:
@@ -104,7 +108,7 @@ class AgentRuntime:
         self.session = session
         self.uuid = session.id
         self.io_adapter = io_adapter
-        self.agent_ep = AgentIOEndpoint()
+        self.agent_ep = AgentIOEndpoint(session)
         self.agent_ep.register_event_handler(ClientInput, self.accept_input)
         self._stack = contextlib.AsyncExitStack()
         self._entered = False
@@ -112,14 +116,12 @@ class AgentRuntime:
         self._pending_user_inputs: deque[ClientInput] = deque()
         self._command_tasks: set[asyncio.Task[None]] = set()
         self.history_lock = asyncio.Lock()
-        self.agent_ep.snapshot(session.build_io_snapshot())
         self._slots: dict[Any, Any] = {}
         self.config_loader = parent_config_loader.for_workspace(self.workspace)
 
         self.local_toolset = FunctionToolset[AgentDeps]()
         self.mcp_client = None
         self.plugins = []
-        self.message_history_fallback: list[ModelMessage] = []
         self.new_message_index = 0
         self.background_tasks = BackgroundTaskBroker()
 
@@ -129,8 +131,8 @@ class AgentRuntime:
 
         self.builtin_hooks = Hooks[AgentDeps]()
         self.builtin_hooks.on.before_run(self._before_run)
-        self.builtin_hooks.on.after_node_run(self._after_node_run)
         self.builtin_hooks.on.before_model_request(self._before_model_request)
+        self.builtin_hooks.on.node_run(self._wrap_node_run)
         self.builtin_hooks.on.run_error(self._on_run_error)
         self.builtin_hooks.on.model_request(self._wrap_model_request)
         capabilities: list[AbstractCapability[AgentDeps]] = []
@@ -167,17 +169,9 @@ class AgentRuntime:
     def name(self) -> str:
         return self.session.agent_name
 
-    @name.setter
-    def name(self, value: str):
-        self.session.agent_name = value
-
     @property
     def workspace(self) -> Path:
         return Path(self.session.workspace) if self.session.workspace else Path.cwd()
-
-    @workspace.setter
-    def workspace(self, value: Path | str | None):
-        self.session.workspace = str(Path(value).absolute()) if value else None
 
     @property
     def agent_config(self) -> AgentConfig:
@@ -189,18 +183,6 @@ class AgentRuntime:
     @property
     def run_info(self) -> AgentRunInfo:
         return self.session.run_info
-
-    @run_info.setter
-    def run_info(self, value: AgentRunInfo):
-        self.session.run_info = value
-
-    @property
-    def message_history(self) -> list[ModelMessage]:
-        return self.session.message_history.messages
-
-    @message_history.setter
-    def message_history(self, value: Sequence[ModelMessage]) -> None:
-        self.session.replace_message_history(value)
 
     async def _handle_stream_output(
         self, ctx: RunContext["AgentDeps"], events: AsyncIterable[AgentStreamEvent]
@@ -368,7 +350,6 @@ class AgentRuntime:
             output=output,
         )
         await self.agent_ep.send(completed)
-        self.agent_ep.snapshot(self.session.build_io_snapshot())
         return result
 
     async def accept_input(self, client_input: ClientInput) -> ClientInput:
@@ -533,12 +514,6 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         self.model_ref = (
             override or self.agent_config.model_ref or self.config.model_ref
         )
-        fallback = (
-            self.agent_config.fallback_model_ref or self.config.fallback_model_ref
-        )
-        if isinstance(fallback, str):
-            fallback = [fallback] if fallback else []
-        self.fallback_model_refs: list[str] = list(fallback)
         self.request_limit = self.agent_config.request_limit
         self.request_limit_prompt = self.agent_config.request_limit_prompt
         self.agent_model_params = self.agent_config.model_params
@@ -626,27 +601,8 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         ctx: RunContext[AgentDeps],
         request_context: ModelRequestContext,
     ) -> ModelRequestContext:
-        self.message_history_fallback = list(request_context.messages)
+        self._journal_messages(ctx, ctx.messages)
         return request_context
-
-    async def _after_node_run(
-        self,
-        ctx: RunContext[AgentDeps],
-        *,
-        node: Any,
-        result: Any,
-    ) -> Any:
-        while self._pending_user_inputs:
-            client_input = self._pending_user_inputs.popleft()
-            payload = client_input.payload
-            assert isinstance(payload, MessagePayload)
-            if payload.content is not None:
-                await self._record_user_input(client_input)
-                ctx.enqueue(*payload.content, priority="asap")
-        notifications = self._drain_llm_notifications()
-        if notifications:
-            ctx.enqueue("\n\n".join(notifications), priority="asap")
-        return result
 
     async def _wrap_model_request(
         self,
@@ -660,8 +616,77 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         self.run_info.total_tokens += response.usage.total_tokens
         return response
 
+    def _journal_messages(
+        self, ctx: RunContext[AgentDeps], messages: Sequence[ModelMessage]
+    ) -> None:
+        """Record unseen messages, including requests injected outside graph nodes."""
+        assert ctx.run_id is not None
+        for message in messages:
+            if id(message) in self._journaled_messages:
+                continue
+            self.session.record_model_message(
+                message, run_id=ctx.run_id, sequence=self._journal_sequence
+            )
+            self._journaled_messages[id(message)] = message
+            self._journal_sequence += 1
+
     async def _before_run(self, ctx: RunContext[AgentDeps]) -> None:
         self.new_message_index = len(ctx.messages)
+        self._journaled_messages = {id(message): message for message in ctx.messages}
+        self._journal_sequence = 0
+        self._journal_history_initialized = False
+
+    async def _wrap_node_run(
+        self,
+        ctx: RunContext[AgentDeps],
+        *,
+        node: Any,
+        handler: "WrapNodeRunHandler[AgentDeps]",
+    ) -> Any:
+        if not self._journal_history_initialized and not isinstance(
+            node, UserPromptNode
+        ):
+            # UserPromptNode replaces the history list. This wrapper still sees
+            # the old RunContext, so seed normalized prior history at the next node.
+            self._journaled_messages.update(
+                {id(message): message for message in ctx.messages}
+            )
+            self._journal_history_initialized = True
+
+        try:
+            result = await handler(node)
+        except BaseException as error:
+            if not isinstance(error, ContinueAgentRun):
+                # Run-level error hooks see the pre-run history. Capture partial
+                # output here, including cancellation, before that context is lost.
+                self._journal_messages(ctx, ctx.messages)
+            raise
+
+        if (
+            isinstance(node, UserPromptNode)
+            and isinstance(result, ModelRequestNode)
+            and result.is_resuming_without_prompt
+        ):
+            # Resuming rebuilds the trailing request, but it is still prior context.
+            self._journaled_messages[id(result.request)] = result.request
+        if ctx.run_id is not None:
+            self._journal_messages(ctx, ctx.messages)
+            if isinstance(result, ModelRequestNode):
+                # Tool results are not in ctx.messages until the next node runs.
+                # Record them before accepting the next user input's fork boundary.
+                self._journal_messages(ctx, [result.request])
+
+        while self._pending_user_inputs:
+            client_input = self._pending_user_inputs.popleft()
+            payload = client_input.payload
+            assert isinstance(payload, MessagePayload)
+            if payload.content is not None:
+                await self._record_user_input(client_input)
+                ctx.enqueue(*payload.content, priority="asap")
+        notifications = self._drain_llm_notifications()
+        if notifications:
+            ctx.enqueue("\n\n".join(notifications), priority="asap")
+        return result
 
     async def _on_run_error(
         self,
@@ -671,14 +696,14 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
     ) -> AgentRunResult[Any]:
         from pydantic_ai._agent_graph import GraphAgentState
 
-        if isinstance(error, RestartAgentRun):
+        if isinstance(error, ContinueAgentRun):
             message_history = error.message_history
         else:
             logger.error(
                 "Agent run failed.",
                 exc_info=(type(error), error, error.__traceback__),
             )
-            message_history = self.message_history_fallback
+            message_history = self.session.message_history
         state = GraphAgentState(
             message_history=message_history,
             usage=ctx.usage,
@@ -698,69 +723,51 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         *,
         message_history: list[ModelMessage],
     ) -> AgentRunResult[str]:
-        """Run a single LLM inference with fallback model handling.
+        """Run inference, continuing after context resets and soft usage limits.
 
-        Stateless w.r.t. the runtime's own message history/session: the
-        caller passes the already-composed ``user_prompt`` and message_history
-        in and decides what to do with the result. Pydantic AI run errors are
-        temporarily represented as results by ``_on_run_error`` so model
-        fallbacks can be attempted, then re-raised at this boundary.
+        Other errors are returned by the run-error hook and raised by run_turn.
         """
-        primary_ref = self.model_ref
         current_prompt = user_prompt
         current_history = message_history
-        try:
-            while True:
-                if self.model_ref != primary_ref:
-                    self.set_model(primary_ref)
+        while True:
+            self.run_info.run_id = str(uuid.uuid4())
+            session = self.session
+            journal_start = len(session.journal)
+            result = await self._pydantic_agent.run(
+                current_prompt,
+                model=self.model,
+                event_stream_handler=self._handle_stream_output,
+                model_settings=ModelSettings(**self.model_params),
+                message_history=current_history,
+                usage_limits=UsageLimits(request_limit=self.request_limit),
+                deps=AgentDeps(agent_ep=self.agent_ep, runtime=self),
+            )
+            if isinstance(result.output, ContinueAgentRun):
+                logger.info("Replacing model context in a fresh agent run.")
+                current_prompt = None
+                current_history = result.output.message_history
+                continue
 
-                for model_ref in [primary_ref, *self.fallback_model_refs]:
-                    if model_ref != self.model_ref:
-                        self.set_model(model_ref)
-                        await self.agent_ep.send(
-                            "Primary model failed, "
-                            f"falling back to {self.provider_model}"
-                        )
-
-                    self.run_info.run_id = str(uuid.uuid4())
-                    result = await self._pydantic_agent.run(
-                        current_prompt,
-                        model=self.model,
-                        event_stream_handler=self._handle_stream_output,
-                        model_settings=ModelSettings(**self.model_params),
-                        message_history=current_history,
-                        usage_limits=UsageLimits(request_limit=self.request_limit),
-                        deps=AgentDeps(agent_ep=self.agent_ep, runtime=self),
+            if not isinstance(result.output, BaseException):
+                persisted = [
+                    entry.message
+                    for entry in session.journal[journal_start:]
+                    if isinstance(entry, ModelMessageEvent)
+                ]
+                if persisted != result.new_messages():
+                    raise RuntimeError(
+                        "Model-message journal diverged from the completed run."
                     )
 
-                    if isinstance(result.output, ModelAPIError):
-                        logger.warning(
-                            "Model %s failed (%s), trying next fallback",
-                            self.provider_model,
-                            result.output,
-                        )
-                    else:
-                        break
-
-                if isinstance(result.output, RestartAgentRun):
-                    logger.info("Continuing inference in a fresh agent run.")
-                    current_prompt = None
-                    current_history = result.output.message_history
-                    continue
-                if (
-                    isinstance(result.output, UsageLimitExceeded)
-                    and self.request_limit_prompt
-                ):
-                    logger.info("Continuing agent run after soft usage limit.")
-                    current_prompt = self.request_limit_prompt
-                    current_history = result.all_messages()
-                    continue
-                break
-        finally:
-            if self.model_ref != primary_ref:
-                self.set_model(primary_ref)
-
-        return result
+            if (
+                isinstance(result.output, UsageLimitExceeded)
+                and self.request_limit_prompt
+            ):
+                logger.info("Continuing agent run after soft usage limit.")
+                current_prompt = self.request_limit_prompt
+                current_history = result.all_messages()
+                continue
+            return result
 
     async def run_turn(
         self,
@@ -804,17 +811,9 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
             self.reload_config()
             result = await self._run_inference(
                 input_content,
-                message_history=self.message_history,
+                message_history=self.session.message_history,
             )
 
-            self.session.record_step(
-                result.all_messages(),
-                input_event_id=client_input.server_message_id
-                if input_content is not None
-                else None,
-                new_messages=result.new_messages(),
-            )
-            self.agent_ep.snapshot(self.session.build_io_snapshot())
             if isinstance(result.output, asyncio.CancelledError):
                 await self.agent_ep.send(AgentSession.format_error(result.output))
                 raise result.output

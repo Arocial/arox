@@ -5,9 +5,10 @@ from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserProm
 
 from arox.core.completion import CompletionRequest
 from arox.core.config import AgentConfig
-from arox.core.session import AgentSession, StepEvent, UserInputEvent
+from arox.core.session import AgentSession, ErrorEvent, UserInputEvent
 from arox.core.types import ClientInput, MessagePayload, normalize_client_input
 from arox.plugins.core import CorePlugin, ForkEvent
+from tests.history import record_messages
 
 
 def _message_input(content):
@@ -70,19 +71,11 @@ async def test_handle_fork_success():
     e0, request0 = _user_turn("hi")
     ag.add_event(e0)
     response0 = ModelResponse(parts=[TextPart(content="hello")])
-    ag.record_step(
-        [request0, response0],
-        input_event_id=e0.id,
-        new_messages=[request0, response0],
-    )
+    record_messages(ag, [request0, response0])
     e2, request2 = _user_turn("again")
     ag.add_event(e2)
     response2 = ModelResponse(parts=[TextPart(content="ok")])
-    ag.record_step(
-        [request0, response0, request2, response2],
-        input_event_id=e2.id,
-        new_messages=[request2, response2],
-    )
+    record_messages(ag, [request2, response2])
     plugin = _make_plugin(ag)
 
     msg = await plugin.handle_fork(ForkEvent(event_id=e2.id))
@@ -98,12 +91,8 @@ async def test_handle_fork_requires_user_input_event():
     e0, request = _user_turn("hi")
     ag.add_event(e0)
     response = ModelResponse(parts=[TextPart(content="hello")])
-    ag.record_step(
-        [request, response],
-        input_event_id=e0.id,
-        new_messages=[request, response],
-    )
-    e1 = ag.events[-1]
+    record_messages(ag, [request, response])
+    e1 = ag.journal[-1]
     plugin = _make_plugin(ag)
 
     msg = await plugin.handle_fork(ForkEvent(event_id=e0.id))
@@ -132,7 +121,7 @@ async def test_handle_fork_missing_or_unknown():
 async def test_complete_fork_lists_user_turns_newest_first():
     ag = AgentSession(agent_name="main")
     e0 = ag.add_event(UserInputEvent(client_input=_message_input("first")))
-    ag.add_event(StepEvent())
+    ag.add_event(ErrorEvent())
     e2 = ag.add_event(UserInputEvent(client_input=_message_input("second")))
     plugin = _make_plugin(ag)
     # Candidates are now derived from the session's user_input events directly.

@@ -258,11 +258,12 @@ def build_state_history(
 
 def build_state_timeline(
     session: AgentSession,
-    fallback_messages: Sequence[ModelMessage] = (),
+    *,
+    through_id: str | None = None,
 ) -> list[dict]:
     """Build one ordered state history without folding commands into AI messages."""
     items: Sequence[ModelMessage | CommandCompletedEvent | CompactionEvent] = (
-        session.build_io_timeline() if session.events else fallback_messages
+        session.build_io_timeline(through_id=through_id)
     )
 
     timeline: list[dict] = []
@@ -431,7 +432,11 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 websocket,
                 {
                     "type": "state",
-                    "history": build_state_timeline(target_session, event.snapshot),
+                    "history": build_state_timeline(
+                        target_session, through_id=event.journal_id
+                    )
+                    if event.journal_id is not None
+                    else [],
                     "model": model,
                     "busy": bool(turn and not turn.done),
                 },

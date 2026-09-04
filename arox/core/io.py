@@ -7,9 +7,22 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import (
+    AgentRunResultEvent,
+    FinalResultEvent,
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
     TextPart,
+)
+
+from arox.core.session import AgentSession, CommandCompletedEvent, ErrorEvent
+from arox.core.types import (
+    ClientInput,
+    CommandPayload,
+    SessionTreeUpdate,
+    TurnStateEvent,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,7 +36,7 @@ _STREAM_CLOSED = object()
 
 @dataclass(frozen=True)
 class SnapshotEvent:
-    snapshot: Any
+    journal_id: str | None
 
 
 class IOEndpoint:
@@ -34,7 +47,6 @@ class IOEndpoint:
 
     def __init__(self):
         self._peer: IOEndpoint | None = None
-        self._snapshot_value: Any = None
         self._cached_events: list[Any] = []
         self._inbox: asyncio.Queue[Any] = asyncio.Queue()
         self._closed = False
@@ -78,8 +90,6 @@ class IOEndpoint:
         await self._disconnected.wait()
 
     def _replay_to(self, peer: "IOEndpoint") -> None:
-        if self._snapshot_value is not None:
-            peer._inbox.put_nowait(SnapshotEvent(self._snapshot_value))
         for event in self._cached_events:
             peer._inbox.put_nowait(event)
 
@@ -116,13 +126,6 @@ class IOEndpoint:
             if event is _STREAM_CLOSED:
                 raise StopAsyncIteration
             return event
-
-    def snapshot(self, snapshot: Any) -> None:
-        with self._state_lock:
-            if self._closed:
-                raise RuntimeError("IO endpoint is closed.")
-            self._snapshot_value = snapshot
-            self._cached_events.clear()
 
     def close(self) -> None:
         with self._state_lock:
@@ -212,9 +215,85 @@ class AgentIOEndpoint(IOEndpoint):
     dispatched to handlers registered for their concrete event type.
     """
 
-    def __init__(self):
+    def __init__(self, session: AgentSession, *, replay_threshold: int = 1000):
         super().__init__()
+        if replay_threshold <= 0:
+            raise ValueError("replay_threshold must be positive")
+        self.session = session
+        self._replay_threshold = replay_threshold
+        self._snapshot_journal_id = session.journal[-1].id if session.journal else None
+        self._safe_journal_id = self._snapshot_journal_id
+        self._safe_event_count = 0
+        self._busy = False
+        self._pending_commands: set[str] = set()
         self._event_handlers: dict[type[Any], Callable[[Any], Any]] = {}
+
+    def _send_event(self, event: Any) -> None:
+        with self._state_lock:
+            super()._send_event(event)
+            boundary = False
+            if isinstance(event, TurnStateEvent):
+                self._busy = event.busy
+                boundary = not event.busy
+            elif isinstance(event, ClientInput) and isinstance(
+                event.payload, CommandPayload
+            ):
+                if event.payload.status == "accepted":
+                    assert event.server_message_id is not None
+                    self._pending_commands.add(event.server_message_id)
+            elif isinstance(event, CommandCompletedEvent):
+                self._pending_commands.discard(event.id)
+                boundary = True
+
+            if boundary and not self._busy and not self._pending_commands:
+                self._safe_journal_id = (
+                    self.session.journal[-1].id if self.session.journal else None
+                )
+                self._safe_event_count = len(self._cached_events)
+            if len(self._cached_events) >= self._replay_threshold:
+                self._compact_replay()
+
+    def _compact_replay(self) -> None:
+        """Replace only the completed prefix, preserving states and unjournaled output."""
+        if not self._safe_event_count:
+            return
+        prefix = self._cached_events[: self._safe_event_count]
+        retained: list[Any] = []
+        state_types = (TurnStateEvent, SessionTreeUpdate, AgentRunResultEvent)
+        latest_states = {
+            type(event): event for event in prefix if isinstance(event, state_types)
+        }
+        for event in prefix:
+            if isinstance(event, state_types):
+                if latest_states[type(event)] is event:
+                    retained.append(event)
+            elif isinstance(event, (PartStartEvent, PartDeltaEvent, PartEndEvent)):
+                # Plain endpoint strings use negative indices and have no journal entry.
+                if event.index < 0:
+                    retained.append(event)
+            elif not isinstance(
+                event,
+                (
+                    ClientInput,
+                    CommandCompletedEvent,
+                    ErrorEvent,
+                    FunctionToolCallEvent,
+                    FunctionToolResultEvent,
+                    FinalResultEvent,
+                ),
+            ):
+                retained.append(event)
+        self._snapshot_journal_id = self._safe_journal_id
+        self._cached_events = [
+            *retained,
+            *self._cached_events[self._safe_event_count :],
+        ]
+        self._safe_event_count = 0
+
+    def _replay_to(self, peer: IOEndpoint) -> None:
+        self._compact_replay()
+        peer._inbox.put_nowait(SnapshotEvent(self._snapshot_journal_id))
+        super()._replay_to(peer)
 
     def register_event_handler(
         self,

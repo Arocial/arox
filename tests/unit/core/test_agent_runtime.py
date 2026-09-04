@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from pydantic_ai import RunContext
+from pydantic_ai.exceptions import ModelAPIError
 from pydantic_ai.messages import (
     BinaryContent,
     ModelMessage,
@@ -22,10 +23,10 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.usage import RunUsage
 
-from arox.core.agent_runtime import AgentDeps, AgentRuntime, RestartAgentRun
+from arox.core.agent_runtime import AgentDeps, AgentRuntime, ContinueAgentRun
 from arox.core.app import app_setup
 from arox.core.background import BackgroundTaskBroker
-from arox.core.io import AbstractIOAdapter
+from arox.core.io import AbstractIOAdapter, IOEndpoint, SnapshotEvent
 from arox.core.message_utils import (
     AROX_INTERNAL_KEY,
     internal_user_prompt_part,
@@ -40,14 +41,17 @@ from arox.core.plugin import (
 from arox.core.session import (
     AgentSession,
     CommandCompletedEvent,
+    ModelMessageEvent,
 )
 from arox.core.types import (
     ClientInput,
     CommandPayload,
     MessagePayload,
     TurnStateEvent,
+    normalize_client_input,
 )
 from arox.plugins.core import SetModelEvent
+from tests.history import compact_history, contains_input, context_resets, reset_history
 
 
 class _StubIOAdapter(AbstractIOAdapter):
@@ -93,13 +97,9 @@ async def test_command_dispatch_records_request_and_completion_timeline():
     class Endpoint:
         def __init__(self):
             self.sent = []
-            self.snapshot_value = None
 
         async def send(self, event):
             self.sent.append(event)
-
-        def snapshot(self, value):
-            self.snapshot_value = value
 
     endpoint = Endpoint()
     runtime = cast(
@@ -121,12 +121,11 @@ async def test_command_dispatch_records_request_and_completion_timeline():
     assert len(endpoint.sent) == 1
     assert isinstance(endpoint.sent[0], CommandCompletedEvent)
     assert endpoint.sent[0].output == "details"
-    assert len(session.events) == 1
-    completed = session.events[0]
+    assert len(session.journal) == 1
+    completed = session.journal[0]
     assert isinstance(completed, CommandCompletedEvent)
     assert completed.client_input is client_input
     assert completed.output == "details"
-    assert endpoint.snapshot_value == session.build_io_snapshot()
 
 
 @pytest.mark.asyncio
@@ -156,13 +155,15 @@ async def test_llm_notifications_are_enqueued_once_after_node_run():
     runtime = AgentRuntime.__new__(AgentRuntime)
     runtime.background_tasks = BackgroundTaskBroker()
     runtime._pending_user_inputs = deque()
-    runtime.message_history_fallback = []
     runtime.notify_llm("First task finished.")
     runtime.notify_llm("Second task finished.")
-    ctx = SimpleNamespace(enqueue=Mock())
+    runtime._journal_history_initialized = True
+    ctx = SimpleNamespace(enqueue=Mock(), run_id=None)
     result = object()
 
-    returned = await runtime._after_node_run(ctx, node=object(), result=result)
+    returned = await runtime._wrap_node_run(
+        ctx, node=object(), handler=AsyncMock(return_value=result)
+    )
 
     assert returned is result
     ctx.enqueue.assert_called_once_with(
@@ -170,7 +171,9 @@ async def test_llm_notifications_are_enqueued_once_after_node_run():
     )
     assert not runtime.background_tasks.drain_notices()
 
-    await runtime._after_node_run(ctx, node=object(), result=result)
+    await runtime._wrap_node_run(
+        ctx, node=object(), handler=AsyncMock(return_value=result)
+    )
     ctx.enqueue.assert_called_once()
 
 
@@ -181,12 +184,14 @@ async def test_pending_user_inputs_are_enqueued_after_node_run():
     pending_payload = MessagePayload(content="steer")
     pending_input = ClientInput(payload=pending_payload)
     runtime._pending_user_inputs = deque([pending_input])
-    runtime.message_history_fallback = []
     runtime._record_user_input = AsyncMock()
-    ctx = SimpleNamespace(enqueue=Mock())
+    runtime._journal_history_initialized = True
+    ctx = SimpleNamespace(enqueue=Mock(), run_id=None)
 
     result = object()
-    returned = await runtime._after_node_run(ctx, node=object(), result=result)
+    returned = await runtime._wrap_node_run(
+        ctx, node=object(), handler=AsyncMock(return_value=result)
+    )
 
     assert returned is result
     runtime._record_user_input.assert_awaited_once_with(pending_input)
@@ -200,12 +205,13 @@ async def test_pending_user_inputs_are_enqueued_after_node_run():
 async def test_run_error_logs_exception_traceback(caplog):
     runtime = cast(
         AgentRuntime,
-        SimpleNamespace(message_history_fallback=[], new_message_index=0),
+        SimpleNamespace(session=AgentSession(agent_name="test"), new_message_index=0),
     )
     ctx = cast(
         RunContext[AgentDeps],
         SimpleNamespace(
             usage=RunUsage(),
+            messages=[],
             run_id="run-id",
             conversation_id="conversation-id",
             metadata=None,
@@ -264,12 +270,13 @@ model_ref = "test"
 system_prompt = "Hi."
 """)
     session = AgentSession(path=["internal-history"], agent_name="test_agent")
-    session.replace_message_history(
+    reset_history(
+        session,
         [
             ModelRequest(parts=[internal_user_prompt_part("<file>secret</file>")]),
             ModelRequest(parts=[UserPromptPart(content="first question")]),
             ModelResponse(parts=[TextPart(content="first answer")]),
-        ]
+        ],
     )
     config_loader = app_setup(cli_args={"workspace": str(tmp_path)})
     runtime = AgentRuntime(
@@ -287,7 +294,7 @@ system_prompt = "Hi."
         ):
             await runtime.run_turn("second question")
 
-    first_request = session.message_history.messages[0]
+    first_request = session.message_history[0]
     assert isinstance(first_request, ModelRequest)
     assert not first_request.metadata
     internal_content = first_request.parts[0].content
@@ -295,7 +302,7 @@ system_prompt = "Hi."
     assert isinstance(internal_content[0], TextContent)
     assert internal_content[0].metadata == {AROX_INTERNAL_KEY: True}
 
-    visible = visible_message_history(session.message_history.messages)
+    visible = visible_message_history(session.message_history)
     visible_text_parts = []
     for message in visible:
         if not isinstance(message, ModelRequest):
@@ -579,24 +586,34 @@ def test_build_skill_catalog():
 
 
 @pytest.mark.asyncio
-async def test_inference_restarts_with_replacement_history():
+async def test_inference_continues_with_replacement_context():
     replacement: list[ModelMessage] = [
         ModelRequest(parts=[UserPromptPart(content="summary")])
     ]
-    restarted = SimpleNamespace(output=RestartAgentRun(replacement))
-    completed = SimpleNamespace(output="done")
+    restarted = SimpleNamespace(
+        output=ContinueAgentRun(replacement),
+        new_messages=lambda: [],
+        all_messages=lambda: replacement,
+    )
+    completed = SimpleNamespace(
+        output="done",
+        new_messages=lambda: [],
+        all_messages=lambda: replacement,
+    )
     run_mock = AsyncMock(side_effect=[restarted, completed])
+    session = AgentSession(agent_name="test")
+    reset_history(session, replacement)
     runtime = cast(
         AgentRuntime,
         SimpleNamespace(
             model_ref="test",
-            fallback_model_refs=[],
             model=object(),
             provider_model="test",
             model_params={},
             request_limit=None,
             request_limit_prompt="",
             run_info=SimpleNamespace(run_id=None),
+            session=session,
             agent_ep=SimpleNamespace(),
             _pydantic_agent=SimpleNamespace(run=run_mock),
             _handle_stream_output=AsyncMock(),
@@ -615,6 +632,7 @@ async def test_inference_restarts_with_replacement_history():
     assert calls[0].args == ("question",)
     assert calls[1].args == (None,)
     assert calls[1].kwargs["message_history"] is replacement
+    assert session.message_history == replacement
 
 
 @pytest.mark.asyncio
@@ -774,15 +792,13 @@ system_prompt = "Hi."
         and event.payload.status == "started"
     )
     assert user_message.payload.text_content == "fail"
-    session_snapshot = runtime.session.build_io_snapshot()
+    session_snapshot = runtime.session.build_io_timeline()
     assert len(session_snapshot) == 2
     assert isinstance(session_snapshot[0], ModelRequest)
     assert isinstance(session_snapshot[1], ModelResponse)
     assert session_snapshot[1].text == "RuntimeError: model failed"
 
-    endpoint_snapshot = runtime.agent_ep._snapshot_value
-    assert len(endpoint_snapshot) == 1
-    assert isinstance(endpoint_snapshot[0], ModelRequest)
+    assert runtime.agent_ep._safe_journal_id == runtime.session.journal[-1].id
 
 
 @pytest.mark.asyncio
@@ -825,7 +841,7 @@ system_prompt = "Hi."
 
     assert sent_events[-2] == "Task interrupted."
     assert sent_events[-1] == TurnStateEvent(busy=False)
-    assert all(event.event_type != "error" for event in runtime.session.events)
+    assert all(event.event_type != "error" for event in runtime.session.journal)
 
 
 @pytest.mark.asyncio
@@ -928,12 +944,13 @@ system_prompt = "Hi."
         assert queued_turn is not None
         await started.wait()
         assert runtime.start_message("second queued work") is queued_turn
-        run_context = SimpleNamespace(enqueue=Mock())
+        runtime._journal_history_initialized = True
+        run_context = SimpleNamespace(enqueue=Mock(), run_id=None)
         result = object()
-        returned = await runtime._after_node_run(
+        returned = await runtime._wrap_node_run(
             cast(RunContext[AgentDeps], run_context),
             node=object(),
-            result=result,
+            handler=AsyncMock(return_value=result),
         )
         assert returned is result
         enqueued_content = run_context.enqueue.call_args.args
@@ -994,8 +1011,8 @@ system_prompt = "Hi."
             raise RuntimeError("something broke")
 
     assert session.runtime is None
-    assert session.events[-1].event_type == "error"
-    assert "RuntimeError: something broke" in session.events[-1].error
+    assert session.journal[-1].event_type == "error"
+    assert "RuntimeError: something broke" in session.journal[-1].error
     assert runtime not in io_adapter.adapter_ep_to_runtime.values()
 
 
@@ -1026,8 +1043,8 @@ system_prompt = "Hi."
             raise asyncio.CancelledError()
 
     assert session.runtime is None
-    assert session.events[-1].event_type == "error"
-    assert session.events[-1].error == "Task interrupted."
+    assert session.journal[-1].event_type == "error"
+    assert session.journal[-1].error == "Task interrupted."
     assert runtime not in io_adapter.adapter_ep_to_runtime.values()
 
 
@@ -1053,3 +1070,244 @@ system_prompt = "Hi."
         assert runtime.uuid == "child-session-id"
         assert runtime.session is session
         assert runtime.name == "test_agent"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_tools", [False, True])
+async def test_steering_messages_are_journaled_before_later_fork_boundaries(
+    tmp_path, monkeypatch, use_tools
+):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('model_ref = "test"\n[agent.main]\nsystem_prompt = "Hi."\n')
+    session = AgentSession(agent_name="main")
+    runtime = AgentRuntime(
+        app_setup(cli_args={"workspace": str(tmp_path)}), _StubIOAdapter(), session
+    )
+
+    def ping():
+        return "pong"
+
+    runtime.add_local_tool(ping)
+    inputs = []
+    calls = 0
+
+    async def stream_function(messages, info):
+        nonlocal calls
+        calls += 1
+        if calls <= 2:
+            client_input = normalize_client_input(
+                ClientInput(payload=MessagePayload(content=f"steering {calls}"))
+            )
+            inputs.append(client_input)
+            runtime._pending_user_inputs.append(client_input)
+            runtime.notify_llm(f"notification {calls}")
+            if use_tools:
+                yield {0: DeltaToolCall(name="ping", json_args="{}")}
+            else:
+                yield f"reply {calls}"
+        else:
+            yield "done"
+
+    async with runtime:
+        with runtime._pydantic_agent.override(
+            model=FunctionModel(stream_function=stream_function)
+        ):
+            result = await runtime.run_turn("start")
+
+        assert calls == 3
+        assert context_resets(session) == []
+        journal_messages = [
+            entry.message
+            for entry in session.journal
+            if isinstance(entry, ModelMessageEvent)
+        ]
+        assert journal_messages == result.all_messages()
+        assert session.message_history == result.all_messages()
+        sequences = [
+            entry.sequence
+            for entry in session.journal
+            if isinstance(entry, ModelMessageEvent)
+        ]
+        assert sequences == list(range(len(journal_messages)))
+
+        forked = await session.fork_at(inputs[1].server_message_id)
+        history = forked.message_history
+        assert contains_input(history, inputs[0].server_message_id)
+        assert not contains_input(history, inputs[1].server_message_id)
+        assert any(
+            isinstance(part, UserPromptPart) and part.content == "notification 1"
+            for message in history
+            for part in message.parts
+        )
+        # Persistence and the next turn must not duplicate messages already journaled.
+        restored = AgentSession.model_validate_json(session.model_dump_json())
+        assert restored.message_history == result.all_messages()
+        with runtime._pydantic_agent.override(
+            model=FunctionModel(stream_function=stream_function)
+        ):
+            followup = await runtime.run_turn("follow-up")
+        assert context_resets(session) == []
+        assert [
+            part for message in session.message_history for part in message.parts
+        ] == [part for message in followup.all_messages() for part in message.parts]
+
+
+@pytest.mark.asyncio
+async def test_model_api_error_ends_turn_without_retry(tmp_path, monkeypatch):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('model_ref = "test"\n[agent.main]\nsystem_prompt = "Hi."\n')
+    session = AgentSession(agent_name="main")
+    runtime = AgentRuntime(
+        app_setup(cli_args={"workspace": str(tmp_path)}), _StubIOAdapter(), session
+    )
+    requests = []
+
+    async def stream_function(messages, info):
+        requests.append(list(messages))
+        raise ModelAPIError("test", "model unavailable")
+        yield "unreachable"
+
+    async with runtime:
+        with runtime._pydantic_agent.override(
+            model=FunctionModel(stream_function=stream_function)
+        ):
+            with pytest.raises(ModelAPIError, match="model unavailable"):
+                await runtime.run_turn("question")
+    assert len(requests) == 1
+    assert session.message_history == requests[0]
+    assert context_resets(session) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("divergent", [False, True])
+async def test_inference_reports_journal_mismatch_without_repair(
+    tmp_path, monkeypatch, divergent
+):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('model_ref = "test"\n[agent.main]\nsystem_prompt = "Hi."\n')
+    session = AgentSession(agent_name="main")
+    runtime = AgentRuntime(
+        app_setup(cli_args={"workspace": str(tmp_path)}), _StubIOAdapter(), session
+    )
+    request = ModelRequest.user_text_prompt("question")
+    response = ModelResponse(parts=[TextPart(content="answer")])
+
+    async def run(*args, **kwargs):
+        session.record_model_message(
+            ModelRequest.user_text_prompt("different") if divergent else request,
+            run_id="run",
+            sequence=0,
+        )
+        return SimpleNamespace(
+            output="answer", new_messages=lambda: [request, response]
+        )
+
+    monkeypatch.setattr(runtime._pydantic_agent, "run", run)
+    async with runtime:
+        with pytest.raises(RuntimeError, match="journal diverged"):
+            await runtime._run_inference("question", message_history=[])
+    assert len(session.journal) == 1
+    assert context_resets(session) == []
+    assert len(session.message_history) == 1
+    assert len(session.build_io_timeline()) == 1
+
+
+@pytest.mark.asyncio
+async def test_compaction_continuation_preserves_journal_and_fork_boundaries(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('model_ref = "test"\n[agent.main]\nsystem_prompt = "Hi."\n')
+    session = AgentSession(agent_name="main")
+    runtime = AgentRuntime(
+        app_setup(cli_args={"workspace": str(tmp_path)}), _StubIOAdapter(), session
+    )
+    summary: list[ModelMessage] = [ModelRequest.user_text_prompt("private summary")]
+    compacted = False
+
+    async def compact(ctx, request_context):
+        nonlocal compacted
+        if not compacted:
+            compacted = True
+            compact_history(session, summary, False, "compact-context")
+            raise ContinueAgentRun(summary)
+        return request_context
+
+    runtime.builtin_hooks.on.before_model_request(compact)
+
+    async def stream_function(messages, info):
+        yield "answer"
+
+    async with runtime:
+        with runtime._pydantic_agent.override(
+            model=FunctionModel(stream_function=stream_function)
+        ):
+            first = normalize_client_input(
+                ClientInput(payload=MessagePayload(content="first"))
+            )
+            await runtime.run_turn(first)
+            second = normalize_client_input(
+                ClientInput(payload=MessagePayload(content="second"))
+            )
+            before_second = session.message_history
+            await runtime.run_turn(second)
+    assert len(context_resets(session)) == 1
+    restored = AgentSession.model_validate_json(session.model_dump_json())
+    assert restored.message_history == session.message_history
+    assert (await restored.fork_at(first.server_message_id)).message_history == []
+    assert (
+        await restored.fork_at(second.server_message_id)
+    ).message_history == before_second
+    assert "private summary" not in str(restored.build_io_timeline())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_stream_failure_journals_partial_response(
+    tmp_path, monkeypatch, cancelled
+):
+    monkeypatch.setattr(Path, "cwd", lambda: tmp_path)
+    config_file = tmp_path / ".arox" / "config.toml"
+    config_file.parent.mkdir(parents=True)
+    config_file.write_text('model_ref = "test"\n[agent.main]\nsystem_prompt = "Hi."\n')
+    session = AgentSession(agent_name="main")
+    runtime = AgentRuntime(
+        app_setup(cli_args={"workspace": str(tmp_path)}), _StubIOAdapter(), session
+    )
+
+    async def stream_function(messages, info):
+        yield "partial answer"
+        if cancelled:
+            raise asyncio.CancelledError()
+        raise ModelAPIError("test", "stream interrupted")
+
+    async with runtime:
+        with runtime._pydantic_agent.override(
+            model=FunctionModel(stream_function=stream_function)
+        ):
+            with pytest.raises(asyncio.CancelledError if cancelled else ModelAPIError):
+                await runtime.run_turn("question")
+        await runtime.io_adapter.disconnect(runtime)
+        replacement = IOEndpoint()
+        runtime.agent_ep.pair(replacement)
+        snapshot = await replacement.receive()
+        assert isinstance(snapshot, SnapshotEvent)
+        assert snapshot.journal_id == session.journal[-1].id
+        assert any(
+            isinstance(message, ModelResponse) and message.text == "partial answer"
+            for message in session.build_io_timeline(through_id=snapshot.journal_id)
+        )
+        replacement.close()
+    assert any(
+        isinstance(message, ModelResponse) and message.text == "partial answer"
+        for message in session.message_history
+    )
+    assert context_resets(session) == []

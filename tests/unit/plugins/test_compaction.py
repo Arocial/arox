@@ -13,13 +13,14 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from arox.core.agent_runtime import AgentRuntime, RestartAgentRun
+from arox.core.agent_runtime import AgentRuntime, ContinueAgentRun
 from arox.core.io import AbstractIOAdapter, AgentIOEndpoint, IOEndpoint, SnapshotEvent
-from arox.core.session import AgentSession, CompactionEvent
+from arox.core.session import AgentSession, CompactionEvent, ModelMessageEvent
 from arox.core.turn import Turn
 from arox.core.types import ClientInput, MessagePayload, normalize_client_input
 from arox.plugins.compaction import CompactionPlugin
 from arox.plugins.slots import PERSISTENT_CONTEXT
+from tests.history import context_resets, record_messages, reset_history
 
 
 class _TestIOAdapter(AbstractIOAdapter):
@@ -76,7 +77,6 @@ class _MockAgent:
     def __init__(self, threshold: int | None, persistent=None):
         from arox.core.config import AgentConfig, Config
 
-        self.run_info = SimpleNamespace(context_tokens=0, llm_context_id="ctx-original")
         self.model_config = None
 
         self.config = Config(
@@ -89,13 +89,13 @@ class _MockAgent:
 
         self.model_params = {}
         self.sent = []
-        self.snapshots = []
         self.agent_ep: Any = SimpleNamespace(
             send=self._send,
-            snapshot=self.snapshots.append,
         )
         self.history_lock = asyncio.Lock()
         self.session = AgentSession(agent_name="main")
+        self.run_info = self.session.run_info
+        self.run_info.llm_context_id = "ctx-original"
         self.workspace = "fake-workspace"
 
         self.io_adapter = _TestIOAdapter()
@@ -108,11 +108,11 @@ class _MockAgent:
 
     @property
     def message_history(self):
-        return self.session.message_history.messages
+        return self.session.message_history
 
     @message_history.setter
     def message_history(self, value):
-        self.session.replace_message_history(value)
+        reset_history(self.session, value)
 
     async def _send(self, msg):
         self.sent.append(msg)
@@ -159,7 +159,7 @@ async def test_auto_compaction_below_threshold_is_noop():
     out = await plugin.history_processor(_ctx(50), list(messages))
 
     assert out == messages
-    assert [e.event_type for e in agent.session.events] == []
+    assert [type(e) for e in agent.session.build_io_timeline()] == []
     assert agent.run_info.llm_context_id == "ctx-original"
 
 
@@ -173,7 +173,7 @@ async def test_auto_compaction_disabled_without_threshold():
     out = await plugin.history_processor(_ctx(10_000), list(messages))
 
     assert out == messages
-    assert agent.session.events == []
+    assert agent.session.build_io_timeline() == ()
 
 
 @pytest.mark.asyncio
@@ -196,7 +196,7 @@ async def test_auto_compaction_compacts_mid_tool_loop():
         ),
     ]
 
-    with pytest.raises(RestartAgentRun) as exc_info:
+    with pytest.raises(ContinueAgentRun) as exc_info:
         await plugin.history_processor(_ctx(500), list(messages))
     out = exc_info.value.message_history
 
@@ -210,11 +210,10 @@ async def test_auto_compaction_compacts_mid_tool_loop():
         if isinstance(m, ModelRequest)
         for p in m.parts
     )
-    assert [e.event_type for e in agent.session.events] == ["compaction"]
-    compaction = cast(CompactionEvent, agent.session.events[0])
+    assert [type(e) for e in agent.session.build_io_timeline()] == [CompactionEvent]
+    compaction = cast(CompactionEvent, agent.session.build_io_timeline()[0])
     assert compaction.trigger == "token_threshold"
     assert compaction.step_boundary is False
-    assert agent.snapshots == []
     assert agent.run_info.llm_context_id != "ctx-original"
     assert agent.run_info.context_tokens == 0
 
@@ -223,17 +222,16 @@ async def test_auto_compaction_compacts_mid_tool_loop():
 async def test_auto_compaction_preserves_events_for_reconnect_replay():
     agent = _MockAgent(threshold=100)
     agent.run_info.context_tokens = 500
-    agent.agent_ep = AgentIOEndpoint()
-    agent.agent_ep.snapshot("committed")
+    agent.agent_ep = AgentIOEndpoint(agent.session)
     await agent.agent_ep.send("tool output before compaction")
     plugin = _plugin(agent)
 
-    with pytest.raises(RestartAgentRun):
+    with pytest.raises(ContinueAgentRun):
         await plugin.history_processor(_ctx(500), [_user("question")])
 
     replacement = IOEndpoint()
     agent.agent_ep.pair(replacement)
-    assert await replacement.receive() == SnapshotEvent("committed")
+    assert await replacement.receive() == SnapshotEvent(None)
     start = await replacement.receive()
     end = await replacement.receive()
     assert start.part.content == "tool output before compaction"
@@ -258,7 +256,7 @@ async def test_auto_compaction_records_event_and_stays_consistent():
     messages = [_user("old 1"), _reply("old reply 1"), _user("current question")]
     agent.message_history = messages[:-1]
 
-    with pytest.raises(RestartAgentRun) as exc_info:
+    with pytest.raises(ContinueAgentRun) as exc_info:
         await plugin.history_processor(_ctx(500), list(messages))
     out = exc_info.value.message_history
 
@@ -267,32 +265,46 @@ async def test_auto_compaction_records_event_and_stays_consistent():
     assert "SUMMARY" in _first_text(out[0])
     assert len(out) == 3
 
-    # A compaction event is recorded without duplicating the compacted messages;
-    # the compacted output becomes the active history segment.
-    events = agent.session.events
-    assert [e.event_type for e in events] == ["compaction"]
+    # Context replacement and its visible marker are committed together.
+    events = agent.session.build_io_timeline()
+    assert [type(e) for e in events] == [CompactionEvent]
     compaction = cast(CompactionEvent, events[0])
     assert compaction.trigger == "token_threshold"
     assert compaction.step_boundary is False
-    assert agent.snapshots == []
     assert agent.run_info.llm_context_id != "ctx-original"
     assert compaction.llm_context_id == agent.run_info.llm_context_id
 
+    compaction_index = agent.session.index_of_event(compaction.id)
+    assert compaction_index is not None
+    replacement_events = agent.session.journal[compaction_index:]
+    assert [event.event_type for event in replacement_events] == [
+        "compaction",
+        "context_reset",
+        "model_message",
+        "model_message",
+        "model_message",
+    ]
+    assert "compaction" not in replacement_events[1].model_dump()
+    assert "messages" not in replacement_events[1].model_dump()
+    assert [
+        event.message
+        for event in replacement_events
+        if isinstance(event, ModelMessageEvent)
+    ] == out
+    assert all(
+        event.context_only
+        for event in replacement_events
+        if isinstance(event, ModelMessageEvent)
+    )
     assert not hasattr(compaction, "compacted_messages")
-    assert agent.session.message_history.messages == out
-    assert len(agent.session.archived_message_histories) == 1
-    assert agent.session.archived_message_histories[0].messages == messages
+    assert agent.session.message_history == out
 
-    # The completed step updates only the active segment.
+    # Subsequent messages append after the reset.
     response = _reply("answer")
     complete_history = [*out, response]
 
-    agent.session.record_step(
-        complete_history,
-        input_event_id=None,
-        new_messages=[response],
-    )
-    assert agent.session.message_history.messages == complete_history
+    record_messages(agent.session, [response])
+    assert agent.session.message_history == complete_history
 
 
 @pytest.mark.asyncio
@@ -304,10 +316,10 @@ async def test_compact_tool_defers_compaction_until_history_processing():
     result = plugin.compact(" Preserve implementation details. ")
 
     assert result == "Conversation history compaction requested."
-    assert agent.session.events == []
+    assert agent.session.build_io_timeline() == ()
     assert agent.message_history == []
 
-    with pytest.raises(RestartAgentRun) as exc_info:
+    with pytest.raises(ContinueAgentRun) as exc_info:
         await plugin.history_processor(_ctx(0), messages)
     out = exc_info.value.message_history
 
@@ -316,16 +328,15 @@ async def test_compact_tool_defers_compaction_until_history_processing():
     assert agent._compaction_agent.last_prompt == (
         "summary\n\nAdditional instructions: Preserve implementation details."
     )
-    assert [e.event_type for e in agent.session.events] == ["compaction"]
-    compaction = cast(CompactionEvent, agent.session.events[0])
+    assert [type(e) for e in agent.session.build_io_timeline()] == [CompactionEvent]
+    compaction = cast(CompactionEvent, agent.session.build_io_timeline()[0])
     assert compaction.trigger == "tool_request"
     assert compaction.step_boundary is False
-    assert agent.snapshots == []
 
     second_out = await plugin.history_processor(_ctx(0), out)
 
     assert second_out is out
-    assert [e.event_type for e in agent.session.events] == ["compaction"]
+    assert [type(e) for e in agent.session.build_io_timeline()] == [CompactionEvent]
 
 
 @pytest.mark.asyncio
@@ -340,11 +351,10 @@ async def test_manual_compact_records_event_and_replaces_history():
 
     assert result == "Conversation history compacted successfully."
     assert agent.sent == []
-    assert [e.event_type for e in agent.session.events] == ["compaction"]
-    compaction = cast(CompactionEvent, agent.session.events[0])
+    assert [type(e) for e in agent.session.build_io_timeline()] == [CompactionEvent]
+    compaction = cast(CompactionEvent, agent.session.build_io_timeline()[0])
     assert compaction.trigger == "manual"
     assert compaction.step_boundary is True
-    assert len(agent.snapshots) == 1
     assert agent.run_info.llm_context_id != "ctx-original"
     # Manual compaction replaces the live history with the summary base.
     assert "SUMMARY" in _first_text(agent.message_history[0])
@@ -364,14 +374,21 @@ async def test_manual_compact_waits_for_history_lock_and_uses_latest_history():
         plugin.handle_compact(CompactEvent(extra_instructions=""))
     )
     await asyncio.sleep(0)
-    assert agent.session.events == []
+    assert agent.session.build_io_timeline() == ()
 
     latest_history = [_user("old"), _reply("new answer")]
     agent.message_history = latest_history
     agent.history_lock.release()
 
     assert await task == "Conversation history compacted successfully."
-    assert agent.session.archived_message_histories[0].messages == latest_history
+    previous_reset = context_resets(agent.session)[-2]
+    previous_index = agent.session.index_of_event(previous_reset.id)
+    assert previous_index is not None
+    assert [
+        event.message
+        for event in agent.session.journal[previous_index + 1 : previous_index + 3]
+        if isinstance(event, ModelMessageEvent)
+    ] == latest_history
 
 
 def test_token_threshold_is_recomputed_after_config_change():

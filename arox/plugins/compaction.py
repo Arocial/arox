@@ -5,8 +5,9 @@ from typing import Any, ClassVar, Literal
 
 from pydantic_ai import ModelMessage, ModelRequest, RunContext, UserPromptPart
 
-from arox.core.agent_runtime import AgentRuntime, RestartAgentRun
+from arox.core.agent_runtime import AgentRuntime, ContinueAgentRun
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, tool
+from arox.core.session import CompactionEvent
 from arox.plugins.slots import PERSISTENT_CONTEXT
 
 logger = logging.getLogger(__name__)
@@ -84,7 +85,7 @@ class CompactionPlugin(Plugin):
     async def handle_compact(self, event: CompactEvent) -> str:
         runtime = self.runtime
         async with runtime.history_lock:
-            messages_to_compact = list(runtime.message_history)
+            messages_to_compact = runtime.session.message_history
 
             if not messages_to_compact:
                 return "No history to compact."
@@ -96,35 +97,34 @@ class CompactionPlugin(Plugin):
             if outcome.status != "compacted":
                 return outcome.output
 
-            await self._record_compaction(
+            self._apply_compaction(
                 outcome.messages,
-                True,
                 trigger="manual",
-                previous_messages=messages_to_compact,
             )
             return outcome.output
 
-    async def _record_compaction(
+    def _apply_compaction(
         self,
         compacted: list[ModelMessage],
-        step_boundary: bool,
         *,
         trigger: Literal["manual", "token_threshold", "tool_request"],
-        previous_messages: list[ModelMessage],
     ) -> None:
-        """Record compaction and checkpoint only at a completed step boundary."""
-        runtime = self.runtime
-        runtime.run_info.llm_context_id = str(uuid.uuid4())
-        runtime.session.record_compaction(
-            compacted,
-            step_boundary,
-            runtime.run_info.llm_context_id,
-            trigger=trigger,
-            previous_messages=previous_messages,
+        """Commit replacement context and its visible marker together."""
+        session = self.runtime.session
+        context_id = str(uuid.uuid4())
+        session.run_info.llm_context_id = context_id
+        session.run_info.context_tokens = 0
+        # Commit synchronously: the cause, the reset, then the replacement context.
+        session.add_event(
+            CompactionEvent(
+                agent_name=session.agent_name,
+                step_boundary=trigger == "manual",
+                trigger=trigger,
+                llm_context_id=context_id,
+            )
         )
-        runtime.run_info.context_tokens = 0
-        if step_boundary:
-            runtime.agent_ep.snapshot(runtime.session.build_io_snapshot())
+        session.reset_message_history()
+        session.record_model_messages(compacted, run_id=context_id, context_only=True)
 
     async def history_processor(
         self,
@@ -156,14 +156,11 @@ class CompactionPlugin(Plugin):
         if outcome.status != "compacted":
             return messages
 
-        compacted = outcome.messages
-        await self._record_compaction(
-            compacted,
-            False,
+        self._apply_compaction(
+            outcome.messages,
             trigger=trigger,
-            previous_messages=messages,
         )
-        raise RestartAgentRun(compacted)
+        raise ContinueAgentRun(outcome.messages)
 
     async def _compact(
         self, messages: list[ModelMessage], extra_instructions: str = ""
@@ -207,7 +204,9 @@ class CompactionPlugin(Plugin):
                 runtime.config_loader, runtime.io_adapter, compaction_session
             )
             async with compaction_runtime:
-                compaction_runtime.message_history = messages.copy()
+                compaction_session.record_model_messages(
+                    messages, run_id=compaction_session.id, context_only=True
+                )
                 turn = compaction_runtime.start_message(prompt)
                 result = await turn
                 summary = (
