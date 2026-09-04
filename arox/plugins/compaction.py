@@ -5,7 +5,7 @@ from typing import Any, ClassVar, Literal
 
 from pydantic_ai import ModelMessage, ModelRequest, RunContext, UserPromptPart
 
-from arox.core.agent_runtime import AgentRuntime
+from arox.core.agent_runtime import AgentRuntime, RestartAgentRun
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, tool
 from arox.plugins.slots import PERSISTENT_CONTEXT
 
@@ -122,6 +122,7 @@ class CompactionPlugin(Plugin):
             trigger=trigger,
             previous_messages=previous_messages,
         )
+        runtime.run_info.context_tokens = 0
         if step_boundary:
             runtime.agent_ep.snapshot(runtime.session.build_io_snapshot())
 
@@ -162,16 +163,7 @@ class CompactionPlugin(Plugin):
             trigger=trigger,
             previous_messages=messages,
         )
-        from pydantic_ai._agent_graph import _first_new_message_index
-
-        if ctx.run_id:
-            self.runtime.new_message_index = _first_new_message_index(
-                messages,
-                ctx.run_id,
-                resumed_request=None,
-                resumed_request_index=None,
-            )
-        return compacted
+        raise RestartAgentRun(compacted)
 
     async def _compact(
         self, messages: list[ModelMessage], extra_instructions: str = ""

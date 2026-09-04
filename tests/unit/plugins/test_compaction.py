@@ -13,7 +13,7 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from arox.core.agent_runtime import AgentRuntime
+from arox.core.agent_runtime import AgentRuntime, RestartAgentRun
 from arox.core.io import AbstractIOAdapter, AgentIOEndpoint, IOEndpoint, SnapshotEvent
 from arox.core.session import AgentSession, CompactionEvent
 from arox.core.turn import Turn
@@ -196,7 +196,9 @@ async def test_auto_compaction_compacts_mid_tool_loop():
         ),
     ]
 
-    out = await plugin.history_processor(_ctx(500), list(messages))
+    with pytest.raises(RestartAgentRun) as exc_info:
+        await plugin.history_processor(_ctx(500), list(messages))
+    out = exc_info.value.message_history
 
     # Everything collapsed into the summary; no leftover tool_return.
     assert agent._compaction_agent.session.agent_source == "compaction"
@@ -214,6 +216,7 @@ async def test_auto_compaction_compacts_mid_tool_loop():
     assert compaction.step_boundary is False
     assert agent.snapshots == []
     assert agent.run_info.llm_context_id != "ctx-original"
+    assert agent.run_info.context_tokens == 0
 
 
 @pytest.mark.asyncio
@@ -225,7 +228,8 @@ async def test_auto_compaction_preserves_events_for_reconnect_replay():
     await agent.agent_ep.send("tool output before compaction")
     plugin = _plugin(agent)
 
-    await plugin.history_processor(_ctx(500), [_user("question")])
+    with pytest.raises(RestartAgentRun):
+        await plugin.history_processor(_ctx(500), [_user("question")])
 
     replacement = IOEndpoint()
     agent.agent_ep.pair(replacement)
@@ -254,7 +258,9 @@ async def test_auto_compaction_records_event_and_stays_consistent():
     messages = [_user("old 1"), _reply("old reply 1"), _user("current question")]
     agent.message_history = messages[:-1]
 
-    out = await plugin.history_processor(_ctx(500), list(messages))
+    with pytest.raises(RestartAgentRun) as exc_info:
+        await plugin.history_processor(_ctx(500), list(messages))
+    out = exc_info.value.message_history
 
     # Whole history compacted to: summary + persistent context.
     assert isinstance(out[0], ModelRequest)
@@ -301,7 +307,9 @@ async def test_compact_tool_defers_compaction_until_history_processing():
     assert agent.session.events == []
     assert agent.message_history == []
 
-    out = await plugin.history_processor(_ctx(0), messages)
+    with pytest.raises(RestartAgentRun) as exc_info:
+        await plugin.history_processor(_ctx(0), messages)
+    out = exc_info.value.message_history
 
     assert isinstance(out[0], ModelRequest)
     assert "SUMMARY" in _first_text(out[0])

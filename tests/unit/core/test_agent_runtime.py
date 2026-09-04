@@ -4,12 +4,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
-from pydantic_ai import ModelRequestContext, RunContext
+from pydantic_ai import RunContext
 from pydantic_ai.messages import (
     BinaryContent,
+    ModelMessage,
     ModelRequest,
     ModelResponse,
     TextContent,
@@ -21,7 +22,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 from pydantic_ai.usage import RunUsage
 
-from arox.core.agent_runtime import AgentDeps, AgentRuntime
+from arox.core.agent_runtime import AgentDeps, AgentRuntime, RestartAgentRun
 from arox.core.app import app_setup
 from arox.core.background import BackgroundTaskBroker
 from arox.core.io import AbstractIOAdapter
@@ -151,25 +152,48 @@ async def test_accept_command_emits_accepted_client_input(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_llm_notifications_are_injected_once_before_model_request():
+async def test_llm_notifications_are_enqueued_once_after_node_run():
     runtime = AgentRuntime.__new__(AgentRuntime)
     runtime.background_tasks = BackgroundTaskBroker()
     runtime._pending_user_inputs = deque()
     runtime.message_history_fallback = []
     runtime.notify_llm("First task finished.")
     runtime.notify_llm("Second task finished.")
-    request_context = SimpleNamespace(messages=[])
+    ctx = SimpleNamespace(enqueue=Mock())
+    result = object()
 
-    await runtime._before_model_request(None, request_context)
+    returned = await runtime._after_node_run(ctx, node=object(), result=result)
 
-    assert len(request_context.messages) == 1
-    notice = request_context.messages[0]
-    assert isinstance(notice, ModelRequest)
-    assert notice.parts[0].content == ("First task finished.\n\nSecond task finished.")
+    assert returned is result
+    ctx.enqueue.assert_called_once_with(
+        "First task finished.\n\nSecond task finished.", priority="asap"
+    )
     assert not runtime.background_tasks.drain_notices()
 
-    await runtime._before_model_request(None, request_context)
-    assert len(request_context.messages) == 1
+    await runtime._after_node_run(ctx, node=object(), result=result)
+    ctx.enqueue.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_pending_user_inputs_are_enqueued_after_node_run():
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.background_tasks = BackgroundTaskBroker()
+    pending_payload = MessagePayload(content="steer")
+    pending_input = ClientInput(payload=pending_payload)
+    runtime._pending_user_inputs = deque([pending_input])
+    runtime.message_history_fallback = []
+    runtime._record_user_input = AsyncMock()
+    ctx = SimpleNamespace(enqueue=Mock())
+
+    result = object()
+    returned = await runtime._after_node_run(ctx, node=object(), result=result)
+
+    assert returned is result
+    runtime._record_user_input.assert_awaited_once_with(pending_input)
+    content = pending_payload.content
+    assert content is not None
+    ctx.enqueue.assert_called_once_with(*content, priority="asap")
+    assert not runtime._pending_user_inputs
 
 
 @pytest.mark.asyncio
@@ -555,6 +579,45 @@ def test_build_skill_catalog():
 
 
 @pytest.mark.asyncio
+async def test_inference_restarts_with_replacement_history():
+    replacement: list[ModelMessage] = [
+        ModelRequest(parts=[UserPromptPart(content="summary")])
+    ]
+    restarted = SimpleNamespace(output=RestartAgentRun(replacement))
+    completed = SimpleNamespace(output="done")
+    run_mock = AsyncMock(side_effect=[restarted, completed])
+    runtime = cast(
+        AgentRuntime,
+        SimpleNamespace(
+            model_ref="test",
+            fallback_model_refs=[],
+            model=object(),
+            provider_model="test",
+            model_params={},
+            request_limit=None,
+            request_limit_prompt="",
+            run_info=SimpleNamespace(run_id=None),
+            agent_ep=SimpleNamespace(),
+            _pydantic_agent=SimpleNamespace(run=run_mock),
+            _handle_stream_output=AsyncMock(),
+            set_model=Mock(),
+        ),
+    )
+
+    result = await AgentRuntime._run_inference(
+        runtime,
+        "question",
+        message_history=[],
+    )
+
+    assert result is completed
+    calls = run_mock.await_args_list
+    assert calls[0].args == ("question",)
+    assert calls[1].args == (None,)
+    assert calls[1].kwargs["message_history"] is replacement
+
+
+@pytest.mark.asyncio
 async def test_request_limit_prompt_continues_with_native_usage_limit(
     tmp_path, monkeypatch
 ):
@@ -865,17 +928,17 @@ system_prompt = "Hi."
         assert queued_turn is not None
         await started.wait()
         assert runtime.start_message("second queued work") is queued_turn
-        request_context = SimpleNamespace(messages=[])
-        await runtime._before_model_request(
-            cast(RunContext[AgentDeps], None),
-            cast(ModelRequestContext, request_context),
+        run_context = SimpleNamespace(enqueue=Mock())
+        result = object()
+        returned = await runtime._after_node_run(
+            cast(RunContext[AgentDeps], run_context),
+            node=object(),
+            result=result,
         )
-        injected = request_context.messages[0]
-        assert isinstance(injected, ModelRequest)
-        injected_content = injected.parts[0].content
-        assert not isinstance(injected_content, str)
-        assert isinstance(injected_content[0], TextContent)
-        assert injected_content[0].content == "second queued work"
+        assert returned is result
+        enqueued_content = run_context.enqueue.call_args.args
+        assert isinstance(enqueued_content[0], TextContent)
+        assert enqueued_content[0].content == "second queued work"
         assert not runtime._pending_user_inputs
         release.set()
         queued_result = await queued_turn

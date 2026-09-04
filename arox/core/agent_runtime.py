@@ -32,10 +32,8 @@ from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import (
     ModelMessage,
-    ModelRequest,
     ModelResponse,
     UserContent,
-    UserPromptPart,
 )
 from pydantic_ai.models import infer_model
 
@@ -88,6 +86,14 @@ class AgentDeps:
     runtime: "AgentRuntime"
 
 
+class RestartAgentRun(Exception):
+    """Internal signal to continue inference in a fresh Pydantic AI run."""
+
+    def __init__(self, message_history: list[ModelMessage]):
+        self.message_history = message_history
+        super().__init__("Restart the agent run with replacement message history.")
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -123,6 +129,7 @@ class AgentRuntime:
 
         self.builtin_hooks = Hooks[AgentDeps]()
         self.builtin_hooks.on.before_run(self._before_run)
+        self.builtin_hooks.on.after_node_run(self._after_node_run)
         self.builtin_hooks.on.before_model_request(self._before_model_request)
         self.builtin_hooks.on.run_error(self._on_run_error)
         self.builtin_hooks.on.model_request(self._wrap_model_request)
@@ -619,22 +626,27 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         ctx: RunContext[AgentDeps],
         request_context: ModelRequestContext,
     ) -> ModelRequestContext:
+        self.message_history_fallback = list(request_context.messages)
+        return request_context
+
+    async def _after_node_run(
+        self,
+        ctx: RunContext[AgentDeps],
+        *,
+        node: Any,
+        result: Any,
+    ) -> Any:
         while self._pending_user_inputs:
             client_input = self._pending_user_inputs.popleft()
             payload = client_input.payload
             assert isinstance(payload, MessagePayload)
             if payload.content is not None:
                 await self._record_user_input(client_input)
-                request_context.messages.append(
-                    ModelRequest(parts=[UserPromptPart(content=payload.content)])
-                )
+                ctx.enqueue(*payload.content, priority="asap")
         notifications = self._drain_llm_notifications()
         if notifications:
-            request_context.messages.append(
-                ModelRequest(parts=[UserPromptPart(content="\n\n".join(notifications))])
-            )
-        self.message_history_fallback = list(request_context.messages)
-        return request_context
+            ctx.enqueue("\n\n".join(notifications), priority="asap")
+        return result
 
     async def _wrap_model_request(
         self,
@@ -659,12 +671,16 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
     ) -> AgentRunResult[Any]:
         from pydantic_ai._agent_graph import GraphAgentState
 
-        logger.error(
-            "Agent run failed.",
-            exc_info=(type(error), error, error.__traceback__),
-        )
+        if isinstance(error, RestartAgentRun):
+            message_history = error.message_history
+        else:
+            logger.error(
+                "Agent run failed.",
+                exc_info=(type(error), error, error.__traceback__),
+            )
+            message_history = self.message_history_fallback
         state = GraphAgentState(
-            message_history=self.message_history_fallback,
+            message_history=message_history,
             usage=ctx.usage,
             run_id=ctx.run_id or "",
             conversation_id=ctx.conversation_id or "",
@@ -726,14 +742,20 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                     else:
                         break
 
-                if not (
+                if isinstance(result.output, RestartAgentRun):
+                    logger.info("Continuing inference in a fresh agent run.")
+                    current_prompt = None
+                    current_history = result.output.message_history
+                    continue
+                if (
                     isinstance(result.output, UsageLimitExceeded)
                     and self.request_limit_prompt
                 ):
-                    break
-                logger.info("Continuing agent run after soft usage limit.")
-                current_prompt = self.request_limit_prompt
-                current_history = result.all_messages()
+                    logger.info("Continuing agent run after soft usage limit.")
+                    current_prompt = self.request_limit_prompt
+                    current_history = result.all_messages()
+                    continue
+                break
         finally:
             if self.model_ref != primary_ref:
                 self.set_model(primary_ref)
