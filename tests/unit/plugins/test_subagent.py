@@ -190,10 +190,6 @@ async def test_simple_mode_exposes_only_delegate_and_waits_for_result(agent_fact
         assert task_session.target == target
         assert task_session.runtime is None
         assert len(main_agent.session.children) == 1
-        call = main_agent.session.events[-1]
-        assert call.event_type == "subagent_call"
-        assert call.subagent == "planner"
-        assert call.task == "make a plan"
 
         child_session = await store.load_session(
             [main_agent.session.id, main_agent.session.children[0]]

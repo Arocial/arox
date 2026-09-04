@@ -139,7 +139,6 @@ class SubagentPlugin(Plugin):
     ) -> asyncio.Task[Any]:
         runtime = task_session.runtime
         try:
-            self.runtime.session.record_subagent_call(task_session.agent_name, message)
             if runtime is None:
                 runtime = await task_session.ensure_runtime(
                     self.runtime.config_loader,

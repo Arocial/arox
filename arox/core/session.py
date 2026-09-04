@@ -64,24 +64,6 @@ class ErrorEvent(SessionEvent):
     error: str = ""
 
 
-class SubagentCallEvent(SessionEvent):
-    event_type: Literal["subagent_call"] = "subagent_call"
-    subagent: str = ""
-    task: str = ""
-
-
-class SubagentCreatedEvent(SessionEvent):
-    event_type: Literal["subagent_created"] = "subagent_created"
-    subagent: str = ""
-    config: dict[str, Any] = Field(default_factory=dict)
-
-
-class SubagentDeletedEvent(SessionEvent):
-    event_type: Literal["subagent_deleted"] = "subagent_deleted"
-    subagent: str = ""
-    session_path: list[str] | None = None
-
-
 class CompactionEvent(SessionEvent):
     event_type: Literal["compaction"] = "compaction"
     step_boundary: bool = False
@@ -95,9 +77,6 @@ AnySessionEvent = Annotated[
         CommandCompletedEvent,
         UserInputEvent,
         ErrorEvent,
-        SubagentCallEvent,
-        SubagentCreatedEvent,
-        SubagentDeletedEvent,
         CompactionEvent,
     ],
     Field(discriminator="event_type"),
@@ -488,33 +467,6 @@ class AgentSession(Session):
         err_msg = self.format_error(error)
         self.add_event(ErrorEvent(error=err_msg, agent_name=self.agent_name))
         return err_msg
-
-    def record_subagent_call(self, subagent_name: str, task: str) -> None:
-        self.add_event(
-            SubagentCallEvent(
-                subagent=subagent_name, task=task, agent_name=self.agent_name
-            )
-        )
-
-    def record_subagent_created(
-        self, subagent_name: str, config_data: dict[str, Any]
-    ) -> None:
-        self.add_event(
-            SubagentCreatedEvent(
-                subagent=subagent_name, config=config_data, agent_name=self.agent_name
-            )
-        )
-
-    def record_subagent_deleted(
-        self, subagent_name: str, session_path: list[str] | None
-    ) -> None:
-        self.add_event(
-            SubagentDeletedEvent(
-                subagent=subagent_name,
-                session_path=session_path,
-                agent_name=self.agent_name,
-            )
-        )
 
     def record_compaction(
         self,
