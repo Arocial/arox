@@ -24,7 +24,7 @@ from arox.apps.chat.io_adapters.vercel_ai import (
     VercelStreamServer,
     _log_ws_payload,
     build_state_history,
-    build_state_timeline,
+    dump_ui_messages,
 )
 from arox.core.agent_runtime import AgentRuntime
 from arox.core.app import app_setup
@@ -380,7 +380,7 @@ def test_state_timeline_preserves_message_command_order():
     )
     record_messages(session, [request, response])
 
-    timeline = build_state_timeline(session)
+    timeline = build_state_history(session)
 
     assert [entry["type"] for entry in timeline] == [
         "message",
@@ -404,7 +404,7 @@ def test_state_timeline_includes_compaction_marker_and_stable_message_ids():
     response_id = response_event.id
     compact_history(session, [], False, "context-2", trigger="token_threshold")
 
-    timeline = build_state_timeline(session)
+    timeline = build_state_history(session)
 
     assert [entry["type"] for entry in timeline] == [
         "message",
@@ -423,18 +423,18 @@ def test_state_timeline_includes_compaction_marker_and_stable_message_ids():
     }
 
 
-def test_build_state_history_uses_stored_model_message_id():
+def test_dump_ui_messages_uses_stored_model_message_id():
     response = ModelResponse(
         parts=[TextPart(content="answer")],
         metadata={MODEL_MESSAGE_ID_KEY: "response-1"},
     )
 
-    history = build_state_history([response])
+    history = dump_ui_messages([response])
 
     assert history[0]["id"] == "response-1"
 
 
-def test_build_state_history_carries_user_input_id():
+def test_dump_ui_messages_carries_user_input_id():
     """The history builder must thread user_input_id onto the message metadata."""
     request = ModelRequest(
         parts=[
@@ -446,20 +446,20 @@ def test_build_state_history_carries_user_input_id():
         ]
     )
 
-    history = build_state_history([request])
+    history = dump_ui_messages([request])
     assert len(history) == 1
     msg = history[0]
     assert msg["role"] == "user"
     assert msg.get("metadata", {}).get("custom", {}).get(USER_INPUT_ID_KEY) == "abc123"
 
 
-def test_build_state_history_untagged_user_message_stays_clean():
+def test_dump_ui_messages_leaves_untagged_user_message_clean():
     """An untagged user turn must not gain an anchor."""
     request = ModelRequest(
         parts=[UserPromptPart(content=[TextContent(content="hi\n")])]
     )
 
-    history = build_state_history([request])
+    history = dump_ui_messages([request])
     assert len(history) == 1
     msg = history[0]
     assert msg["role"] == "user"
@@ -468,7 +468,7 @@ def test_build_state_history_untagged_user_message_stays_clean():
     ).get("custom", {})
 
 
-def test_build_state_history_identical_text_different_anchors():
+def test_dump_ui_messages_keeps_anchors_for_identical_text():
     """Identical text in different parts or messages must keep their unique anchors."""
     request1 = ModelRequest(
         parts=[
@@ -493,7 +493,7 @@ def test_build_state_history_identical_text_different_anchors():
         ]
     )
 
-    history = build_state_history([request1, request2])
+    history = dump_ui_messages([request1, request2])
     assert len(history) == 2
     assert (
         history[0].get("metadata", {}).get("custom", {}).get(USER_INPUT_ID_KEY) == "a"

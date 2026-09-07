@@ -26,7 +26,6 @@ from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
     ModelResponse,
-    TextContent,
     UserPromptPart,
 )
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter, VercelAIEventStream
@@ -44,8 +43,10 @@ from arox.core.session import (
     CommandCompletedEvent,
     CompactionEvent,
     ErrorEvent,
+    user_input_ids_on,
 )
 from arox.core.types import (
+    USER_INPUT_ID_KEY,
     ClientInput,
     CommandPayload,
     MessagePayload,
@@ -170,7 +171,7 @@ def _default_ui_message_id(
     return f"arox-{role}-{index}-{secrets.token_hex(8)}"
 
 
-def build_state_history(
+def dump_ui_messages(
     messages: Sequence[ModelMessage],
     *,
     generate_message_id: Callable[
@@ -179,89 +180,40 @@ def build_state_history(
     ]
     | None = None,
 ) -> list[dict]:
-    from arox.core.types import USER_INPUT_ID_KEY
-
+    """Convert model messages to serialized Vercel UI messages."""
     if generate_message_id is None:
         generate_message_id = _default_ui_message_id
 
-    wrapped_messages = []
-    for msg in messages:
-        if isinstance(msg, ModelRequest):
-            new_parts = []
-            for part in msg.parts:
-                if isinstance(part, UserPromptPart):
-                    if isinstance(part.content, str):
-                        new_parts.append(part)
-                        continue
+    prepared_messages: list[ModelMessage] = []
+    for message in messages:
+        input_ids = user_input_ids_on(message)
+        if not input_ids:
+            prepared_messages.append(message)
+            continue
 
-                    content = (
-                        part.content
-                        if isinstance(part.content, (list, tuple))
-                        else [part.content]
-                    )
-                    new_content = []
-                    for item in content:
-                        if isinstance(item, TextContent) and isinstance(
-                            item.metadata, dict
-                        ):
-                            input_id = item.metadata.get(USER_INPUT_ID_KEY)
-                            if input_id:
-                                wrapped = json.dumps(
-                                    {"_arox_id": str(input_id), "text": item.content}
-                                )
-                                new_content.append(
-                                    dataclasses.replace(item, content=wrapped)
-                                )
-                                continue
-                        new_content.append(item)
-                    new_parts.append(dataclasses.replace(part, content=new_content))
-                else:
-                    new_parts.append(part)
-            # Ensure we don't drop original ModelRequest metadata or other fields
-            wrapped_messages.append(dataclasses.replace(msg, parts=new_parts))
-        else:
-            wrapped_messages.append(msg)
+        metadata = dict(message.metadata or {})
+        custom = dict(metadata.get("custom") or {})
+        custom[USER_INPUT_ID_KEY] = input_ids[-1]
+        metadata["custom"] = custom
+        prepared_messages.append(dataclasses.replace(message, metadata=metadata))
 
     ui_messages = VercelAIAdapter.dump_messages(
-        wrapped_messages, generate_message_id=generate_message_id
+        prepared_messages, generate_message_id=generate_message_id
     )
     # `by_alias` to serialize keys as camel case, which assistant-ui
     # recognizes. See `pydantic_ai/ui/vercel_ai/_models.py:CamelBaseModel`
-    history = [
+    return [
         msg.model_dump(mode="json", exclude_none=True, by_alias=True)
         for msg in ui_messages
     ]
 
-    # Hoist it to message-level ``metadata.custom`` — the only slot @assistant-ui
-    # preserves for user messages — so the client reads the fork anchor straight
-    # off the message, the same shape it gets live via ``data-user-turn``.
-    for msg in history:
-        if msg.get("role") != "user":
-            continue
-        for part in msg.get("parts", []):
-            if part.get("type") == "text":
-                text = part.get("text", "")
-                if text.startswith("{") and '"_arox_id"' in text:
-                    try:
-                        data = json.loads(text)
-                        if isinstance(data, dict) and "_arox_id" in data:
-                            part["text"] = data.get("text", "")
-                            custom = msg.setdefault("metadata", {}).setdefault(
-                                "custom", {}
-                            )
-                            custom[USER_INPUT_ID_KEY] = data["_arox_id"]
-                    except json.JSONDecodeError:
-                        pass
 
-    return history
-
-
-def build_state_timeline(
+def build_state_history(
     session: AgentSession,
     *,
     through_id: str | None = None,
 ) -> list[dict]:
-    """Build one ordered state history without folding commands into AI messages."""
+    """Build the ordered history sent in a WebSocket state frame."""
     items: Sequence[ModelMessage | CommandCompletedEvent | CompactionEvent] = (
         session.build_io_timeline(through_id=through_id)
     )
@@ -275,7 +227,7 @@ def build_state_timeline(
         visible_messages = visible_message_history(message_batch)
         timeline.extend(
             {"type": "message", "message": message}
-            for message in build_state_history(visible_messages)
+            for message in dump_ui_messages(visible_messages)
         )
         message_batch.clear()
 
@@ -432,7 +384,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 websocket,
                 {
                     "type": "state",
-                    "history": build_state_timeline(
+                    "history": build_state_history(
                         target_session, through_id=event.journal_id
                     )
                     if event.journal_id is not None
@@ -492,7 +444,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                 if input_content is None:
                     return messages
                 request = ModelRequest(parts=[UserPromptPart(content=input_content)])
-                history = build_state_history(
+                history = dump_ui_messages(
                     [request],
                     generate_message_id=lambda _msg, _role, _index: (
                         client_input.server_message_id
@@ -633,7 +585,7 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     websocket,
                     {
                         "type": "state",
-                        "history": build_state_timeline(
+                        "history": build_state_history(
                             target_session,
                         ),
                         "model": model,
