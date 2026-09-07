@@ -6,14 +6,19 @@ from pydantic_ai.messages import ModelMessage
 
 from arox.core.session import (
     AgentSession,
-    CompactionEvent,
     ContextResetEvent,
+    ModelMessageEvent,
     user_input_ids_on,
 )
+from arox.plugins.compaction import ApplyCompaction, CompactionEvent
 
 
 def record_messages(session: AgentSession, messages: Sequence[ModelMessage]) -> None:
-    session.record_model_messages(messages, run_id=uuid.uuid4().hex)
+    run_id = uuid.uuid4().hex
+    for sequence, message in enumerate(messages):
+        session.record(
+            ModelMessageEvent(run_id=run_id, sequence=sequence, message=message)
+        )
 
 
 def context_resets(session: AgentSession) -> list[ContextResetEvent]:
@@ -25,8 +30,17 @@ def contains_input(messages: Sequence[ModelMessage], input_id: str) -> bool:
 
 
 def reset_history(session: AgentSession, messages: Sequence[ModelMessage]) -> None:
-    session.reset_message_history()
-    session.record_model_messages(messages, run_id=uuid.uuid4().hex, context_only=True)
+    session.record(ContextResetEvent())
+    run_id = uuid.uuid4().hex
+    for sequence, message in enumerate(messages):
+        session.record(
+            ModelMessageEvent(
+                run_id=run_id,
+                sequence=sequence,
+                message=message,
+                context_only=True,
+            )
+        )
 
 
 def compact_history(
@@ -37,13 +51,13 @@ def compact_history(
     *,
     trigger: Literal["manual", "token_threshold", "tool_request"] = "manual",
 ) -> None:
-    session.run_info.llm_context_id = context_id
-    session.add_event(
-        CompactionEvent(
-            agent_name=session.agent_name,
-            step_boundary=step_boundary,
-            llm_context_id=context_id,
-            trigger=trigger,
+    session.record(
+        ApplyCompaction(
+            messages=list(messages),
+            event=CompactionEvent(
+                step_boundary=step_boundary,
+                trigger=trigger,
+                llm_context_id=context_id,
+            ),
         )
     )
-    reset_history(session, messages)

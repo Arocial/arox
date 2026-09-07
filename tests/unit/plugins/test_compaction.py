@@ -15,10 +15,10 @@ from pydantic_ai.messages import (
 
 from arox.core.agent_runtime import AgentRuntime, ContinueAgentRun
 from arox.core.io import AbstractIOAdapter, AgentIOEndpoint, IOEndpoint, SnapshotEvent
-from arox.core.session import AgentSession, CompactionEvent, ModelMessageEvent
+from arox.core.session import AgentSession, ModelMessageEvent
 from arox.core.turn import Turn
 from arox.core.types import ClientInput, MessagePayload, normalize_client_input
-from arox.plugins.compaction import CompactionPlugin
+from arox.plugins.compaction import CompactionEvent, CompactionPlugin
 from arox.plugins.slots import PERSISTENT_CONTEXT
 from tests.history import context_resets, record_messages, reset_history
 

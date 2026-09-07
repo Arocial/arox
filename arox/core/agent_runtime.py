@@ -57,8 +57,13 @@ from arox.core.plugin import (
 from arox.core.session import (
     AgentRunInfo,
     AgentSession,
+    CommandCompletedEvent,
     ErrorEvent,
+    EventOperation,
     ModelMessageEvent,
+    Session,
+    SessionEvent,
+    UserInputEvent,
 )
 from arox.core.slot import (
     BaseSlot,
@@ -82,6 +87,17 @@ from arox.core.types import (
 from arox.plugins.slots import SYSTEM_PROMPT
 
 logger = logging.getLogger(__name__)
+
+
+def _update_last_user_messages(session: Session, event: SessionEvent) -> None:
+    assert isinstance(event, UserInputEvent)
+    payload = event.client_input.payload
+    assert isinstance(payload, MessagePayload)
+    recent = session.metadata.get("last_user_messages", [])
+    text = payload.text_content
+    if text:
+        recent.append(text)
+    session.metadata["last_user_messages"] = recent[-2:]
 
 
 @dataclass
@@ -140,6 +156,7 @@ class AgentRuntime:
         self.builtin_hooks.on.model_request(self._wrap_model_request)
         capabilities: list[AbstractCapability[AgentDeps]] = []
         self.plugins = load_plugins(self)
+        self.session.restore_event_types()
         capabilities.extend(
             [cap for plugin in self.plugins for cap in plugin.capabilities()]
         )
@@ -312,7 +329,9 @@ class AgentRuntime:
                 return
             try:
                 if exc_val is not None:
-                    self.session.record_error_event(exc_val)
+                    self.session.record(
+                        ErrorEvent(error=AgentSession.format_error(exc_val))
+                    )
                 await self._stack.aclose()
             finally:
                 self._entered = False
@@ -330,10 +349,15 @@ class AgentRuntime:
         try:
             result = await self.command_manager.dispatch(payload.command)
         except BaseException as error:
-            completed = self.session.record_command_completed(
-                client_input,
-                "error",
-                error=AgentSession.format_error(error),
+            input_id = client_input.server_message_id
+            assert input_id is not None
+            completed = self.session.record(
+                CommandCompletedEvent(
+                    id=input_id,
+                    client_input=client_input,
+                    status="error",
+                    error=AgentSession.format_error(error),
+                )
             )
             await self.agent_ep.send(completed)
             raise
@@ -347,10 +371,15 @@ class AgentRuntime:
         else:
             output = None
 
-        completed = self.session.record_command_completed(
-            client_input,
-            result.status,
-            output=output,
+        input_id = client_input.server_message_id
+        assert input_id is not None
+        completed = self.session.record(
+            CommandCompletedEvent(
+                id=input_id,
+                client_input=client_input,
+                status=result.status,
+                output=output,
+            )
         )
         await self.agent_ep.send(completed)
         return result
@@ -647,8 +676,12 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         for message in messages:
             if id(message) in self._journaled_messages:
                 continue
-            self.session.record_model_message(
-                message, run_id=ctx.run_id, sequence=self._journal_sequence
+            self.session.record(
+                ModelMessageEvent(
+                    run_id=ctx.run_id,
+                    sequence=self._journal_sequence,
+                    message=message,
+                )
             )
             self._journaled_messages[id(message)] = message
             self._journal_sequence += 1
@@ -828,7 +861,14 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         if payload.content is not None:
             payload.status = "started"
             await self.agent_ep.send(client_input)
-            self.session.record_user_input(client_input)
+            input_id = client_input.server_message_id
+            assert input_id is not None
+            self.session.record(
+                EventOperation(
+                    event=UserInputEvent(id=input_id, client_input=client_input),
+                    callback=_update_last_user_messages,
+                )
+            )
 
     async def _run_turn_input(self, client_input: ClientInput) -> AgentRunResult[str]:
         """Execute and persist the input that started the current turn."""
@@ -848,7 +888,9 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
                 await self.agent_ep.send(AgentSession.format_error(result.output))
                 raise result.output
             if isinstance(result.output, BaseException):
-                self.session.record_error_event(result.output)
+                self.session.record(
+                    ErrorEvent(error=AgentSession.format_error(result.output))
+                )
                 await self.agent_ep.send(
                     ErrorEvent(
                         error=AgentSession.format_error(result.output),

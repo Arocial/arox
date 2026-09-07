@@ -69,11 +69,11 @@ def test_fork_event_parsing():
 async def test_handle_fork_success():
     ag = AgentSession(agent_name="main")
     e0, request0 = _user_turn("hi")
-    ag.add_event(e0)
+    ag.record(e0)
     response0 = ModelResponse(parts=[TextPart(content="hello")])
     record_messages(ag, [request0, response0])
     e2, request2 = _user_turn("again")
-    ag.add_event(e2)
+    ag.record(e2)
     response2 = ModelResponse(parts=[TextPart(content="ok")])
     record_messages(ag, [request2, response2])
     plugin = _make_plugin(ag)
@@ -89,7 +89,7 @@ async def test_handle_fork_success():
 async def test_handle_fork_requires_user_input_event():
     ag = AgentSession(agent_name="main")
     e0, request = _user_turn("hi")
-    ag.add_event(e0)
+    ag.record(e0)
     response = ModelResponse(parts=[TextPart(content="hello")])
     record_messages(ag, [request, response])
     e1 = ag.journal[-1]
@@ -105,7 +105,7 @@ async def test_handle_fork_requires_user_input_event():
 @pytest.mark.asyncio
 async def test_handle_fork_missing_or_unknown():
     ag = AgentSession(agent_name="main")
-    ag.add_event(UserInputEvent(client_input=_message_input("hi")))
+    ag.record(UserInputEvent(client_input=_message_input("hi")))
     plugin = _make_plugin(ag)
 
     # No event id supplied.
@@ -120,9 +120,9 @@ async def test_handle_fork_missing_or_unknown():
 @pytest.mark.asyncio
 async def test_complete_fork_lists_user_turns_newest_first():
     ag = AgentSession(agent_name="main")
-    e0 = ag.add_event(UserInputEvent(client_input=_message_input("first")))
-    ag.add_event(ErrorEvent())
-    e2 = ag.add_event(UserInputEvent(client_input=_message_input("second")))
+    e0 = ag.record(UserInputEvent(client_input=_message_input("first")))
+    ag.record(ErrorEvent())
+    e2 = ag.record(UserInputEvent(client_input=_message_input("second")))
     plugin = _make_plugin(ag)
     # Candidates are now derived from the session's user_input events directly.
 

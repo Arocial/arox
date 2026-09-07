@@ -41,8 +41,8 @@ from arox.core.session import (
     MODEL_MESSAGE_ID_KEY,
     AgentSession,
     CommandCompletedEvent,
-    CompactionEvent,
     ErrorEvent,
+    SessionEvent,
     user_input_ids_on,
 )
 from arox.core.types import (
@@ -53,6 +53,7 @@ from arox.core.types import (
     SessionTreeUpdate,
     TurnStateEvent,
 )
+from arox.plugins.compaction import CompactionEvent
 
 if TYPE_CHECKING:
     from arox.core.agent_runtime import AgentRuntime
@@ -214,8 +215,8 @@ def build_state_history(
     through_id: str | None = None,
 ) -> list[dict]:
     """Build the ordered history sent in a WebSocket state frame."""
-    items: Sequence[ModelMessage | CommandCompletedEvent | CompactionEvent] = (
-        session.build_io_timeline(through_id=through_id)
+    items: Sequence[ModelMessage | SessionEvent] = session.build_io_timeline(
+        through_id=through_id
     )
 
     timeline: list[dict] = []
@@ -259,7 +260,7 @@ def build_state_history(
                     "error": item.error,
                 }
             )
-        else:
+        elif isinstance(item, (ModelRequest, ModelResponse)):
             message_batch.append(item)
     flush_messages()
     return timeline

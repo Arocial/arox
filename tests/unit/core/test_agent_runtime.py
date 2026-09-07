@@ -1223,10 +1223,14 @@ async def test_inference_reports_journal_mismatch_without_repair(
     response = ModelResponse(parts=[TextPart(content="answer")])
 
     async def run(*args, **kwargs):
-        session.record_model_message(
-            ModelRequest.user_text_prompt("different") if divergent else request,
-            run_id="run",
-            sequence=0,
+        session.record(
+            ModelMessageEvent(
+                message=ModelRequest.user_text_prompt("different")
+                if divergent
+                else request,
+                run_id="run",
+                sequence=0,
+            )
         )
         return SimpleNamespace(
             output="answer", new_messages=lambda: [request, response]

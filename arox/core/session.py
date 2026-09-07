@@ -6,11 +6,28 @@ import json
 import logging
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Callable, Literal, Protocol, Union
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    ClassVar,
+    Literal,
+    Protocol,
+    TypeVar,
+    overload,
+)
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    SerializeAsAny,
+    field_validator,
+)
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
@@ -31,9 +48,13 @@ logger = logging.getLogger(__name__)
 
 
 MODEL_MESSAGE_ID_KEY = "arox_model_message_id"
+SessionEventT = TypeVar("SessionEventT", bound="SessionEvent")
 
 
 class SessionEvent(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    timeline_visible: ClassVar[bool] = False
     id: str = Field(default_factory=lambda: uuid.uuid4().hex)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     event_type: str
@@ -49,6 +70,7 @@ class ModelMessageEvent(SessionEvent):
 
 
 class CommandCompletedEvent(SessionEvent):
+    timeline_visible = True
     event_type: Literal["command_completed"] = "command_completed"
     client_input: ClientInput
     status: Literal["handled", "not_command", "unknown", "invalid", "error"]
@@ -57,20 +79,15 @@ class CommandCompletedEvent(SessionEvent):
 
 
 class UserInputEvent(SessionEvent):
+    timeline_visible = True
     event_type: Literal["user_input"] = "user_input"
     client_input: ClientInput
 
 
 class ErrorEvent(SessionEvent):
+    timeline_visible = True
     event_type: Literal["error"] = "error"
     error: str = ""
-
-
-class CompactionEvent(SessionEvent):
-    event_type: Literal["compaction"] = "compaction"
-    step_boundary: bool = False
-    trigger: Literal["manual", "token_threshold", "tool_request"] = "manual"
-    llm_context_id: str = ""
 
 
 class ContextResetEvent(SessionEvent):
@@ -79,17 +96,51 @@ class ContextResetEvent(SessionEvent):
     event_type: Literal["context_reset"] = "context_reset"
 
 
-AnySessionEvent = Annotated[
-    Union[
-        ModelMessageEvent,
-        ContextResetEvent,
-        CompactionEvent,
-        CommandCompletedEvent,
-        UserInputEvent,
-        ErrorEvent,
-    ],
-    Field(discriminator="event_type"),
-]
+_SESSION_EVENT_TYPES: dict[str, type[SessionEvent]] = {}
+
+
+def register_session_event(
+    event_cls: type[SessionEventT],
+) -> type[SessionEventT]:
+    """Register a journal event type for persistence round trips."""
+    event_type = event_cls.model_fields["event_type"].default
+    if not isinstance(event_type, str):
+        raise TypeError("session event_type must have a string default")
+    registered = _SESSION_EVENT_TYPES.get(event_type)
+    if registered is not None and registered is not event_cls:
+        raise ValueError(f"session event type {event_type!r} is already registered")
+    _SESSION_EVENT_TYPES[event_type] = event_cls
+    return event_cls
+
+
+for _event_cls in (
+    ModelMessageEvent,
+    ContextResetEvent,
+    CommandCompletedEvent,
+    UserInputEvent,
+    ErrorEvent,
+):
+    register_session_event(_event_cls)
+
+
+class SessionOperation(Protocol):
+    """A transient operation that may update a session and append events."""
+
+    def record_to(self, session: Session, /) -> Any: ...
+
+
+@dataclass(kw_only=True)
+class EventOperation:
+    """Append one event and optionally run its transient session update."""
+
+    event: SessionEvent
+    callback: Callable[[Session, SessionEvent], None] | None = None
+
+    def record_to(self, session: Session, /) -> SessionEvent:
+        event = session.record(self.event)
+        if self.callback is not None:
+            self.callback(session, event)
+        return event
 
 
 class Session(BaseModel):
@@ -101,7 +152,7 @@ class Session(BaseModel):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     forked_from: tuple[list[str], str] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
-    journal: list[AnySessionEvent] = Field(default_factory=list)
+    journal: list[SerializeAsAny[SessionEvent]] = Field(default_factory=list)
     # Session ids owned by this one (its subsessions).
     children: list[str] = Field(default_factory=list)
     initialized: bool = False
@@ -117,13 +168,50 @@ class Session(BaseModel):
         if self.manager:
             self.manager.notify_dirty(self)
 
-    def add_event(
+    @field_validator("journal", mode="before")
+    @classmethod
+    def _restore_event_types(cls, value: Any) -> Any:
+        if not isinstance(value, list):
+            return value
+        restored = []
+        for event in value:
+            if isinstance(event, SessionEvent) or not isinstance(event, dict):
+                restored.append(event)
+                continue
+            event_cls = _SESSION_EVENT_TYPES.get(event.get("event_type"), SessionEvent)
+            restored.append(event_cls.model_validate(event))
+        return restored
+
+    def _append_event(
         self,
-        event: AnySessionEvent,
-    ) -> AnySessionEvent:
+        event: SessionEventT,
+    ) -> SessionEventT:
         self.journal.append(event)
         self.mark_dirty()
         return event
+
+    @overload
+    def record(self, change: SessionEventT, /) -> SessionEventT: ...
+
+    @overload
+    def record(self, change: SessionOperation, /) -> Any: ...
+
+    def record(self, change: SessionEvent | SessionOperation, /) -> Any:
+        """Record an event or a multi-event session operation."""
+        if isinstance(change, SessionEvent):
+            return self._append_event(change)
+        return change.record_to(self)
+
+    def restore_event_types(self) -> None:
+        """Upgrade fallback events after their defining plugin is imported."""
+        for index, event in enumerate(self.journal):
+            if type(event) is not SessionEvent:
+                continue
+            event_cls = _SESSION_EVENT_TYPES.get(event.event_type)
+            if event_cls is not None and event_cls is not SessionEvent:
+                self.journal[index] = event_cls.model_validate(
+                    event.model_dump(mode="python")
+                )
 
     def index_of_event(self, event_id: str) -> int | None:
         for i, ev in enumerate(self.journal):
@@ -228,11 +316,15 @@ class AgentSession(Session):
         )
         context_id = child.run_info.llm_context_id
         assert context_id is not None
-        child.record_model_messages(
-            copy.deepcopy(model_messages),
-            run_id=context_id,
-            context_only=True,
-        )
+        for sequence, message in enumerate(copy.deepcopy(model_messages)):
+            child.record(
+                ModelMessageEvent(
+                    run_id=context_id,
+                    sequence=sequence,
+                    message=message,
+                    context_only=True,
+                )
+            )
         self.children.append(child.id)
         if self.manager:
             self.manager._track(self, self.owner)
@@ -242,16 +334,14 @@ class AgentSession(Session):
             await self.runtime.broadcast_session_tree()
         return child
 
-    def add_event(self, event: AnySessionEvent) -> AnySessionEvent:
+    def _append_event(self, event: SessionEventT) -> SessionEventT:
+        if not event.agent_name:
+            event.agent_name = self.agent_name
         if isinstance(event, ContextResetEvent):
             self._message_history = []
         elif isinstance(event, ModelMessageEvent) and self._message_history is not None:
             self._message_history.append(event.message)
-        return super().add_event(event)
-
-    def reset_message_history(self) -> None:
-        """Record a context reset without adding replacement messages."""
-        self.add_event(ContextResetEvent(agent_name=self.agent_name))
+        return super()._append_event(event)
 
     @property
     def message_history(self) -> list[ModelMessage]:
@@ -271,7 +361,7 @@ class AgentSession(Session):
         self,
         *,
         through_id: str | None = None,
-    ) -> tuple[ModelMessage | CommandCompletedEvent | CompactionEvent, ...]:
+    ) -> tuple[ModelMessage | SessionEvent, ...]:
         """Project history through the given entry (inclusive), or the latest entry."""
         end = len(self.journal)
         if through_id is not None:
@@ -279,7 +369,7 @@ class AgentSession(Session):
             if index is None:
                 raise ValueError(f"journal event {through_id} not found")
             end = index + 1
-        timeline: list[ModelMessage | CommandCompletedEvent | CompactionEvent] = []
+        timeline: list[ModelMessage | SessionEvent] = []
         rendered_user_input_ids: set[str] = set()
 
         for index in range(end):
@@ -310,10 +400,6 @@ class AgentSession(Session):
                 metadata.setdefault(MODEL_MESSAGE_ID_KEY, event.id)
                 rendered.metadata = metadata
                 timeline.append(rendered)
-            elif isinstance(event, CommandCompletedEvent):
-                timeline.append(event)
-            elif isinstance(event, CompactionEvent):
-                timeline.append(event)
             elif isinstance(event, ErrorEvent):
                 timeline.append(
                     ModelResponse(
@@ -322,76 +408,10 @@ class AgentSession(Session):
                         metadata={MODEL_MESSAGE_ID_KEY: event.id},
                     )
                 )
+            elif event.timeline_visible:
+                timeline.append(event)
 
         return tuple(timeline)
-
-    def record_model_message(
-        self,
-        message: ModelMessage,
-        *,
-        run_id: str,
-        sequence: int,
-        context_only: bool = False,
-    ) -> ModelMessageEvent:
-        event = ModelMessageEvent(
-            agent_name=self.agent_name,
-            run_id=run_id,
-            sequence=sequence,
-            message=message,
-            context_only=context_only,
-        )
-        self.add_event(event)
-        return event
-
-    def record_model_messages(
-        self,
-        messages: Sequence[ModelMessage],
-        *,
-        run_id: str,
-        context_only: bool = False,
-    ) -> None:
-        for sequence, message in enumerate(messages):
-            self.record_model_message(
-                message, run_id=run_id, sequence=sequence, context_only=context_only
-            )
-
-    def record_command_completed(
-        self,
-        client_input: ClientInput,
-        status: Literal["handled", "not_command", "unknown", "invalid", "error"],
-        *,
-        output: str | None = None,
-        error: str | None = None,
-    ) -> CommandCompletedEvent:
-        input_id = client_input.server_message_id
-        assert input_id is not None
-        event = CommandCompletedEvent(
-            id=input_id,
-            client_input=client_input,
-            status=status,
-            output=output,
-            error=error,
-            agent_name=self.agent_name,
-        )
-        self.add_event(event)
-        return event
-
-    def record_user_input(self, client_input: ClientInput) -> None:
-        input_id = client_input.server_message_id
-        assert input_id is not None
-        payload = client_input.payload
-        assert isinstance(payload, MessagePayload)
-
-        self.add_event(
-            UserInputEvent(
-                id=input_id, client_input=client_input, agent_name=self.agent_name
-            )
-        )
-        last_user_messages = self.metadata.get("last_user_messages", [])
-        text = payload.text_content
-        if text:
-            last_user_messages.append(text)
-        self.metadata["last_user_messages"] = last_user_messages[-2:]
 
     @staticmethod
     def format_error(error: BaseException | str) -> str:
@@ -400,12 +420,6 @@ class AgentSession(Session):
         if isinstance(error, str):
             return error
         return f"{type(error).__name__}: {error!s}"
-
-    def record_error_event(self, error: BaseException | str) -> str:
-        """Record an error event without changing task scheduling state."""
-        err_msg = self.format_error(error)
-        self.add_event(ErrorEvent(error=err_msg, agent_name=self.agent_name))
-        return err_msg
 
     async def fork_at(
         self,

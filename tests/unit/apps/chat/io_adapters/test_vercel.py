@@ -36,6 +36,7 @@ from arox.core.session import (
     ErrorEvent,
     FileSessionStore,
     SessionManager,
+    UserInputEvent,
 )
 from arox.core.types import (
     USER_INPUT_ID_KEY,
@@ -355,17 +356,24 @@ def test_state_timeline_preserves_message_command_order():
     message_input = normalize_client_input(
         ClientInput(payload=MessagePayload(content="before"))
     )
-    session.record_user_input(message_input)
-    session.record_command_completed(
-        normalize_client_input(
-            ClientInput(
-                payload=CommandPayload(command="/info", status="accepted"),
-                client_message_id="client-command-1",
-                server_message_id="server-command-1",
-            )
-        ),
-        "handled",
-        output="details",
+    assert message_input.server_message_id is not None
+    session.record(
+        UserInputEvent(id=message_input.server_message_id, client_input=message_input)
+    )
+    command_input = normalize_client_input(
+        ClientInput(
+            payload=CommandPayload(command="/info", status="accepted"),
+            client_message_id="client-command-1",
+            server_message_id="server-command-1",
+        )
+    )
+    session.record(
+        CommandCompletedEvent(
+            id="server-command-1",
+            client_input=command_input,
+            status="handled",
+            output="details",
+        )
     )
     payload = message_input.payload
     assert isinstance(payload, MessagePayload)
@@ -395,7 +403,10 @@ def test_state_timeline_includes_compaction_marker_and_stable_message_ids():
     client_input = normalize_client_input(
         ClientInput(payload=MessagePayload(content="question"))
     )
-    session.record_user_input(client_input)
+    assert client_input.server_message_id is not None
+    session.record(
+        UserInputEvent(id=client_input.server_message_id, client_input=client_input)
+    )
     response = ModelResponse(parts=[TextPart(content="answer")])
     record_messages(session, [response])
     response_event = next(

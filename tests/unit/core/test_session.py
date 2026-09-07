@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import RLock
 from types import SimpleNamespace
+from typing import Literal
 from unittest.mock import AsyncMock
 
 import pytest
@@ -21,11 +22,16 @@ from arox.core.io import AbstractIOAdapter
 from arox.core.session import (
     AgentSession,
     CommandCompletedEvent,
+    ContextResetEvent,
     ErrorEvent,
+    EventOperation,
     FileSessionStore,
     ModelMessageEvent,
+    Session,
+    SessionEvent,
     SessionManager,
     UserInputEvent,
+    register_session_event,
 )
 from arox.core.types import (
     ClientInput,
@@ -59,6 +65,19 @@ class _StubIOAdapter(AbstractIOAdapter):
         pass
 
 
+@register_session_event
+class ExtensionEvent(SessionEvent):
+    timeline_visible = True
+    event_type: Literal["test_extension"] = "test_extension"
+    value: str
+
+
+class LateExtensionEvent(SessionEvent):
+    timeline_visible = True
+    event_type: Literal["test_late_extension"] = "test_late_extension"
+    value: str
+
+
 def _user_turn(text: str) -> tuple[UserInputEvent, ModelRequest]:
     user_input = _message_input(text)
     payload = user_input.payload
@@ -78,17 +97,86 @@ def _record_step(
     new_messages = [message for message in messages if id(message) not in previous]
     run_id = uuid.uuid4().hex
     for sequence, message in enumerate(new_messages):
-        session.record_model_message(message, run_id=run_id, sequence=sequence)
+        session.record(
+            ModelMessageEvent(run_id=run_id, sequence=sequence, message=message)
+        )
+
+
+def _add_user_input(session: AgentSession, client_input: ClientInput) -> None:
+    input_id = client_input.server_message_id
+    assert input_id is not None
+
+    def update_recent(target: Session, event: SessionEvent) -> None:
+        assert isinstance(event, UserInputEvent)
+        payload = event.client_input.payload
+        assert isinstance(payload, MessagePayload)
+        recent = target.metadata.get("last_user_messages", [])
+        if payload.text_content:
+            recent.append(payload.text_content)
+        target.metadata["last_user_messages"] = recent[-2:]
+
+    session.record(
+        EventOperation(
+            event=UserInputEvent(id=input_id, client_input=client_input),
+            callback=update_recent,
+        )
+    )
+
+
+def _add_command(
+    session: AgentSession,
+    client_input: ClientInput,
+    status: Literal["handled", "not_command", "unknown", "invalid", "error"] = (
+        "handled"
+    ),
+    *,
+    output: str | None = None,
+) -> CommandCompletedEvent:
+    input_id = client_input.server_message_id
+    assert input_id is not None
+    return session.record(
+        CommandCompletedEvent(
+            id=input_id,
+            client_input=client_input,
+            status=status,
+            output=output,
+        )
+    )
 
 
 class TestAgentSession:
     def test_add_event(self):
         agent_session = AgentSession(agent_name="main")
-        event = agent_session.add_event(
+        event = agent_session.record(
             UserInputEvent(client_input=_message_input("hello"))
         )
         assert event.event_type == "user_input"
         assert len(agent_session.journal) == 1
+
+    def test_registered_extension_event_round_trip(self):
+        session = AgentSession(agent_name="main")
+        session.record(ExtensionEvent(value="plugin state"))
+
+        restored = AgentSession.model_validate_json(session.model_dump_json())
+
+        event = restored.journal[0]
+        assert isinstance(event, ExtensionEvent)
+        assert event.value == "plugin state"
+        assert restored.build_io_timeline() == (event,)
+
+    def test_extension_event_can_be_upgraded_after_plugin_import(self):
+        session = AgentSession(agent_name="main")
+        session.record(LateExtensionEvent(value="late plugin state"))
+        restored = AgentSession.model_validate_json(session.model_dump_json())
+        assert type(restored.journal[0]) is SessionEvent
+
+        register_session_event(LateExtensionEvent)
+        restored.restore_event_types()
+
+        event = restored.journal[0]
+        assert isinstance(event, LateExtensionEvent)
+        assert event.value == "late plugin state"
+        assert restored.build_io_timeline() == (event,)
 
     def test_runtime_is_not_persisted(self):
         agent_session = AgentSession(agent_name="main")
@@ -110,14 +198,14 @@ class TestAgentSession:
     def test_user_input_ids_are_read_from_message_content(self):
         agent_session = AgentSession(agent_name="main")
         first_input, first_request = _user_turn("hello")
-        agent_session.add_event(first_input)
+        agent_session.record(first_input)
         messages_step1 = [
             first_request,
             ModelResponse(parts=[TextPart(content="hi")]),
         ]
         _record_step(agent_session, messages_step1)
         second_input, second_request = _user_turn("bye")
-        agent_session.add_event(second_input)
+        agent_session.record(second_input)
         messages_step2 = [
             *messages_step1,
             second_request,
@@ -134,13 +222,15 @@ class TestAgentSession:
     async def test_fork_preserves_journal_messages_before_user_input(self):
         agent_session = AgentSession(agent_name="main")
         first_input, first_request = _user_turn("first")
-        agent_session.add_event(first_input)
+        agent_session.record(first_input)
         response = ModelResponse(parts=[TextPart(content="reply")])
         _record_step(agent_session, [first_request, response])
         inserted = ModelRequest(parts=[UserPromptPart(content="inserted context")])
-        agent_session.record_model_message(inserted, run_id="injected", sequence=0)
+        agent_session.record(
+            ModelMessageEvent(run_id="injected", sequence=0, message=inserted)
+        )
         second_input, second_request = _user_turn("second")
-        agent_session.add_event(second_input)
+        agent_session.record(second_input)
         _record_step(
             agent_session,
             [
@@ -162,7 +252,7 @@ class TestAgentSession:
     def test_compaction_resets_context_without_removing_journal_messages(self):
         agent_session = AgentSession(agent_name="main")
         old_input, old_request = _user_turn("old msg")
-        agent_session.add_event(old_input)
+        agent_session.record(old_input)
         old_messages = [
             old_request,
             ModelResponse(parts=[TextPart(content="old reply")]),
@@ -197,14 +287,14 @@ class TestAgentSession:
     async def test_fork_at_event(self):
         agent_session = AgentSession(agent_name="main", path=["parent", "main"])
         first_input, first_request = _user_turn("first")
-        agent_session.add_event(first_input)
+        agent_session.record(first_input)
         first_messages = [
             first_request,
             ModelResponse(parts=[TextPart(content="r1")]),
         ]
         _record_step(agent_session, first_messages)
         anchor, second_request = _user_turn("second")
-        agent_session.add_event(anchor)
+        agent_session.record(anchor)
         _record_step(
             agent_session,
             [
@@ -237,14 +327,14 @@ class TestAgentSession:
     async def test_fork_uses_archived_history_after_compaction(self):
         agent_session = AgentSession(agent_name="main")
         first_input, first_request = _user_turn("first")
-        agent_session.add_event(first_input)
+        agent_session.record(first_input)
         first_messages = [
             first_request,
             ModelResponse(parts=[TextPart(content="r1")]),
         ]
         _record_step(agent_session, first_messages)
         second_input, second_request = _user_turn("second")
-        agent_session.add_event(second_input)
+        agent_session.record(second_input)
 
         compacted = [
             ModelRequest(parts=[UserPromptPart(content="summary including second")])
@@ -265,7 +355,7 @@ class TestAgentSession:
     async def test_fork_at_none_creates_empty(self):
         agent_session = AgentSession(agent_name="main", path=["parent", "main"])
         agent_session.owner = AgentSession(agent_name="newowner", path=["newowner"])
-        agent_session.add_event(UserInputEvent(client_input=_message_input("first")))
+        agent_session.record(UserInputEvent(client_input=_message_input("first")))
 
         forked = await agent_session.fork_at(None)
         assert forked.journal == []
@@ -287,7 +377,7 @@ class TestAgentSession:
     @pytest.mark.asyncio
     async def test_fork_at_missing_event_raises(self):
         agent_session = AgentSession(agent_name="main")
-        agent_session.add_event(UserInputEvent(client_input=_message_input("first")))
+        agent_session.record(UserInputEvent(client_input=_message_input("first")))
         with pytest.raises(ValueError):
             agent_session.owner = AgentSession(agent_name="owner", path=["owner"])
             await agent_session.fork_at("does-not-exist")
@@ -298,11 +388,11 @@ class TestAgentSession:
         agent_session = AgentSession(agent_name="main", path=["parent", "main"])
         agent_session.owner = owner
         first_input, first_request = _user_turn("first")
-        agent_session.add_event(first_input)
+        agent_session.record(first_input)
         first_response = ModelResponse(parts=[TextPart(content="r1")])
         _record_step(agent_session, [first_request, first_response])
         anchor, second_request = _user_turn("second")
-        agent_session.add_event(anchor)
+        agent_session.record(anchor)
         _record_step(
             agent_session,
             [
@@ -322,9 +412,10 @@ class TestAgentSession:
         agent_session = AgentSession(agent_name="main")
         user_event, request = _user_turn("analyze")
         response = ModelResponse(parts=[TextPart(content="analysis complete")])
-        agent_session.add_event(user_event)
+        agent_session.record(user_event)
 
-        agent_session.record_command_completed(
+        _add_command(
+            agent_session,
             _command_input("/info"),
             "handled",
             output="model details",
@@ -347,7 +438,7 @@ class TestAgentSession:
         agent_session = AgentSession(agent_name="main")
         user_event, request = _user_turn("old question")
         response = ModelResponse(parts=[TextPart(content="old answer")])
-        agent_session.add_event(user_event)
+        agent_session.record(user_event)
         record_messages(agent_session, [request, response])
 
         compact_history(agent_session, [], True, "compacted-context")
@@ -363,8 +454,8 @@ class TestAgentSession:
         first_event, first_request = _user_turn("first")
         pending_event, pending_request = _user_turn("pending")
         response = ModelResponse(parts=[TextPart(content="done")])
-        agent_session.add_event(first_event)
-        agent_session.add_event(pending_event)
+        agent_session.record(first_event)
+        agent_session.record(pending_event)
         record_messages(agent_session, [first_request, pending_request, response])
 
         snapshot = agent_session.build_io_timeline()
@@ -378,33 +469,27 @@ class TestAgentSession:
 
     def test_non_history_events_do_not_change_message_history(self):
         agent_session = AgentSession(agent_name="main")
-        agent_session.add_event(UserInputEvent(client_input=_message_input("hello")))
-        agent_session.add_event(
+        agent_session.record(UserInputEvent(client_input=_message_input("hello")))
+        agent_session.record(
             CommandCompletedEvent(
                 client_input=_command_input("/info"),
                 status="handled",
                 output="details",
             )
         )
-        agent_session.add_event(ErrorEvent(error="something"))
+        agent_session.record(ErrorEvent(error="something"))
         assert agent_session.message_history == []
 
     def test_last_user_messages_update(self):
         agent_session = AgentSession(agent_name="main")
-        agent_session.record_user_input(
-            _message_input("hello", server_message_id="id1")
-        )
+        _add_user_input(agent_session, _message_input("hello", server_message_id="id1"))
         assert agent_session.journal[-1].id == "id1"
         assert agent_session.metadata["last_user_messages"] == ["hello"]
 
-        agent_session.record_user_input(
-            _message_input("world", server_message_id="id2")
-        )
+        _add_user_input(agent_session, _message_input("world", server_message_id="id2"))
         assert agent_session.metadata["last_user_messages"] == ["hello", "world"]
 
-        agent_session.record_user_input(
-            _message_input("third", server_message_id="id3")
-        )
+        _add_user_input(agent_session, _message_input("third", server_message_id="id3"))
         assert agent_session.metadata["last_user_messages"] == ["world", "third"]
 
     def test_first_class_task_fields(self):
@@ -431,10 +516,10 @@ class TestAgentSession:
         assert "runtime" not in dumped
         assert agent_session.runtime is runtime
 
-    def test_record_error_event(self):
+    def test_add_error_event(self):
         agent_session = AgentSession(agent_name="main")
 
-        agent_session.record_error_event("something crashed")
+        agent_session.record(ErrorEvent(error="something crashed"))
         event = agent_session.journal[-1]
         assert isinstance(event, ErrorEvent)
         assert event.error == "something crashed"
@@ -445,7 +530,7 @@ class TestAgentSession:
             agent_name="main",
             task_name="old_task",
         )
-        original.add_event(UserInputEvent(client_input=_message_input("hi")))
+        original.record(UserInputEvent(client_input=_message_input("hi")))
         forked = await original.fork_at(None)
         assert forked.task_name is None
         assert forked.target is None
@@ -630,14 +715,14 @@ class TestFileSessionStore:
         session = AgentSession(agent_name="coder", path=["coder"])
         agent_session = AgentSession(agent_name="sub", path=["coder", "sub"])
         first_input, first_request = _user_turn("hello")
-        agent_session.add_event(first_input)
+        agent_session.record(first_input)
         messages = [
             first_request,
             ModelResponse(parts=[TextPart(content="hi there")]),
         ]
         _record_step(agent_session, messages)
         second_input, _ = _user_turn("follow-up")
-        agent_session.add_event(second_input)
+        agent_session.record(second_input)
         compacted = [
             ModelRequest(parts=[UserPromptPart(content="conversation summary")])
         ]
@@ -763,10 +848,10 @@ class TestFileSessionStore:
     @pytest.mark.asyncio
     async def test_save_overwrites(self, store):
         agent_s = AgentSession(agent_name="main", path=["coder", "main"])
-        agent_s.add_event(UserInputEvent(client_input=_message_input("first")))
+        agent_s.record(UserInputEvent(client_input=_message_input("first")))
         await store.save_session(agent_s)
 
-        agent_s.add_event(UserInputEvent(client_input=_message_input("second")))
+        agent_s.record(UserInputEvent(client_input=_message_input("second")))
         await store.save_session(agent_s)
 
         loaded = await store.load_session(agent_s.path)
@@ -833,7 +918,7 @@ class TestFileSessionStore:
         assert await store.load_session(session.path) is None
         assert await manager.resolve(session.id) is session
 
-        session.record_user_input(_message_input("hello"))
+        _add_user_input(session, _message_input("hello"))
         await manager.persist(session)
 
         loaded = await store.load_session(session.path)
@@ -914,10 +999,10 @@ def test_message_history_cache_rebuilds_only_the_tail_and_updates_incrementally(
     record_messages(restored, [ModelRequest.user_text_prompt("next")])
     assert restored._message_history is cached
     assert len(restored.message_history) == 3
-    restored.add_event(ErrorEvent(error="unrelated"))
+    restored.record(ErrorEvent(error="unrelated"))
     assert len(restored.message_history) == 3
     assert journal.visited == 3
-    restored.reset_message_history()
+    restored.record(ContextResetEvent())
     assert restored.message_history == []
     assert journal.visited == 3
     assert "_message_history" not in restored.model_dump()
@@ -928,18 +1013,18 @@ def test_message_history_cache_rebuilds_only_the_tail_and_updates_incrementally(
 async def test_fork_discards_parent_history_cache_and_retains_reset_messages():
     session = AgentSession(agent_name="main")
     first, request = _user_turn("first")
-    session.add_event(first)
+    session.record(first)
     record_messages(session, [request])
     summary = ModelRequest.user_text_prompt("summary")
     reset_history(session, [summary])
     second, request = _user_turn("second")
-    session.add_event(second)
+    session.record(second)
     record_messages(session, [request])
     assert session.message_history == [summary, request]
 
     forked = await session.fork_at(second.id)
     assert forked.message_history == [summary]
-    forked.reset_message_history()
+    forked.record(ContextResetEvent())
     assert session.message_history == [summary, request]
     assert (await session.fork_at(first.id)).message_history == []
     assert (await session.fork_at(None)).message_history == []
@@ -951,21 +1036,19 @@ def test_io_timeline_boundary_is_inclusive_and_rejects_missing_ids():
     with pytest.raises(ValueError, match="not found"):
         session.build_io_timeline(through_id="missing")
     user, request = _user_turn("question")
-    session.add_event(user)
+    session.record(user)
     record_messages(session, [request])
-    command = session.record_command_completed(
-        _command_input("/info"), "handled", output="details"
-    )
+    command = _add_command(session, _command_input("/info"), output="details")
     response = ModelResponse(parts=[TextPart(content="answer")])
     record_messages(session, [response])
-    session.reset_message_history()
+    session.record(ContextResetEvent())
     reset_id = session.journal[-1].id
     assert len(session.build_io_timeline(through_id=user.id)) == 1
     before_answer = session.build_io_timeline(through_id=command.id)
     assert len(before_answer) == 2
     assert before_answer[-1] is command
     assert len(session.build_io_timeline(through_id=reset_id)) == 3
-    session.record_error_event("later error")
+    session.record(ErrorEvent(error="later error"))
     assert len(session.build_io_timeline(through_id=reset_id)) == 3
     assert len(session.build_io_timeline()) == 4
 
@@ -973,10 +1056,10 @@ def test_io_timeline_boundary_is_inclusive_and_rejects_missing_ids():
 def test_reset_is_independent_of_its_cause_and_replacement_messages():
     session = AgentSession(agent_name="main")
     record_messages(session, [ModelRequest.user_text_prompt("old")])
-    session.record_command_completed(_command_input("/clear"), "handled")
+    _add_command(session, _command_input("/clear"))
     assert len(session.message_history) == 1
     before_reset = len(session.journal)
-    session.reset_message_history()
+    session.record(ContextResetEvent())
     assert len(session.journal) == before_reset + 1
     assert session.message_history == []
     assert session.journal[-1].event_type == "context_reset"
@@ -984,7 +1067,11 @@ def test_reset_is_independent_of_its_cause_and_replacement_messages():
     assert "messages" not in session.journal[-1].model_dump()
     assert len(session.build_io_timeline()) == 2  # Old message and the command.
     replacement = ModelRequest.user_text_prompt("new context")
-    session.record_model_messages([replacement], run_id="new", context_only=True)
+    session.record(
+        ModelMessageEvent(
+            run_id="new", sequence=0, message=replacement, context_only=True
+        )
+    )
     assert session.message_history == [replacement]
     assert len(session.build_io_timeline()) == 2
     restored = AgentSession.model_validate_json(session.model_dump_json())

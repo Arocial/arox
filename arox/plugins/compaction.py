@@ -7,12 +7,53 @@ from pydantic_ai import ModelMessage, ModelRequest, RunContext, UserPromptPart
 
 from arox.core.agent_runtime import AgentRuntime, ContinueAgentRun
 from arox.core.plugin import CommandEvent, CommandSpec, Plugin, tool
-from arox.core.session import CompactionEvent
+from arox.core.session import (
+    AgentSession,
+    ContextResetEvent,
+    ModelMessageEvent,
+    Session,
+    SessionEvent,
+    register_session_event,
+)
 from arox.plugins.slots import PERSISTENT_CONTEXT
 
 logger = logging.getLogger(__name__)
 
 COMPACTION_AGENT_NAME = "compaction"
+
+
+@register_session_event
+class CompactionEvent(SessionEvent):
+    timeline_visible = True
+    event_type: Literal["compaction"] = "compaction"
+    step_boundary: bool = False
+    trigger: Literal["manual", "token_threshold", "tool_request"] = "manual"
+    llm_context_id: str = ""
+
+
+@dataclass(kw_only=True)
+class ApplyCompaction:
+    event: CompactionEvent
+    messages: list[ModelMessage]
+
+    def record_to(self, session: Session, /) -> CompactionEvent:
+        if not isinstance(session, AgentSession):
+            raise TypeError("compaction requires an agent session")
+
+        session.run_info.llm_context_id = self.event.llm_context_id
+        session.run_info.context_tokens = 0
+        event = session.record(self.event)
+        session.record(ContextResetEvent())
+        for sequence, message in enumerate(self.messages):
+            session.record(
+                ModelMessageEvent(
+                    run_id=self.event.llm_context_id,
+                    sequence=sequence,
+                    message=message,
+                    context_only=True,
+                )
+            )
+        return event
 
 
 @dataclass
@@ -112,19 +153,17 @@ class CompactionPlugin(Plugin):
         """Commit replacement context and its visible marker together."""
         session = self.runtime.session
         context_id = str(uuid.uuid4())
-        session.run_info.llm_context_id = context_id
-        session.run_info.context_tokens = 0
         # Commit synchronously: the cause, the reset, then the replacement context.
-        session.add_event(
-            CompactionEvent(
-                agent_name=session.agent_name,
-                step_boundary=trigger == "manual",
-                trigger=trigger,
-                llm_context_id=context_id,
+        session.record(
+            ApplyCompaction(
+                messages=compacted,
+                event=CompactionEvent(
+                    step_boundary=trigger == "manual",
+                    trigger=trigger,
+                    llm_context_id=context_id,
+                ),
             )
         )
-        session.reset_message_history()
-        session.record_model_messages(compacted, run_id=context_id, context_only=True)
 
     async def history_processor(
         self,
