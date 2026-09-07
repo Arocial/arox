@@ -3,10 +3,11 @@ import logging
 import threading
 from abc import ABC, abstractmethod
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from pydantic_ai import (
+    PartDeltaEvent,
     PartEndEvent,
     PartStartEvent,
     TextPart,
@@ -35,6 +36,8 @@ class IOEndpoint:
     def __init__(self):
         self._peer: IOEndpoint | None = None
         self._cached_events: list[Any] = []
+        self._cached_part_starts: dict[int, int] = {}
+        self._cached_part_ends: set[int] = set()
         self._inbox: asyncio.Queue[Any] = asyncio.Queue()
         self._closed = False
         self._disconnected = asyncio.Event()
@@ -80,11 +83,52 @@ class IOEndpoint:
         for event in self._cached_events:
             peer._inbox.put_nowait(event)
 
+    def _cache_event(self, event: Any) -> None:
+        if isinstance(event, PartStartEvent):
+            start_position = self._cached_part_starts.get(event.index)
+            if start_position is not None and event.index not in self._cached_part_ends:
+                self._cached_events[start_position] = event
+            else:
+                self._cached_part_starts[event.index] = len(self._cached_events)
+                self._cached_part_ends.discard(event.index)
+                self._cached_events.append(event)
+            return
+
+        if isinstance(event, PartDeltaEvent):
+            start_position = self._cached_part_starts.get(event.index)
+            if start_position is not None and event.index not in self._cached_part_ends:
+                start = self._cached_events[start_position]
+                if isinstance(start, PartStartEvent):
+                    self._cached_events[start_position] = replace(
+                        start,
+                        part=event.delta.apply(start.part),
+                    )
+                    return
+            self._cached_events.append(event)
+            return
+
+        if isinstance(event, PartEndEvent):
+            start_position = self._cached_part_starts.get(event.index)
+            if start_position is not None and event.index not in self._cached_part_ends:
+                start = self._cached_events[start_position]
+                if isinstance(start, PartStartEvent):
+                    self._cached_events[start_position] = replace(
+                        start,
+                        part=event.part,
+                    )
+            self._cached_events.append(event)
+            self._cached_part_ends.add(event.index)
+            return
+
+        self._cached_part_starts.clear()
+        self._cached_part_ends.clear()
+        self._cached_events.append(event)
+
     def _send_event(self, event: Any) -> None:
         with self._state_lock:
             if self._closed:
                 raise RuntimeError("IO endpoint is closed.")
-            self._cached_events.append(event)
+            self._cache_event(event)
             if self._peer is not None:
                 self._peer._inbox.put_nowait(event)
 
@@ -219,6 +263,8 @@ class AgentIOEndpoint(IOEndpoint):
                 raise RuntimeError("IO endpoint is closed.")
             self._snapshot_journal_id = journal_id
             self._cached_events.clear()
+            self._cached_part_starts.clear()
+            self._cached_part_ends.clear()
 
     def _replay_to(self, peer: IOEndpoint) -> None:
         peer._inbox.put_nowait(SnapshotEvent(self._snapshot_journal_id))

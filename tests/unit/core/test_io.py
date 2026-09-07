@@ -4,7 +4,17 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
-from pydantic_ai import PartEndEvent, PartStartEvent, TextPart
+from pydantic_ai import (
+    PartDeltaEvent,
+    PartEndEvent,
+    PartStartEvent,
+    TextPart,
+    TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
+    ToolCallPart,
+    ToolCallPartDelta,
+)
 
 from arox.core.io import AbstractIOAdapter, AgentIOEndpoint, IOEndpoint, SnapshotEvent
 from arox.core.types import TurnStateEvent
@@ -245,3 +255,117 @@ async def test_checkpoint_replays_only_the_live_tail():
     endpoint.pair(peer)
     assert await peer.receive() == SnapshotEvent("completed")
     assert await peer.receive() is pending
+
+
+@pytest.mark.asyncio
+async def test_replay_compacts_part_deltas_without_changing_live_stream():
+    endpoint = AgentIOEndpoint()
+    connected = IOEndpoint()
+    endpoint.pair(connected)
+    assert await connected.receive() == SnapshotEvent(None)
+
+    start = PartStartEvent(index=0, part=TextPart(content="Hel"))
+    first_delta = PartDeltaEvent(
+        index=0,
+        delta=TextPartDelta(content_delta="lo"),
+    )
+    second_delta = PartDeltaEvent(
+        index=0,
+        delta=TextPartDelta(content_delta=" world"),
+    )
+    end = PartEndEvent(index=0, part=TextPart(content="Hello world"))
+
+    for event in (start, first_delta, second_delta, end):
+        await endpoint.send(event)
+
+    assert [await connected.receive() for _ in range(4)] == [
+        start,
+        first_delta,
+        second_delta,
+        end,
+    ]
+
+    endpoint.disconnect()
+    replacement = IOEndpoint()
+    endpoint.pair(replacement)
+
+    assert await replacement.receive() == SnapshotEvent(None)
+    replay_start = await replacement.receive()
+    replay_end = await replacement.receive()
+    assert isinstance(replay_start, PartStartEvent)
+    assert replay_start.part == TextPart(content="Hello world")
+    assert replay_end is end
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(replacement.receive(), timeout=0.01)
+
+
+@pytest.mark.asyncio
+async def test_replay_compacts_incomplete_thinking_and_tool_call_parts():
+    endpoint = AgentIOEndpoint()
+    await endpoint.send(PartStartEvent(index=0, part=ThinkingPart(content="Consider")))
+    await endpoint.send(
+        PartDeltaEvent(
+            index=0,
+            delta=ThinkingPartDelta(content_delta=" this"),
+        )
+    )
+    await endpoint.send(
+        PartStartEvent(
+            index=1,
+            part=ToolCallPart("search", '{"query":', "call-1"),
+        )
+    )
+    await endpoint.send(
+        PartDeltaEvent(
+            index=1,
+            delta=ToolCallPartDelta(args_delta='"pydantic"}'),
+        )
+    )
+
+    peer = IOEndpoint()
+    endpoint.pair(peer)
+
+    assert await peer.receive() == SnapshotEvent(None)
+    thinking = await peer.receive()
+    tool_call = await peer.receive()
+    assert isinstance(thinking, PartStartEvent)
+    assert thinking.part == ThinkingPart(content="Consider this")
+    assert isinstance(tool_call, PartStartEvent)
+    assert tool_call.part == ToolCallPart(
+        "search",
+        '{"query":"pydantic"}',
+        "call-1",
+    )
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(peer.receive(), timeout=0.01)
+
+
+@pytest.mark.asyncio
+async def test_non_stream_event_starts_a_new_replay_compaction_segment():
+    endpoint = AgentIOEndpoint()
+    completed = TextPart(content="completed")
+    pending = TextPart(content="pending")
+    boundary = TurnStateEvent(busy=True)
+
+    await endpoint.send(PartStartEvent(index=0, part=TextPart(content="comp")))
+    await endpoint.send(
+        PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="leted"))
+    )
+    await endpoint.send(PartEndEvent(index=0, part=completed))
+    await endpoint.send(boundary)
+    await endpoint.send(PartStartEvent(index=0, part=pending))
+
+    peer = IOEndpoint()
+    endpoint.pair(peer)
+
+    assert await peer.receive() == SnapshotEvent(None)
+    first_start = await peer.receive()
+    first_end = await peer.receive()
+    assert isinstance(first_start, PartStartEvent)
+    assert first_start.part == completed
+    assert isinstance(first_end, PartEndEvent)
+    assert first_end.part == completed
+    assert await peer.receive() is boundary
+    second_start = await peer.receive()
+    assert isinstance(second_start, PartStartEvent)
+    assert second_start.part == pending
