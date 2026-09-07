@@ -85,6 +85,7 @@ Server-specific frames include:
 | `cmd-command-completed` | A normalized command input finished dispatch, with its status and optional output or error |
 | `cmd-turn-state` | The retained turn entered or left its busy reading epoch; `busy=false` is ordered after its final output chunk |
 | `cmd-session-tree` | Updated recursive session view |
+| `compaction` | The model context was compacted; carries the same marker fields used in state history |
 
 Client payloads:
 

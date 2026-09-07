@@ -137,13 +137,13 @@ class CompactionPlugin(Plugin):
             if outcome.status != "compacted":
                 return outcome.output
 
-            self._apply_compaction(
+            await self._apply_compaction(
                 outcome.messages,
                 trigger="manual",
             )
             return outcome.output
 
-    def _apply_compaction(
+    async def _apply_compaction(
         self,
         compacted: list[ModelMessage],
         *,
@@ -153,7 +153,7 @@ class CompactionPlugin(Plugin):
         session = self.runtime.session
         context_id = str(uuid.uuid4())
         # Commit synchronously: the cause, the reset, then the replacement context.
-        session.record(
+        event = session.record(
             ApplyCompaction(
                 messages=compacted,
                 event=CompactionEvent(
@@ -162,6 +162,7 @@ class CompactionPlugin(Plugin):
                 ),
             )
         )
+        await self.runtime.agent_ep.send(event)
 
     async def history_processor(
         self,
@@ -193,7 +194,7 @@ class CompactionPlugin(Plugin):
         if outcome.status != "compacted":
             return messages
 
-        self._apply_compaction(
+        await self._apply_compaction(
             outcome.messages,
             trigger=trigger,
         )

@@ -223,6 +223,7 @@ async def test_auto_compaction_compacts_mid_tool_loop():
     assert [type(e) for e in agent.session.build_io_timeline()] == [CompactionEvent]
     compaction = cast(CompactionEvent, agent.session.build_io_timeline()[0])
     assert compaction.trigger == "token_threshold"
+    assert agent.sent == [compaction]
     assert agent.run_info.llm_context_id != "ctx-original"
     assert agent.run_info.context_tokens == 0
 
@@ -339,6 +340,7 @@ async def test_compact_tool_defers_compaction_until_history_processing():
     assert [type(e) for e in agent.session.build_io_timeline()] == [CompactionEvent]
     compaction = cast(CompactionEvent, agent.session.build_io_timeline()[0])
     assert compaction.trigger == "tool_request"
+    assert agent.sent == [compaction]
 
     second_out = await plugin.history_processor(_ctx(0), out)
 
@@ -357,10 +359,10 @@ async def test_manual_compact_records_event_and_replaces_history():
     result = await plugin.handle_compact(CompactEvent(extra_instructions=""))
 
     assert result == "Conversation history compacted successfully."
-    assert agent.sent == []
     assert [type(e) for e in agent.session.build_io_timeline()] == [CompactionEvent]
     compaction = cast(CompactionEvent, agent.session.build_io_timeline()[0])
     assert compaction.trigger == "manual"
+    assert agent.sent == [compaction]
     assert agent.run_info.llm_context_id != "ctx-original"
     # Manual compaction replaces the live history with the summary base.
     assert "SUMMARY" in _first_text(agent.message_history[0])

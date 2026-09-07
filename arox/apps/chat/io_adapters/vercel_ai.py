@@ -209,6 +209,16 @@ def dump_ui_messages(
     ]
 
 
+def dump_compaction_event(event: CompactionEvent) -> dict:
+    return {
+        "type": "compaction",
+        "event_id": event.id,
+        "trigger": event.trigger,
+        "llm_context_id": event.llm_context_id,
+        "timestamp": event.timestamp.isoformat(),
+    }
+
+
 def build_state_history(
     session: AgentSession,
     *,
@@ -235,15 +245,7 @@ def build_state_history(
     for item in items:
         if isinstance(item, CompactionEvent):
             flush_messages()
-            timeline.append(
-                {
-                    "type": "compaction",
-                    "event_id": item.id,
-                    "trigger": item.trigger,
-                    "llm_context_id": item.llm_context_id,
-                    "timestamp": item.timestamp.isoformat(),
-                }
-            )
+            timeline.append(dump_compaction_event(item))
         elif isinstance(item, CommandCompletedEvent):
             flush_messages()
             payload = item.client_input.payload
@@ -487,6 +489,9 @@ class VercelStreamIOAdapter(AbstractIOAdapter):
                     "error": event.error,
                 }
             )
+
+        elif isinstance(event, CompactionEvent):
+            messages.append(dump_compaction_event(event))
 
         elif isinstance(event, SessionTreeUpdate):
             if event.session_id == root_session.id:

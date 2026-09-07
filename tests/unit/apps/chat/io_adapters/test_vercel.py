@@ -46,6 +46,7 @@ from arox.core.types import (
     TurnStateEvent,
     normalize_client_input,
 )
+from arox.plugins.compaction import CompactionEvent
 from tests.history import compact_history, record_messages, reset_history
 
 
@@ -121,6 +122,34 @@ async def test_turn_state_event_becomes_command(busy):
     )
 
     assert frames == [{"type": "cmd-turn-state", "busy": busy}]
+
+
+@pytest.mark.asyncio
+async def test_compaction_event_becomes_live_marker():
+    timestamp = datetime(2026, 9, 7, 12, 30, tzinfo=UTC)
+    event = CompactionEvent(
+        id="compaction-1",
+        timestamp=timestamp,
+        trigger="token_threshold",
+        llm_context_id="context-2",
+    )
+    adapter = VercelStreamIOAdapter()
+
+    frames = await adapter._to_ui_messages(
+        event,
+        AgentSession(path=["root"], agent_name="coder"),
+        VercelAIEventStream(run_input=SubmitMessage(id="", messages=[])),
+    )
+
+    assert frames == [
+        {
+            "type": "compaction",
+            "event_id": "compaction-1",
+            "trigger": "token_threshold",
+            "llm_context_id": "context-2",
+            "timestamp": "2026-09-07T12:30:00+00:00",
+        }
+    ]
 
 
 @pytest.mark.asyncio
