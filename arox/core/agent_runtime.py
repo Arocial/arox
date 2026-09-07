@@ -108,13 +108,16 @@ class AgentRuntime:
         self.session = session
         self.uuid = session.id
         self.io_adapter = io_adapter
-        self.agent_ep = AgentIOEndpoint(session)
+        self.agent_ep = AgentIOEndpoint()
+        self.agent_ep.checkpoint(session.journal[-1].id if session.journal else None)
         self.agent_ep.register_event_handler(ClientInput, self.accept_input)
         self._stack = contextlib.AsyncExitStack()
         self._entered = False
         self.turn: Turn | None = None
         self._pending_user_inputs: deque[ClientInput] = deque()
         self._command_tasks: set[asyncio.Task[None]] = set()
+        self._active_command_ids: set[str] = set()
+        self._active_turns = 0
         self.history_lock = asyncio.Lock()
         self._slots: dict[Any, Any] = {}
         self.config_loader = parent_config_loader.for_workspace(self.workspace)
@@ -357,13 +360,26 @@ class AgentRuntime:
         client_input = normalize_client_input(client_input)
         if isinstance(client_input.payload, CommandPayload):
             client_input.payload.status = "accepted"
-            await self.agent_ep.send(client_input)
-            task = asyncio.create_task(
-                self._run_command(client_input),
-                name=f"agent-command:{self.session.id}",
-            )
+            command_id = client_input.server_message_id
+            assert command_id is not None
+            self._active_command_ids.add(command_id)
+            try:
+                await self.agent_ep.send(client_input)
+                task = asyncio.create_task(
+                    self._run_command(client_input),
+                    name=f"agent-command:{self.session.id}",
+                )
+            except BaseException:
+                self._active_command_ids.discard(command_id)
+                raise
             self._command_tasks.add(task)
-            task.add_done_callback(self._command_tasks.discard)
+
+            def command_done(completed: asyncio.Task[None]) -> None:
+                self._command_tasks.discard(completed)
+                self._active_command_ids.discard(command_id)
+                self._checkpoint_if_idle()
+
+            task.add_done_callback(command_done)
         else:
             self.start_turn(client_input)
         return client_input
@@ -373,6 +389,13 @@ class AgentRuntime:
             await self._dispatch_command(client_input)
         except Exception:
             logger.exception("Command processing failed")
+
+    def _checkpoint_if_idle(self) -> None:
+        """Advance replay to the latest durable boundary when work is quiescent."""
+        if self._active_turns or self._active_command_ids:
+            return
+        journal_id = self.session.journal[-1].id if self.session.journal else None
+        self.agent_ep.checkpoint(journal_id)
 
     def start_turn(self, client_input: ClientInput) -> Turn:
         """Consume input in the active turn, or start a new turn when idle."""
@@ -782,15 +805,22 @@ directory (the parent of SKILL.md) and use absolute paths in tool calls.
         if not isinstance(client_input.payload, MessagePayload):
             raise TypeError("run_turn requires a message input")
 
-        await self.agent_ep.send(TurnStateEvent(busy=True))
+        self._active_turns += 1
         try:
-            result = await self._run_turn_input(client_input)
-            while self._pending_user_inputs:
-                result = await self._run_turn_input(self._pending_user_inputs.popleft())
-            return result
+            await self.agent_ep.send(TurnStateEvent(busy=True))
+            try:
+                result = await self._run_turn_input(client_input)
+                while self._pending_user_inputs:
+                    result = await self._run_turn_input(
+                        self._pending_user_inputs.popleft()
+                    )
+                return result
+            finally:
+                self._pending_user_inputs.clear()
+                await self.agent_ep.send(TurnStateEvent(busy=False))
         finally:
-            self._pending_user_inputs.clear()
-            await self.agent_ep.send(TurnStateEvent(busy=False))
+            self._active_turns -= 1
+            self._checkpoint_if_idle()
 
     async def _record_user_input(self, client_input: ClientInput) -> None:
         payload = client_input.payload

@@ -551,7 +551,8 @@ async def test_websocket_starts_with_runtime_snapshot():
     session = AgentSession(path=["root"], agent_name="coder")
     runtime = SimpleNamespace(uuid=session.id)
     record_messages(session, [ModelRequest.user_text_prompt("committed")])
-    runtime.agent_ep = AgentIOEndpoint(session)
+    runtime.agent_ep = AgentIOEndpoint()
+    runtime.agent_ep.checkpoint(session.journal[-1].id)
     session.runtime = runtime
 
     class FakeWebSocket:
@@ -605,7 +606,7 @@ async def test_new_websocket_replaces_existing_connection():
     adapter = VercelStreamIOAdapter()
     session = AgentSession(path=["root"], agent_name="coder")
     runtime = SimpleNamespace(uuid=session.id)
-    runtime.agent_ep = AgentIOEndpoint(session)
+    runtime.agent_ep = AgentIOEndpoint()
     session.runtime = runtime
 
     class FakeWebSocket:
@@ -654,7 +655,7 @@ async def test_websocket_survives_runtime_restart():
     session = AgentSession(path=["root"], agent_name="coder")
 
     first_runtime = SimpleNamespace(uuid=session.id, session=session)
-    first_runtime.agent_ep = AgentIOEndpoint(session)
+    first_runtime.agent_ep = AgentIOEndpoint()
     session.runtime = first_runtime
 
     class FakeWebSocket:
@@ -686,7 +687,8 @@ async def test_websocket_survives_runtime_restart():
     websocket.state_sent.clear()
     second_runtime = SimpleNamespace(uuid=session.id, session=session)
     record_messages(session, [ModelRequest.user_text_prompt("after restart")])
-    second_runtime.agent_ep = AgentIOEndpoint(session)
+    second_runtime.agent_ep = AgentIOEndpoint()
+    second_runtime.agent_ep.checkpoint(session.journal[-1].id)
     session.runtime = second_runtime
     await adapter.on_runtime_start(cast(AgentRuntime, second_runtime))
     await asyncio.wait_for(websocket.state_sent.wait(), timeout=1)

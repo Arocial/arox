@@ -34,6 +34,8 @@ async def test_runtime_handles_slash_commands_without_starting_turn():
         SimpleNamespace(
             _run_command=AsyncMock(),
             _command_tasks=set(),
+            _active_command_ids=set(),
+            _checkpoint_if_idle=Mock(),
             session=SimpleNamespace(id="session"),
             agent_ep=SimpleNamespace(send=AsyncMock()),
             start_turn=start_turn,
@@ -73,6 +75,8 @@ async def test_runtime_accepts_structured_command_input():
         SimpleNamespace(
             _run_command=AsyncMock(),
             _command_tasks=set(),
+            _active_command_ids=set(),
+            _checkpoint_if_idle=Mock(),
             session=SimpleNamespace(id="session"),
             agent_ep=SimpleNamespace(send=AsyncMock()),
         ),

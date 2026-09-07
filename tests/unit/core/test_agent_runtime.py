@@ -133,7 +133,9 @@ async def test_accept_command_emits_accepted_client_input(monkeypatch):
     runtime = AgentRuntime.__new__(AgentRuntime)
     runtime.session = AgentSession(path=["command-session"], agent_name="main")
     runtime._command_tasks = set()
-    runtime.agent_ep = SimpleNamespace(send=AsyncMock())
+    runtime._active_command_ids = set()
+    runtime._active_turns = 0
+    runtime.agent_ep = SimpleNamespace(send=AsyncMock(), checkpoint=Mock())
     run_command = AsyncMock()
     monkeypatch.setattr(runtime, "_run_command", run_command)
     client_input = ClientInput(
@@ -148,6 +150,28 @@ async def test_accept_command_emits_accepted_client_input(monkeypatch):
     assert accepted.server_message_id
     runtime.agent_ep.send.assert_awaited_once_with(accepted)
     run_command.assert_awaited_once_with(accepted)
+
+
+@pytest.mark.asyncio
+async def test_completed_command_waits_for_active_turn_before_checkpoint(monkeypatch):
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime.session = AgentSession(path=["command-session"], agent_name="main")
+    runtime._command_tasks = set()
+    runtime._active_command_ids = set()
+    runtime._active_turns = 1
+    runtime.agent_ep = SimpleNamespace(send=AsyncMock(), checkpoint=Mock())
+    monkeypatch.setattr(runtime, "_run_command", AsyncMock())
+
+    await runtime.accept_input(ClientInput(payload=CommandPayload(command="/info")))
+    await asyncio.gather(*runtime._command_tasks)
+
+    assert not runtime._active_command_ids
+    runtime.agent_ep.checkpoint.assert_not_called()
+
+    runtime._active_turns = 0
+    runtime._checkpoint_if_idle()
+
+    runtime.agent_ep.checkpoint.assert_called_once_with(None)
 
 
 @pytest.mark.asyncio
@@ -798,7 +822,7 @@ system_prompt = "Hi."
     assert isinstance(session_snapshot[1], ModelResponse)
     assert session_snapshot[1].text == "RuntimeError: model failed"
 
-    assert runtime.agent_ep._safe_journal_id == runtime.session.journal[-1].id
+    assert runtime.agent_ep._snapshot_journal_id == runtime.session.journal[-1].id
 
 
 @pytest.mark.asyncio

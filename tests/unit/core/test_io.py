@@ -5,16 +5,9 @@ from typing import TYPE_CHECKING, cast
 
 import pytest
 from pydantic_ai import PartEndEvent, PartStartEvent, TextPart
-from pydantic_ai.messages import ModelResponse
 
 from arox.core.io import AbstractIOAdapter, AgentIOEndpoint, IOEndpoint, SnapshotEvent
-from arox.core.session import AgentSession
-from arox.core.types import (
-    ClientInput,
-    CommandPayload,
-    TurnStateEvent,
-    normalize_client_input,
-)
+from arox.core.types import TurnStateEvent
 
 if TYPE_CHECKING:
     from arox.core.agent_runtime import AgentRuntime
@@ -71,7 +64,7 @@ async def test_agent_endpoint_dispatches_plain_events():
     class Plain:
         value: int
 
-    agent_ep = AgentIOEndpoint(AgentSession(agent_name="test"))
+    agent_ep = AgentIOEndpoint()
     adapter_ep = IOEndpoint()
     agent_ep.pair(adapter_ep)
     received: asyncio.Queue[int] = asyncio.Queue()
@@ -115,7 +108,7 @@ def test_close_disconnects_without_closing_peer():
 @pytest.mark.asyncio
 async def test_adapter_consumes_peer_events_and_cleans_up():
     adapter = _RecordingAdapter()
-    agent_ep = AgentIOEndpoint(AgentSession(agent_name="test"))
+    agent_ep = AgentIOEndpoint()
     runtime = cast("AgentRuntime", SimpleNamespace(agent_ep=agent_ep))
     assert not adapter.adapter_ep_to_runtime
 
@@ -140,8 +133,7 @@ async def test_adapter_consumes_peer_events_and_cleans_up():
 
 @pytest.mark.asyncio
 async def test_pair_replays_snapshot_and_cached_events_then_streams_live_events():
-    session = AgentSession(agent_name="test")
-    endpoint = AgentIOEndpoint(session)
+    endpoint = AgentIOEndpoint()
     await endpoint.send("cached")
 
     peer = IOEndpoint()
@@ -175,29 +167,28 @@ async def test_pair_replays_snapshot_and_cached_events_then_streams_live_events(
 
 @pytest.mark.asyncio
 async def test_snapshot_is_only_sent_when_peer_connects():
-    session = AgentSession(agent_name="test")
-    endpoint = AgentIOEndpoint(session, replay_threshold=1)
+    endpoint = AgentIOEndpoint()
     peer = IOEndpoint()
     endpoint.pair(peer)
     assert await peer.receive() == SnapshotEvent(None)
 
-    session.record_error_event("failed")
     await endpoint.send(TurnStateEvent(busy=False))
     assert await peer.receive() == TurnStateEvent(busy=False)
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(peer.receive(), timeout=0.01)
 
+    endpoint.checkpoint("completed")
     endpoint.disconnect()
     replacement = IOEndpoint()
     endpoint.pair(replacement)
 
-    assert await replacement.receive() == SnapshotEvent(session.journal[-1].id)
+    assert await replacement.receive() == SnapshotEvent("completed")
 
 
 @pytest.mark.asyncio
 async def test_adapter_connect_replaces_old_peer():
     adapter = _RecordingAdapter()
-    agent_ep = AgentIOEndpoint(AgentSession(agent_name="test"))
+    agent_ep = AgentIOEndpoint()
     runtime = cast("AgentRuntime", SimpleNamespace(agent_ep=agent_ep))
     old_peer = await adapter.connect(runtime)
     new_peer = await adapter.connect(runtime)
@@ -217,66 +208,8 @@ async def test_adapter_connect_replaces_old_peer():
 
 
 @pytest.mark.asyncio
-async def test_replay_threshold_waits_for_turn_and_concurrent_command_to_finish():
-    session = AgentSession(agent_name="test")
-    endpoint = AgentIOEndpoint(session, replay_threshold=1)
-    await endpoint.send(TurnStateEvent(busy=True))
-    part = TextPart(content="streamed answer")
-    await endpoint.send(PartStartEvent(index=0, part=part))
-    command = normalize_client_input(
-        ClientInput(payload=CommandPayload(command="/info", status="accepted"))
-    )
-    await endpoint.send(command)
-    session.record_model_message(ModelResponse(parts=[part]), run_id="run", sequence=0)
-    await endpoint.send(PartEndEvent(index=0, part=part))
-    await endpoint.send(TurnStateEvent(busy=False))
-    assert endpoint._snapshot_journal_id is None
-    assert len(endpoint._cached_events) > endpoint._replay_threshold
-
-    peer = IOEndpoint()
-    endpoint.pair(peer)
-    assert await peer.receive() == SnapshotEvent(None)
-    assert await peer.receive() == TurnStateEvent(busy=True)
-    assert isinstance(await peer.receive(), PartStartEvent)
-    assert await peer.receive() is command
-    endpoint.disconnect()
-    completed = session.record_command_completed(command, "handled", output="details")
-    await endpoint.send(completed)
-    assert endpoint._snapshot_journal_id == completed.id
-    assert endpoint._cached_events == [TurnStateEvent(busy=False)]
-    replacement = IOEndpoint()
-    endpoint.pair(replacement)
-    assert await replacement.receive() == SnapshotEvent(completed.id)
-    assert await replacement.receive() == TurnStateEvent(busy=False)
-
-
-@pytest.mark.asyncio
-async def test_command_completion_during_stream_does_not_advance_snapshot():
-    session = AgentSession(agent_name="test")
-    endpoint = AgentIOEndpoint(session, replay_threshold=1)
-    await endpoint.send(TurnStateEvent(busy=True))
-    part = TextPart(content="partial")
-    await endpoint.send(PartStartEvent(index=0, part=part))
-    command = normalize_client_input(
-        ClientInput(payload=CommandPayload(command="/info", status="accepted"))
-    )
-    await endpoint.send(command)
-    completed = session.record_command_completed(command, "handled", output="details")
-    await endpoint.send(completed)
-    assert endpoint._snapshot_journal_id is None
-    peer = IOEndpoint()
-    endpoint.pair(peer)
-    assert await peer.receive() == SnapshotEvent(None)
-    assert await peer.receive() == TurnStateEvent(busy=True)
-    assert isinstance(await peer.receive(), PartStartEvent)
-    assert await peer.receive() is command
-    assert await peer.receive() is completed
-
-
-@pytest.mark.asyncio
-async def test_threshold_compacts_completed_prefix_and_retains_new_stream_tail():
-    session = AgentSession(agent_name="test")
-    endpoint = AgentIOEndpoint(session, replay_threshold=5)
+async def test_checkpoint_replaces_replay_without_changing_connected_inbox():
+    endpoint = AgentIOEndpoint()
     connected = IOEndpoint()
     endpoint.pair(connected)
     assert await connected.receive() == SnapshotEvent(None)
@@ -284,44 +217,31 @@ async def test_threshold_compacts_completed_prefix_and_retains_new_stream_tail()
     await endpoint.send(TurnStateEvent(busy=True))
     await endpoint.send(PartStartEvent(index=0, part=part))
     await endpoint.send(PartEndEvent(index=0, part=part))
-    committed = session.record_model_message(
-        ModelResponse(parts=[part]), run_id="run", sequence=0
-    )
     await endpoint.send(TurnStateEvent(busy=False))
-    assert endpoint._snapshot_journal_id is None
-    await endpoint.send(TurnStateEvent(busy=True))
-    assert endpoint._snapshot_journal_id == committed.id
-    # Compaction changes future replay, never an already connected consumer's inbox.
+    endpoint.checkpoint("completed")
+
     assert await connected.receive() == TurnStateEvent(busy=True)
     assert isinstance(await connected.receive(), PartStartEvent)
     assert isinstance(await connected.receive(), PartEndEvent)
     assert await connected.receive() == TurnStateEvent(busy=False)
-    assert await connected.receive() == TurnStateEvent(busy=True)
     endpoint.disconnect()
-    pending = PartStartEvent(index=0, part=TextPart(content="new partial"))
-    await endpoint.send(pending)
-    # A later journal append must not change the boundary of the replay prefix.
-    session.record_error_event("later entry")
-    peer = IOEndpoint()
-    endpoint.pair(peer)
-    assert await peer.receive() == SnapshotEvent(committed.id)
-    assert await peer.receive() == TurnStateEvent(busy=False)
-    assert await peer.receive() == TurnStateEvent(busy=True)
-    assert await peer.receive() is pending
-    assert len(session.build_io_timeline(through_id=committed.id)) == 1
+
+    replacement = IOEndpoint()
+    endpoint.pair(replacement)
+    assert await replacement.receive() == SnapshotEvent("completed")
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(replacement.receive(), timeout=0.01)
 
 
 @pytest.mark.asyncio
-async def test_snapshot_preserves_unjournaled_output_and_latest_state():
-    session = AgentSession(agent_name="test")
-    endpoint = AgentIOEndpoint(session, replay_threshold=1)
-    await endpoint.send(TurnStateEvent(busy=True))
-    await endpoint.send("temporary notice")
-    session.record_error_event("failed")
-    await endpoint.send(TurnStateEvent(busy=False))
+async def test_checkpoint_replays_only_the_live_tail():
+    endpoint = AgentIOEndpoint()
+    await endpoint.send("discarded")
+    endpoint.checkpoint("completed")
+    pending = PartStartEvent(index=0, part=TextPart(content="new partial"))
+    await endpoint.send(pending)
+
     peer = IOEndpoint()
     endpoint.pair(peer)
-    assert await peer.receive() == SnapshotEvent(session.journal[-1].id)
-    assert (await peer.receive()).part.content == "temporary notice"
-    assert (await peer.receive()).part.content == "temporary notice"
-    assert await peer.receive() == TurnStateEvent(busy=False)
+    assert await peer.receive() == SnapshotEvent("completed")
+    assert await peer.receive() is pending

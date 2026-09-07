@@ -72,7 +72,7 @@ omitted from the history.
 
 Only one WebSocket may be connected to a session node at a time. A newer
 connection closes the previous one with code `4000`; this lets a reconnect pick
-up from the latest snapshot plus cached events without duplicating persisted
+up from the latest runtime checkpoint plus its live event tail without duplicating persisted
 history. Connecting to an inactive node closes the socket with code `4004`.
 Disconnecting does not cancel an in-flight turn.
 

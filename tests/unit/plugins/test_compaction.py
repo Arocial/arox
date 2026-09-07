@@ -222,7 +222,7 @@ async def test_auto_compaction_compacts_mid_tool_loop():
 async def test_auto_compaction_preserves_events_for_reconnect_replay():
     agent = _MockAgent(threshold=100)
     agent.run_info.context_tokens = 500
-    agent.agent_ep = AgentIOEndpoint(agent.session)
+    agent.agent_ep = AgentIOEndpoint()
     await agent.agent_ep.send("tool output before compaction")
     plugin = _plugin(agent)
 
