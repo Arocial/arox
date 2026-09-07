@@ -26,7 +26,6 @@ COMPACTION_AGENT_NAME = "compaction"
 class CompactionEvent(SessionEvent):
     timeline_visible = True
     event_type: Literal["compaction"] = "compaction"
-    step_boundary: bool = False
     trigger: Literal["manual", "token_threshold", "tool_request"] = "manual"
     llm_context_id: str = ""
 
@@ -158,7 +157,6 @@ class CompactionPlugin(Plugin):
             ApplyCompaction(
                 messages=compacted,
                 event=CompactionEvent(
-                    step_boundary=trigger == "manual",
                     trigger=trigger,
                     llm_context_id=context_id,
                 ),

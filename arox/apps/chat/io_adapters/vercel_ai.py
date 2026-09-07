@@ -240,7 +240,6 @@ def build_state_history(
                     "type": "compaction",
                     "event_id": item.id,
                     "trigger": item.trigger,
-                    "step_boundary": item.step_boundary,
                     "llm_context_id": item.llm_context_id,
                     "timestamp": item.timestamp.isoformat(),
                 }

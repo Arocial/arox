@@ -262,7 +262,7 @@ class TestAgentSession:
         compacted: list[ModelMessage] = [
             ModelRequest(parts=[UserPromptPart(content="summary of conversation")])
         ]
-        compact_history(agent_session, compacted, True, "ctx-summary")
+        compact_history(agent_session, compacted, "ctx-summary")
 
         new_messages = [
             *compacted,
@@ -339,7 +339,7 @@ class TestAgentSession:
         compacted = [
             ModelRequest(parts=[UserPromptPart(content="summary including second")])
         ]
-        compact_history(agent_session, compacted, False, "ctx-compact")
+        compact_history(agent_session, compacted, "ctx-compact")
         _record_step(
             agent_session, [*compacted, ModelResponse(parts=[TextPart(content="r2")])]
         )
@@ -441,7 +441,7 @@ class TestAgentSession:
         agent_session.record(user_event)
         record_messages(agent_session, [request, response])
 
-        compact_history(agent_session, [], True, "compacted-context")
+        compact_history(agent_session, [], "compacted-context")
 
         snapshot = agent_session.build_io_timeline()
         assert len(snapshot) == 3
@@ -726,7 +726,7 @@ class TestFileSessionStore:
         compacted = [
             ModelRequest(parts=[UserPromptPart(content="conversation summary")])
         ]
-        compact_history(agent_session, compacted, True, "ctx-compact")
+        compact_history(agent_session, compacted, "ctx-compact")
 
         await store.save_session(session)
         await store.save_session(agent_session)

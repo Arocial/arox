@@ -1265,7 +1265,7 @@ async def test_compaction_continuation_preserves_journal_and_fork_boundaries(
         nonlocal compacted
         if not compacted:
             compacted = True
-            compact_history(session, summary, False, "compact-context")
+            compact_history(session, summary, "compact-context")
             raise ContinueAgentRun(summary)
         return request_context
 

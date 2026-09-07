@@ -46,7 +46,6 @@ def reset_history(session: AgentSession, messages: Sequence[ModelMessage]) -> No
 def compact_history(
     session: AgentSession,
     messages: Sequence[ModelMessage],
-    step_boundary: bool,
     context_id: str,
     *,
     trigger: Literal["manual", "token_threshold", "tool_request"] = "manual",
@@ -55,7 +54,6 @@ def compact_history(
         ApplyCompaction(
             messages=list(messages),
             event=CompactionEvent(
-                step_boundary=step_boundary,
                 trigger=trigger,
                 llm_context_id=context_id,
             ),

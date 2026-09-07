@@ -101,8 +101,8 @@ processing starts. Command payloads carry `status: "accepted"` plus the normaliz
 command. A slash-prefixed message may therefore be normalized into a command,
 whose result subsequently arrives in `cmd-command-completed`.
 
-A state-history compaction item carries `event_id`, `trigger`, `step_boundary`,
-`llm_context_id`, and `timestamp`. It reports the context boundary without
+A state-history compaction item carries `event_id`, `trigger`, `llm_context_id`,
+and `timestamp`. It reports the context boundary without
 exposing the generated summary. Message IDs in state history reuse persisted
 Arox model-message IDs or user-input server IDs when available.
 

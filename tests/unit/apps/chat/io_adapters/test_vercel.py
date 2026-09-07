@@ -413,7 +413,7 @@ def test_state_timeline_includes_compaction_marker_and_stable_message_ids():
         entry for entry in session.journal if entry.event_type == "model_message"
     )
     response_id = response_event.id
-    compact_history(session, [], False, "context-2", trigger="token_threshold")
+    compact_history(session, [], "context-2", trigger="token_threshold")
 
     timeline = build_state_history(session)
 
@@ -428,7 +428,6 @@ def test_state_timeline_includes_compaction_marker_and_stable_message_ids():
         "type": "compaction",
         "event_id": session.journal[-2].id,
         "trigger": "token_threshold",
-        "step_boundary": False,
         "llm_context_id": "context-2",
         "timestamp": session.journal[-2].timestamp.isoformat(),
     }
