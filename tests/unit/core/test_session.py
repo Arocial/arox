@@ -412,12 +412,12 @@ class TestAgentSession:
             agent_name="main",
             task_name="my_task",
             target="/main/my_task",
-            initial_message="start",
         )
         assert agent_session.task_name == "my_task"
         assert agent_session.target == "/main/my_task"
         dumped = agent_session.model_dump()
         assert "last_message" not in dumped
+        assert "initial_message" not in dumped
         assert "result" not in dumped
         assert "error" not in dumped
 
@@ -449,7 +449,6 @@ class TestAgentSession:
         forked = await original.fork_at(None)
         assert forked.task_name is None
         assert forked.target is None
-        assert forked.initial_message is None
 
     @pytest.mark.asyncio
     async def test_create_child_session(self, tmp_path):
@@ -463,13 +462,17 @@ class TestAgentSession:
             workspace=str(tmp_path),
             manager=manager,
         )
+        model_messages = [
+            ModelRequest(parts=[UserPromptPart(content="main question")]),
+            ModelResponse(parts=[TextPart(content="main answer")]),
+        ]
 
         child = await parent.create_child_session(
             agent_name="worker",
             agent_source="subagent",
             task_name="sub_task",
             target="/main/sub_task",
-            initial_message="do work",
+            model_messages=model_messages,
         )
 
         assert child.owner is parent
@@ -480,10 +483,25 @@ class TestAgentSession:
         assert child.agent_source == "subagent"
         assert child.task_name == "sub_task"
         assert child.target == "/main/sub_task"
-        assert child.initial_message == "do work"
         assert child.workspace == str(tmp_path)
         assert child.run_info.llm_context_id is not None
         assert child.run_info.llm_context_id != parent.run_info.llm_context_id
+        assert child.message_history == model_messages
+        assert all(
+            actual is not original
+            for actual, original in zip(
+                child.message_history, model_messages, strict=True
+            )
+        )
+        assert child.build_io_timeline() == ()
+        message_events = [
+            event for event in child.journal if isinstance(event, ModelMessageEvent)
+        ]
+        assert len(message_events) == 2
+        assert all(event.context_only for event in message_events)
+        assert all(
+            event.run_id == child.run_info.llm_context_id for event in message_events
+        )
 
         stored_parent = await store.load_session(parent.path)
         stored_child = await store.load_session(child.path)
@@ -491,6 +509,8 @@ class TestAgentSession:
         assert stored_parent.children == [child.id]
         assert isinstance(stored_child, AgentSession)
         assert stored_child.task_name == "sub_task"
+        assert stored_child.message_history == model_messages
+        assert stored_child.build_io_timeline() == ()
 
     @pytest.mark.asyncio
     async def test_create_child_session_workspace_override(self, tmp_path):

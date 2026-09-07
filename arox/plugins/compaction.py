@@ -196,7 +196,7 @@ class CompactionPlugin(Plugin):
             agent_name=COMPACTION_AGENT_NAME,
             agent_source="compaction",
             workspace=runtime.workspace,
-            initial_message=prompt,
+            model_messages=messages,
         )
         compaction_failed = False
         try:
@@ -204,9 +204,6 @@ class CompactionPlugin(Plugin):
                 runtime.config_loader, runtime.io_adapter, compaction_session
             )
             async with compaction_runtime:
-                compaction_session.record_model_messages(
-                    messages, run_id=compaction_session.id, context_only=True
-                )
                 turn = compaction_runtime.start_message(prompt)
                 result = await turn
                 summary = (

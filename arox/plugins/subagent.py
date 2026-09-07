@@ -125,17 +125,22 @@ class SubagentPlugin(Plugin):
                 workspace=self.runtime.workspace,
                 task_name=task_name,
                 target=target,
-                initial_message=message,
             )
             self._register_task_session(task_session)
 
-            await self._start_task(task_session, message)
+            await self._start_task(
+                task_session,
+                message,
+                description=task_name or message,
+            )
             return task_session
 
     async def _start_task(
         self,
         task_session: AgentSession,
         message: str,
+        *,
+        description: str | None = None,
     ) -> asyncio.Task[Any]:
         runtime = task_session.runtime
         try:
@@ -149,7 +154,11 @@ class SubagentPlugin(Plugin):
             if self.mode is SubagentMode.ADVANCED:
                 self.runtime.background_tasks.register(task_session.target)
                 turn.task.add_done_callback(
-                    lambda _completed: self._notify_task_finished(task_session, runtime)
+                    lambda _completed: self._notify_task_finished(
+                        task_session,
+                        runtime,
+                        description or task_session.task_name or message,
+                    )
                 )
             return turn.task
         except BaseException:
@@ -159,7 +168,10 @@ class SubagentPlugin(Plugin):
             raise
 
     def _notify_task_finished(
-        self, task_session: AgentSession, runtime: AgentRuntime
+        self,
+        task_session: AgentSession,
+        runtime: AgentRuntime,
+        description: str,
     ) -> None:
         if self._stopping:
             return
@@ -173,7 +185,7 @@ class SubagentPlugin(Plugin):
             task_session.target,
             "Background subagent task finished.\n\n"
             f"Target: {task_session.target}\n"
-            f"Description: {task_session.task_name or task_session.initial_message}\n"
+            f"Description: {description}\n"
             f"Status: {status}\n\n"
             f'Use wait_agent(target="{task_session.target}") to retrieve the '
             "result before continuing work that depends on it.",

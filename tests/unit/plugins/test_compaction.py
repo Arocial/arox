@@ -202,6 +202,16 @@ async def test_auto_compaction_compacts_mid_tool_loop():
 
     # Everything collapsed into the summary; no leftover tool_return.
     assert agent._compaction_agent.session.agent_source == "compaction"
+    compaction_history = agent._compaction_agent.session.message_history
+    assert compaction_history == messages
+    assert all(
+        actual is not original
+        for actual, original in zip(
+            compaction_history,
+            messages,
+            strict=True,
+        )
+    )
     assert isinstance(out[0], ModelRequest)
     assert "SUMMARY" in _first_text(out[0])
     assert not any(

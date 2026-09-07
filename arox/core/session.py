@@ -163,7 +163,6 @@ class AgentSession(Session):
     workspace: str | None = None
     task_name: str | None = None
     target: str | None = None
-    initial_message: str | None = None
     run_info: AgentRunInfo = Field(default_factory=AgentRunInfo)
     extra: dict[str, Any] = Field(default_factory=dict)
 
@@ -178,13 +177,7 @@ class AgentSession(Session):
 
     @property
     def is_empty(self) -> bool:
-        return not (
-            self.journal
-            or self.children
-            or self.task_name
-            or self.target
-            or self.initial_message
-        )
+        return not (self.journal or self.children or self.task_name or self.target)
 
     async def ensure_runtime(
         self,
@@ -217,7 +210,7 @@ class AgentSession(Session):
         workspace: Path | str | None = None,
         task_name: str | None = None,
         target: str | None = None,
-        initial_message: str | None = None,
+        model_messages: Sequence[ModelMessage] = (),
     ) -> AgentSession:
         child_workspace = (
             str(Path(workspace).absolute()) if workspace is not None else self.workspace
@@ -229,10 +222,16 @@ class AgentSession(Session):
             workspace=child_workspace,
             task_name=task_name,
             target=target,
-            initial_message=initial_message,
             run_info=AgentRunInfo(llm_context_id=str(uuid.uuid4())),
             owner=self,
             manager=self.manager,
+        )
+        context_id = child.run_info.llm_context_id
+        assert context_id is not None
+        child.record_model_messages(
+            copy.deepcopy(model_messages),
+            run_id=context_id,
+            context_only=True,
         )
         self.children.append(child.id)
         if self.manager:
@@ -444,7 +443,6 @@ class AgentSession(Session):
                 "children": [],
                 "task_name": None,
                 "target": None,
-                "initial_message": None,
                 "manager": manager_ref,
                 "owner": owner,
                 "runtime": None,
